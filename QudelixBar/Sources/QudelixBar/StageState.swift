@@ -320,7 +320,8 @@ final class StageState: ObservableObject {
             let content = DebugLog.sanitized(
                 "running=\(engine.isRunning) status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
-                + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room))")
+                + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room)) "
+                + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug)")
             if engine.isRunning || content != lastDiagContent {
                 lastDiagContent = content
                 let line = Self.diagFormatter.string(from: Date()) + " " + content + "\n"
@@ -431,20 +432,24 @@ final class StageState: ObservableObject {
         guard let rate = engine.runningSampleRate,
               let raw = analyzer.classify(sampleRate: rate) else { return }
 
-        if raw == rawVerdict {
+        // Stability is judged on the verdict's KIND — the measured cutoff
+        // rides along and refreshes on every publish.
+        if let previous = rawVerdict, previous.kind == raw.kind {
             rawVerdictStreak += 1
         } else {
-            rawVerdict = raw
             rawVerdictStreak = 1
         }
+        rawVerdict = raw
         guard rawVerdictStreak >= 3 else { return }
 
-        if qualityVerdict != raw {
-            let previousClass = qualityVerdict?.isLosslessClass
-            qualityVerdict = raw
-            if raw.isLosslessClass != previousClass {
-                verdictStableSince = raw.isLosslessClass != nil ? Date() : nil
-            }
+        let kindChanged = qualityVerdict?.kind != raw.kind
+        if kindChanged {
+            DebugLog.shared.log("stream quality verdict → \(raw) [\(analyzer.lastDebug)]")
+        }
+        let previousClass = qualityVerdict?.isLosslessClass
+        qualityVerdict = raw
+        if raw.isLosslessClass != previousClass {
+            verdictStableSince = raw.isLosslessClass != nil ? Date() : nil
         }
         autoSwitchIfDue()
     }

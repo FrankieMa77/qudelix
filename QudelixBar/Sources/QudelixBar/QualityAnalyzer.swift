@@ -30,6 +30,21 @@ final class QualityAnalyzer {
             case .tooQuiet, .noTreble: return nil
             }
         }
+
+        /// Category without the measured cutoff. Stability MUST be judged
+        /// on this: the cutoff is a fresh FFT measurement every time, and
+        /// two rounds never produce the same 21.83… twice — full equality
+        /// makes "three consecutive equal verdicts" unreachable.
+        var kind: Int {
+            switch self {
+            case .tooQuiet: return 0
+            case .noTreble: return 1
+            case .lossy: return 2
+            case .lossyHigh: return 3
+            case .losslessLike: return 4
+            case .hiRes: return 5
+            }
+        }
     }
 
     static let fftSize = 8192
