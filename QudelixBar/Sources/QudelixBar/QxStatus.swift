@@ -26,6 +26,16 @@ struct QxDeviceState {
     var chargerConnected = false
     var sampleRateLabel: String?
     var inputSourceLabel: String?
+    /// a2dp_codec label (SBC/AAC/aptX/…/LDAC). Only meaningful over A2DP;
+    /// the separate hfp_codec field isn't surfaced here.
+    var codecLabel: String?
+    /// out_unbalanced status bit: which output jack is currently active.
+    var outputJackUnbalanced: Bool?
+    /// out_power status bit: current headphone-amp gain/power state.
+    var outputHighGain: Bool?
+    var audioMuted: Bool?
+    var audioRunning: Bool?        // true while audio is actively playing
+    var activeCall: Bool?          // true during an HFP call
     var volumeDb: Double?          // cy.sink_dB60 / 60
     var volumeLimitDb: Double?
     var trimLeftDb: Double?
@@ -41,6 +51,10 @@ struct QxDeviceState {
     var eqCfgGroup: Int?
     var dacOutPwr2Vrms = false     // +6 dB headroom when true
     var dacFilterType: Int?
+    /// Raw device play-time counters (32-bit each, no documented unit —
+    /// kept unconverted rather than guessing seconds).
+    var totalPlayTime: Int?
+    var totalPlayTimeAtLastCharge: Int?
 }
 
 extension Array where Element == UInt8 {
@@ -58,6 +72,7 @@ extension Array where Element == UInt8 {
 enum QxStatusParser {
     static let sampleRates = ["8 kHz", "16 kHz", "32 kHz", "44.1 kHz", "48 kHz", "88.2 kHz", "96 kHz"]
     static let inputSources = ["None", "USB", "A2DP 1", "A2DP 2", "HFP 1", "HFP 2"]
+    static let codecs = ["None", "SBC", "AAC", "aptX", "aptX HD", "aptX Adaptive", "LDAC"]
     static let dacFilters = [
         "Linear phase fast roll-off", "Linear phase slow roll-off",
         "Linear phase super slow roll-off", "Minimum phase fast roll-off",
@@ -105,10 +120,16 @@ enum QxStatusParser {
         if mask & QxStatusMask.audio != 0 {
             guard d.count >= off + 4 else { return d.count }
             var r = QxBitReader(Array(d[off..<off + 4]))
-            r.skip(5)                       // mute, running, active_call, hfp_codec(2)
-            r.skip(4)                       // a2dp_codec
+            state.audioMuted = r.read(1) == 1
+            state.audioRunning = r.read(1) == 1
+            state.activeCall = r.read(1) == 1
+            r.skip(2)                       // hfp_codec
+            let codecIdx = r.read(4)        // a2dp_codec
+            if codecIdx < codecs.count { state.codecLabel = codecs[codecIdx] }
             let inSource = r.read(3)
-            r.skip(4)                       // in_bits(2), out_unbalanced, out_power
+            r.skip(2)                       // in_bits
+            state.outputJackUnbalanced = r.read(1) == 1
+            state.outputHighGain = r.read(1) == 1
             let srIdx = r.read(4)
             if srIdx < sampleRates.count { state.sampleRateLabel = sampleRates[srIdx] }
             if inSource < inputSources.count { state.inputSourceLabel = inputSources[inSource] }
@@ -161,7 +182,13 @@ enum QxStatusParser {
             parseVolBlock(Array(d[off..<off + 16]), into: &state)
             off += 16
         }
-        if mask & QxConfigMask.playTime != 0 { off += 8 }
+        if mask & QxConfigMask.playTime != 0 {
+            guard d.count >= off + 8 else { return d.count }
+            var r = QxBitReader(Array(d[off..<off + 8]))
+            state.totalPlayTime = r.read(32)
+            state.totalPlayTimeAtLastCharge = r.read(32)
+            off += 8
+        }
         if mask & QxConfigMask.dac != 0 {
             guard d.count >= off + 4 else { return d.count }
             var r = QxBitReader(Array(d[off..<off + 4]))

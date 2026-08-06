@@ -98,6 +98,77 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(state.eqMode)
     }
 
+    // MARK: - Audio status block
+
+    /// Hand-built audio ($c) block: mute=0, running=1, active_call=0,
+    /// hfp_codec=0, a2dp_codec=6 (LDAC), in_source=1 (USB), in_bits=0,
+    /// out_unbalanced=1, out_power=0, sample_rate_index=4 (48 kHz).
+    private let audioBlockBytes: [UInt8] = [0xC2, 0x42, 0x04, 0x00]
+
+    func testAudioBlockDecodesCodecGainAndJackFields() {
+        var state = QxDeviceState()
+        let data = [QxStatusMask.audio] + audioBlockBytes
+        let consumed = QxStatusParser.parseDevStatus(data, into: &state)
+        XCTAssertEqual(consumed, data.count)
+        XCTAssertEqual(state.audioMuted, false)
+        XCTAssertEqual(state.audioRunning, true)
+        XCTAssertEqual(state.activeCall, false)
+        XCTAssertEqual(state.codecLabel, "LDAC")
+        XCTAssertEqual(state.inputSourceLabel, "USB")
+        XCTAssertEqual(state.outputJackUnbalanced, true)
+        XCTAssertEqual(state.outputHighGain, false)
+        XCTAssertEqual(state.sampleRateLabel, "48 kHz")
+    }
+
+    func testAudioBlockOutOfRangeCodecIndexStaysNil() {
+        var state = QxDeviceState()
+        // a2dp_codec = 15 (0b1111), past the end of the codec label table.
+        let data: [UInt8] = [QxStatusMask.audio, 0xE0, 0x01, 0x00, 0x00]
+        _ = QxStatusParser.parseDevStatus(data, into: &state)
+        XCTAssertNil(state.codecLabel)
+    }
+
+    func testTruncatedAudioBlockConsumesWholePacketAndSetsNothing() {
+        var state = QxDeviceState()
+        // Mask claims the audio block (4B) but only 3 bytes follow it.
+        let data: [UInt8] = [QxStatusMask.audio, 0, 0, 0]
+        let consumed = QxStatusParser.parseDevStatus(data, into: &state)
+        XCTAssertEqual(consumed, data.count)
+        XCTAssertNil(state.audioMuted)
+        XCTAssertNil(state.audioRunning)
+        XCTAssertNil(state.activeCall)
+        XCTAssertNil(state.codecLabel)
+        XCTAssertNil(state.outputJackUnbalanced)
+        XCTAssertNil(state.outputHighGain)
+        XCTAssertNil(state.sampleRateLabel)
+        XCTAssertNil(state.inputSourceLabel)
+    }
+
+    // MARK: - Play-time config block
+
+    func testPlayTimeBlockRoundTrips() {
+        var state = QxDeviceState()
+        let total: UInt32 = 123_456
+        let atCharge: UInt32 = 42
+        func le32(_ v: UInt32) -> [UInt8] {
+            [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF), UInt8((v >> 16) & 0xFF), UInt8((v >> 24) & 0xFF)]
+        }
+        let data = [QxConfigMask.playTime] + le32(total) + le32(atCharge)
+        let consumed = QxStatusParser.parseDevConfig(data, into: &state)
+        XCTAssertEqual(consumed, data.count)
+        XCTAssertEqual(state.totalPlayTime, Int(total))
+        XCTAssertEqual(state.totalPlayTimeAtLastCharge, Int(atCharge))
+    }
+
+    func testTruncatedPlayTimeBlockConsumesWholePacket() {
+        var state = QxDeviceState()
+        let data: [UInt8] = [QxConfigMask.playTime, 1, 2, 3]
+        let consumed = QxStatusParser.parseDevConfig(data, into: &state)
+        XCTAssertEqual(consumed, data.count)
+        XCTAssertNil(state.totalPlayTime)
+        XCTAssertNil(state.totalPlayTimeAtLastCharge)
+    }
+
     // MARK: - Preset decode against REAL hardware bytes
 
     /// Captured live: a 20-band preset struct corrupted by both-channel
