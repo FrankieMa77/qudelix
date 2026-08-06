@@ -47,6 +47,10 @@ struct LevelView: View {
 
             Divider()
 
+            qualitySection
+
+            Divider()
+
             if let today = stageState.exposureDays.first(where: { $0.day == StageState.dayKey() }),
                today.audibleSeconds > 0 {
                 todayView(today)
@@ -77,6 +81,77 @@ struct LevelView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Stream quality
+
+    private var qualitySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { stageState.detectQuality },
+                    set: { stageState.setDetectQuality($0) })) {
+                    Text("Detect stream quality")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                Spacer()
+                if stageState.detectQuality {
+                    Text(verbatim: verdictText)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(verdictColor)
+                }
+            }
+            .help("Measures the audio itself: lossy codecs cut the high "
+                  + "frequencies at telltale points, lossless extends to the "
+                  + "edge. Works with any player — it doesn't ask, it listens. "
+                  + "Evidence, not proof: a lossless file made from a lossy "
+                  + "source keeps the cutoff, and quiet material can't be "
+                  + "judged.")
+
+            if stageState.detectQuality {
+                Toggle(isOn: Binding(
+                    get: { stageState.autoRate },
+                    set: { stageState.setAutoRate($0) })) {
+                    Text("Auto-match USB rate")
+                        .font(.system(size: 11))
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .help("Lossless detected → 44.1 kHz (the bit-perfect path). "
+                      + "Lossy → back to the rate you last picked yourself. "
+                      + "Content proven beyond the 44.1 family → 96 kHz. "
+                      + "Switches only after the verdict holds for 10 seconds, "
+                      + "and never while Soundstage is on (it resamples anyway).")
+            }
+        }
+    }
+
+    private var verdictText: String {
+        guard stageState.engine.isRunning else { return "engine off" }
+        switch stageState.qualityVerdict {
+        case nil: return "listening…"
+        case .tooQuiet: return "too quiet to judge"
+        case .noTreble: return "no treble to judge"
+        case .lossy(let khz):
+            return String(format: "lossy (cuts at %.1f kHz)", khz)
+        case .lossyHigh(let khz):
+            return String(format: "lossy, high bitrate (%.1f kHz)", khz)
+        case .losslessLike(let khz):
+            return String(format: "consistent with lossless (%.1f kHz)", khz)
+        case .hiRes(let khz):
+            return String(format: "hi-res content (%.1f kHz)", khz)
+        }
+    }
+
+    private var verdictColor: AnyShapeStyle {
+        switch stageState.qualityVerdict {
+        case .losslessLike, .hiRes: return AnyShapeStyle(.green)
+        case .lossy: return AnyShapeStyle(.orange)
+        case .lossyHigh: return AnyShapeStyle(.yellow)
+        default: return AnyShapeStyle(.secondary)
         }
     }
 

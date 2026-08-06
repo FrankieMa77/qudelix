@@ -162,7 +162,8 @@ enum UIPreview {
         var stage = StageSettings()
         stage.enabled = false
         s.previewSet(stage: stage, exposure: exposureMock(),
-                     currentDb: -23, levelTracking: true)
+                     currentDb: -23, levelTracking: true,
+                     verdict: .losslessLike(cutoffKHz: 21.9))
         s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
         return s
     }

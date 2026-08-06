@@ -333,7 +333,9 @@ struct UsbAudioRow: View {
                     .foregroundStyle(.secondary)
                 Picker("", selection: Binding(
                     get: { device.sampleRate },
-                    set: { stageState.setNominalRate($0, for: device) })) {
+                    // manual: the user's own pick is the baseline that
+                    // auto rate switching returns to on lossy content.
+                    set: { stageState.setNominalRate($0, for: device, manual: true) })) {
                     ForEach(rates, id: \.self) { r in
                         Text(Self.kHz(r)).tag(r)
                     }

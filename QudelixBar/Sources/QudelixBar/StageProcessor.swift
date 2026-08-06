@@ -181,6 +181,7 @@ final class StageProcessor {
     deinit {
         lock.deallocate()
         meterLock.deallocate()
+        specLock.deallocate()
     }
 
     private var sampleRate: Double = 48000
@@ -345,6 +346,38 @@ final class StageProcessor {
         return result
     }
 
+    // MARK: Spectrum capture (for the stream-quality analyzer)
+
+    /// Raw first-channel samples, written by the render thread, drained by
+    /// the control thread for FFT analysis. Power-of-two ring; its own lock
+    /// so a drain can never delay a config snapshot or the meter.
+    static let specRingSize = 16384
+    private let specLock: UnsafeMutablePointer<os_unfair_lock_s> = {
+        let p = UnsafeMutablePointer<os_unfair_lock_s>.allocate(capacity: 1)
+        p.initialize(to: os_unfair_lock_s())
+        return p
+    }()
+    private var specRing = [Float](repeating: 0, count: specRingSize)
+    private var specWriteIdx = 0
+    private var specWritten = 0
+
+    /// Copy out the most recent `count` samples in playback order. Returns
+    /// empty until enough audio has passed since the last engine start.
+    func drainSpectrumSamples(_ count: Int) -> [Float] {
+        let n = min(count, Self.specRingSize)
+        os_unfair_lock_lock(specLock)
+        defer { os_unfair_lock_unlock(specLock) }
+        guard specWritten >= n else { return [] }
+        var out = [Float](repeating: 0, count: n)
+        let mask = Self.specRingSize - 1
+        var idx = (specWriteIdx - n) & mask
+        for i in 0..<n {
+            out[i] = specRing[idx]
+            idx = (idx + 1) & mask
+        }
+        return out
+    }
+
     // MARK: Render side (HAL IO thread only)
 
     // Soundstage render state. Ring buffers are powers of two so the render
@@ -465,6 +498,23 @@ final class StageProcessor {
         }
 
         guard !inRefs.isEmpty else { return }
+
+        // Feed the spectrum ring from the FIRST channel, pre-stage: the
+        // analyzer wants the source's bandwidth, not the stage's. Copy under
+        // the dedicated lock — a handful of microseconds for ≤4k floats.
+        if let first = inRefs.first {
+            os_unfair_lock_lock(specLock)
+            let mask = Self.specRingSize - 1
+            var p = first.ptr
+            for _ in 0..<first.frames {
+                let v = p.pointee
+                specRing[specWriteIdx] = v.isFinite ? v : 0
+                specWriteIdx = (specWriteIdx + 1) & mask
+                p += first.stride
+            }
+            specWritten = min(specWritten + first.frames, Self.specRingSize)
+            os_unfair_lock_unlock(specLock)
+        }
 
         // Source stereo-ness, measured before the stage touches anything.
         var cLR = 0.0, cLL = 0.0, cRR = 0.0

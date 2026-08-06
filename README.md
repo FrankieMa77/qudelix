@@ -48,6 +48,10 @@ right.
 - **Stage** — a soundstage for headphones: width, crossfeed, dialogue lift and
   room, applied on the Mac (see below)
 - **Level** — live output level and a 14-day listening history
+- **Stream quality detection** — measures whether what's playing looks lossy
+  or lossless (any player: it doesn't ask apps, it analyzes the audio), and
+  can auto-match the USB rate: lossless → 44.1 kHz bit-perfect, lossy → your
+  chosen rate. Both parts can be switched off
 - **Diagnostics panel** logging every packet exchanged with the device
 
 Works over **USB or Bluetooth**. USB is used whenever the 5K is plugged in;

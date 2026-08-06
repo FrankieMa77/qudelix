@@ -24,6 +24,21 @@ final class StageState: ObservableObject {
     @Published private(set) var stage = StageSettings()
     @Published private(set) var levelTracking = false
 
+    // Stream-quality detection: spectral analysis of what the tap hears.
+    @Published private(set) var detectQuality = true
+    @Published private(set) var autoRate = true
+    /// Verdict after hysteresis — what the UI shows. nil while unknown.
+    @Published private(set) var qualityVerdict: QualityAnalyzer.Verdict?
+    private let analyzer = QualityAnalyzer()
+    private var rawVerdict: QualityAnalyzer.Verdict?
+    private var rawVerdictStreak = 0
+    /// When the current lossless-class vote became stable, for the
+    /// switch-after-10s rule.
+    private var verdictStableSince: Date?
+    private var lastAutoSwitch = Date.distantPast
+    /// The rate the user last picked by hand; lossy content returns here.
+    private var manualRateHz: Double?
+
     // Listening exposure (digital level, dBFS — not calibrated SPL).
     @Published private(set) var currentLevelDb: Double?
     @Published private(set) var exposureDays: [DayExposure] = []
@@ -53,7 +68,13 @@ final class StageState: ObservableObject {
     /// Set the rate macOS runs a device at — what Audio MIDI Setup does.
     /// If the stage engine is on that device, its rate listener restarts it
     /// at the new rate; the delayed refresh picks up the HAL's async apply.
-    func setNominalRate(_ rate: Double, for device: AudioOutput) {
+    /// `manual: true` records the choice as the user's baseline — the rate
+    /// lossy content returns to when auto-switching is on.
+    func setNominalRate(_ rate: Double, for device: AudioOutput, manual: Bool = false) {
+        if manual {
+            manualRateHz = rate
+            scheduleSave()
+        }
         AudioOutputs.setNominalRate(device.id, rate)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.watcher.refreshNow()
@@ -72,6 +93,12 @@ final class StageState: ObservableObject {
         if let saved = StageStateFile.load() {
             stageByDevice = saved.stageByDevice.mapValues { $0.clamped() }
             levelTracking = saved.levelTracking
+            detectQuality = saved.detectQuality ?? true
+            autoRate = saved.autoRate ?? true
+            if let rate = saved.manualRateHz, rate.isFinite,
+               (8000...768_000).contains(rate) {
+                manualRateHz = rate
+            }
             // The file is user-writable: clamp what comes off it so a
             // hand-edited value can't trap Int() in the Level pane, drop
             // duplicate day keys (ForEach identity), and apply the 14-day
@@ -136,11 +163,28 @@ final class StageState: ObservableObject {
         scheduleSave()
     }
 
+    func setDetectQuality(_ on: Bool) {
+        detectQuality = on
+        if !on {
+            qualityVerdict = nil
+            rawVerdict = nil
+            rawVerdictStreak = 0
+            verdictStableSince = nil
+        }
+        reconcile()
+        scheduleSave()
+    }
+
+    func setAutoRate(_ on: Bool) {
+        autoRate = on
+        scheduleSave()
+    }
+
     // MARK: - Engine lifecycle
 
     private var desiredMode: StageEngine.Mode? {
         if stage.enabled { return .insert }
-        if levelTracking { return .monitor }
+        if levelTracking || detectQuality { return .monitor }
         return nil
     }
 
@@ -220,13 +264,15 @@ final class StageState: ObservableObject {
 
     func previewSet(stage: StageSettings, exposure: [DayExposure],
                     currentDb: Double?, correlation: Double? = nil,
-                    levelTracking: Bool = false) {
+                    levelTracking: Bool = false,
+                    verdict: QualityAnalyzer.Verdict? = nil) {
         persistenceDisabled = true
         self.stage = stage
         exposureDays = exposure
         currentLevelDb = currentDb
         sourceCorrelation = correlation
         self.levelTracking = levelTracking
+        qualityVerdict = verdict
     }
     #else
     private let persistenceDisabled = false
@@ -237,7 +283,10 @@ final class StageState: ObservableObject {
         StageStateFile.save(PersistedStageState(
             stageByDevice: stageByDevice,
             exposure: exposureDays,
-            levelTracking: levelTracking))
+            levelTracking: levelTracking,
+            detectQuality: detectQuality,
+            autoRate: autoRate,
+            manualRateHz: manualRateHz))
     }
 
     // MARK: - Metering
@@ -304,6 +353,8 @@ final class StageState: ObservableObject {
             sourceCorrelation = 0.7 * (sourceCorrelation ?? corr) + 0.3 * corr
         }
 
+        qualityTick()
+
         let (sumSquares, frames) = engine.processor.drainMeter()
         guard frames > 0 else {
             currentLevelDb = nil
@@ -358,6 +409,79 @@ final class StageState: ObservableObject {
         let n = data.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
         guard n > 0 else { return "" }
         return String(data: data.prefix(n), encoding: .utf8) ?? ""
+    }
+
+    // MARK: - Stream quality
+
+    /// Once a second while the engine runs: pull the freshest samples, FFT
+    /// them, and every few windows take a classification. The published
+    /// verdict changes only after three consecutive agreeing raw results —
+    /// track transitions and quiet passages flicker, listeners don't.
+    private var qualityWindowsFed = 0
+
+    private func qualityTick() {
+        guard detectQuality else { return }
+        let samples = engine.processor.drainSpectrumSamples(QualityAnalyzer.fftSize)
+        guard samples.count >= QualityAnalyzer.fftSize else { return }
+        analyzer.feed(samples)
+        qualityWindowsFed += 1
+        guard qualityWindowsFed >= 3 else { return }
+        qualityWindowsFed = 0
+
+        guard let rate = engine.runningSampleRate,
+              let raw = analyzer.classify(sampleRate: rate) else { return }
+
+        if raw == rawVerdict {
+            rawVerdictStreak += 1
+        } else {
+            rawVerdict = raw
+            rawVerdictStreak = 1
+        }
+        guard rawVerdictStreak >= 3 else { return }
+
+        if qualityVerdict != raw {
+            let previousClass = qualityVerdict?.isLosslessClass
+            qualityVerdict = raw
+            if raw.isLosslessClass != previousClass {
+                verdictStableSince = raw.isLosslessClass != nil ? Date() : nil
+            }
+        }
+        autoSwitchIfDue()
+    }
+
+    /// The lossy↔lossless rate automation. Deliberately conservative: the
+    /// verdict must have held for 10 s, switches are at least 45 s apart,
+    /// and nothing moves while the Stage is inserted (it resamples anyway,
+    /// so a switch would only add an audio blip).
+    private func autoSwitchIfDue() {
+        guard autoRate, !stage.enabled,
+              let device = qudelixOutput,
+              let verdict = qualityVerdict,
+              let lossless = verdict.isLosslessClass,
+              let stableSince = verdictStableSince,
+              Date().timeIntervalSince(stableSince) >= 10,
+              Date().timeIntervalSince(lastAutoSwitch) >= 45
+        else { return }
+
+        let available = AudioOutputs.availableNominalRates(device.id)
+        let target: Double
+        if case .hiRes = verdict, available.contains(96000) {
+            // Content proves it extends past the 44.1 family: worth 96.
+            target = 96000
+        } else if lossless {
+            // The bit-perfect path for the dominant lossless case (44.1).
+            target = 44100
+        } else {
+            // Lossy: back to whatever the user chose by hand.
+            target = manualRateHz ?? device.sampleRate
+        }
+        guard available.contains(target), device.sampleRate != target else { return }
+
+        lastAutoSwitch = Date()
+        DebugLog.shared.log(String(format:
+            "stream quality %@ — switching USB rate to %g kHz",
+            lossless ? "lossless-class" : "lossy", target / 1000))
+        setNominalRate(target, for: device)
     }
 
     private static let dayFormatter: DateFormatter = {

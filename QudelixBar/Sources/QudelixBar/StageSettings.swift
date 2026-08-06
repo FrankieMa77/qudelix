@@ -112,6 +112,13 @@ struct PersistedStageState: Codable {
     var exposure: [DayExposure] = []
     /// Level tracking without the Stage: metering-only tap, no audio path.
     var levelTracking = false
+    // Optionals so documents written before these existed still decode.
+    /// Stream-quality detection (spectral analysis of the tap).
+    var detectQuality: Bool?
+    /// Auto-match the USB rate to the detected quality class.
+    var autoRate: Bool?
+    /// The rate the user last picked by hand — where "lossy" returns to.
+    var manualRateHz: Double?
 }
 
 enum StageStateFile {
