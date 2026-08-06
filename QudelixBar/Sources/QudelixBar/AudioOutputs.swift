@@ -1,0 +1,174 @@
+import CoreAudio
+import Foundation
+
+struct AudioOutput: Identifiable, Hashable {
+    let id: AudioDeviceID
+    let uid: String
+    let name: String
+    let sampleRate: Double
+}
+
+/// Read-only queries against the Core Audio object tree, for the Mac-side
+/// audio features (Stage, Level). The 5K protocol never comes through here —
+/// as an output device the 5K is just another Core Audio device.
+enum AudioOutputs {
+    static func outputDevices() -> [AudioOutput] {
+        deviceIDs().compactMap { id in
+            guard outputChannelCount(id) > 0,
+                  let uid: String = stringProperty(id, kAudioDevicePropertyDeviceUID),
+                  let name: String = stringProperty(id, kAudioObjectPropertyName)
+            else { return nil }
+            return AudioOutput(id: id, uid: uid, name: name, sampleRate: nominalRate(id))
+        }
+    }
+
+    static func defaultOutputID() -> AudioDeviceID? {
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = address(kAudioHardwarePropertyDefaultOutputDevice)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &id) == noErr,
+              id != 0 else { return nil }
+        return id
+    }
+
+    /// The Core Audio process object for a pid, needed to exclude a process
+    /// from a tap.
+    static func processObject(for pid: pid_t) -> AudioObjectID? {
+        var pid = pid
+        var object = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var addr = address(kAudioHardwarePropertyTranslatePIDToProcessObject)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr,
+                                         UInt32(MemoryLayout<pid_t>.size), &pid,
+                                         &size, &object) == noErr,
+              object != kAudioObjectUnknown else { return nil }
+        return object
+    }
+
+    // MARK: Plumbing
+
+    private static func address(_ selector: AudioObjectPropertySelector,
+                                scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: scope,
+                                   mElement: kAudioObjectPropertyElementMain)
+    }
+
+    private static func deviceIDs() -> [AudioDeviceID] {
+        var addr = address(kAudioHardwarePropertyDevices)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var ids = [AudioDeviceID](repeating: 0,
+                                  count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &ids) == noErr
+        else { return [] }
+        return ids
+    }
+
+    private static func outputChannelCount(_ id: AudioDeviceID) -> Int {
+        var addr = address(kAudioDevicePropertyStreamConfiguration,
+                           scope: kAudioObjectPropertyScopeOutput)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
+              size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size),
+                                                   alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, raw) == noErr
+        else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    private static func nominalRate(_ id: AudioDeviceID) -> Double {
+        var addr = address(kAudioDevicePropertyNominalSampleRate)
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate) == noErr
+        else { return 48000 }
+        return rate
+    }
+
+    /// CoreAudio hands back a retained CFString, so it must go through
+    /// Unmanaged.
+    private static func stringProperty(_ id: AudioObjectID,
+                                       _ selector: AudioObjectPropertySelector) -> String? {
+        var addr = address(selector)
+        var ref: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &ref) == noErr,
+              let r = ref else { return nil }
+        return r.takeRetainedValue() as String
+    }
+}
+
+/// Keeps the output-device list and the system default output current.
+/// CoreAudio fires the listeners on any change; the debounce matters because
+/// a single Bluetooth connect surfaces as a burst of change events while the
+/// device's streams come up one by one.
+@MainActor
+final class OutputWatcher: ObservableObject {
+    @Published private(set) var devices: [AudioOutput] = []
+    @Published private(set) var defaultOutput: AudioOutput?
+
+    var onChange: (() -> Void)?
+
+    private var listeners: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+    private var debounce: DispatchWorkItem?
+
+    func start() {
+        guard listeners.isEmpty else { return }
+        refresh()
+
+        for selector in [kAudioHardwarePropertyDevices,
+                         kAudioHardwarePropertyDefaultOutputDevice] {
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                // Already on the main queue (registered below); hop through
+                // the actor to satisfy isolation.
+                Task { @MainActor in self?.scheduleRefresh() }
+            }
+            var addr = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                                &addr, .main, block)
+            listeners.append((addr, block))
+        }
+    }
+
+    /// Throttle, not debounce: re-arming on every event would let a flapping
+    /// device starve the refresh forever. One pending refresh at a time,
+    /// fired a beat after the first event of a burst.
+    private func scheduleRefresh() {
+        guard debounce == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.debounce = nil
+            self?.refresh()
+        }
+        debounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    #if DEBUG
+    func previewSetDevices(_ list: [AudioOutput], defaultUID: String?) {
+        devices = list
+        defaultOutput = list.first { $0.uid == defaultUID } ?? list.first
+    }
+    #endif
+
+    private func refresh() {
+        let fresh = AudioOutputs.outputDevices()
+        if fresh != devices { devices = fresh }
+        let defaultID = AudioOutputs.defaultOutputID()
+        let newDefault = fresh.first { $0.id == defaultID }
+        if newDefault != defaultOutput { defaultOutput = newDefault }
+        // Fire even when everything compares equal: a disconnect-reconnect
+        // that settles on identical entries still killed our aggregate, and
+        // the state machine needs the event to notice and recover.
+        onChange?()
+    }
+}

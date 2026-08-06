@@ -46,9 +46,10 @@ enum UIPreview {
 
         for (name, scheme) in [("light", NSAppearance(named: .aqua)),
                                ("dark", NSAppearance(named: .darkAqua))] {
-            for (pane, controller) in mocks() {
+            for (pane, controller, stage) in mocks() {
                 let root = PopoverView()
                     .environmentObject(controller)
+                    .environmentObject(stage)
                     .frame(width: 400)
                     .background(VisualEffectBackground())
 
@@ -90,9 +91,10 @@ enum UIPreview {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         for (name, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
-            for (pane, controller) in mocks() {
+            for (pane, controller, stage) in mocks() {
                 let view = PopoverView()
                     .environmentObject(controller)
+                    .environmentObject(stage)
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 
@@ -109,11 +111,67 @@ enum UIPreview {
     }
 
     @MainActor
-    private static func mocks() -> [(String, QudelixController)] {
-        [("eq", make(.equalizer)), ("presets", make(.presets)), ("import", make(.importing)),
-         ("tune", make(.tune)),
-         ("disconnected", disconnected()), ("unsupported", unsupported()),
-         ("b20", twentyBand())]
+    private static func mocks() -> [(String, QudelixController, StageState)] {
+        [("eq", make(.equalizer), stageMock()),
+         ("presets", make(.presets), stageMock()),
+         ("import", make(.importing), stageMock()),
+         ("tune", make(.tune), stageMock()),
+         ("stage", make(.stage), stageMock(running: true)),
+         ("level", make(.level), levelMock()),
+         ("disconnected", disconnected(), stageMock(running: true)),
+         ("unsupported", unsupported(), stageMock()),
+         ("b20", twentyBand(), stageMock())]
+    }
+
+    /// Stage pane state: the Movie preset active on the built-in speakers,
+    /// with a running engine so the pane shows its live face.
+    @MainActor
+    private static func stageMock(running: Bool = false) -> StageState {
+        let s = StageState()
+        var stage = StageSettings.movie
+        stage.enabled = running
+        s.previewSet(stage: stage, exposure: exposureMock(),
+                     currentDb: running ? -21 : nil)
+        s.watcher.previewSetDevices(
+            [AudioOutput(id: 1, uid: "mock-speakers",
+                         name: "MacBook Pro Speakers", sampleRate: 48000)],
+            defaultUID: "mock-speakers")
+        if running {
+            s.engine.previewSetRunning(true, status: "Stage active → MacBook Pro Speakers @ 48 kHz")
+        }
+        return s
+    }
+
+    /// Level pane state: tracking on, a live meter, and a week of history.
+    @MainActor
+    private static func levelMock() -> StageState {
+        let s = stageMock()
+        var stage = StageSettings()
+        stage.enabled = false
+        s.previewSet(stage: stage, exposure: exposureMock(),
+                     currentDb: -23, levelTracking: true)
+        s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
+        return s
+    }
+
+    @MainActor
+    private static func exposureMock() -> [DayExposure] {
+        // A believable fortnight, todays entry included so the pane shows
+        // both the live section and the history.
+        let today = StageState.dayKey()
+        let calendar = Calendar.current
+        var days: [DayExposure] = (1...7).reversed().compactMap { back in
+            guard let date = calendar.date(byAdding: .day, value: -back, to: Date())
+            else { return nil }
+            let seconds = [4100.0, 7900, 2400, 9800, 6300, 300, 5200][back - 1]
+            return DayExposure(day: StageState.dayKey(date),
+                               audibleSeconds: seconds,
+                               loudSeconds: seconds * [0.1, 0.4, 0, 0.55, 0.2, 0, 0.15][back - 1],
+                               energySum: seconds * 3e-3)
+        }
+        days.append(DayExposure(day: today, audibleSeconds: 4520,
+                                loudSeconds: 610, energySum: 4520 * 4.2e-3))
+        return days
     }
 
     @MainActor

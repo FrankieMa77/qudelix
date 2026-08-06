@@ -7,10 +7,14 @@ struct PopoverView: View {
     @State private var editingBand: Int?
 
     enum Pane: String, CaseIterable, Identifiable {
-        case equalizer = "Equalizer"
+        // "EQ", not "Equalizer": six segments share the popover's width now,
+        // and the long name is what the curve above it already says.
+        case equalizer = "EQ"
         case presets = "Presets"
         case importing = "Import"
         case tune = "Tune"
+        case stage = "Stage"
+        case level = "Level"
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -18,6 +22,16 @@ struct PopoverView: View {
             case .presets: return "square.stack"
             case .importing: return "arrow.down.circle"
             case .tune: return "ear"
+            case .stage: return "water.waves"
+            case .level: return "gauge.with.needle"
+            }
+        }
+        /// The Stage and Level features run on the Mac, not the 5K, so their
+        /// panes work with the device away.
+        var needsDevice: Bool {
+            switch self {
+            case .stage, .level: return false
+            default: return true
             }
         }
     }
@@ -55,11 +69,34 @@ struct PopoverView: View {
                     case .presets: PresetsView()
                     case .importing: ImportView()
                     case .tune: TuneView()
+                    case .stage: StageView()
+                    case .level: LevelView()
                     }
                 }
                 .padding(14)
             } else {
                 DisconnectedView()
+                // Stage and Level act on the Mac's own audio, so they stay
+                // reachable with the 5K away — an enabled stage must never
+                // need the device present to be switched off.
+                Divider()
+                VStack(spacing: 14) {
+                    Picker("", selection: $pane) {
+                        ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
+                            Label(p.rawValue, systemImage: p.icon).tag(p)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    if pane == .level {
+                        LevelView()
+                    } else {
+                        StageView()
+                    }
+                }
+                .padding(14)
+                .onAppear { if pane.needsDevice { pane = .stage } }
             }
 
             Divider()

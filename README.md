@@ -21,9 +21,13 @@ right.
 
 ## Screenshots
 
-| Equalizer | Presets | Import | Tune |
-|---|---|---|---|
-| ![Equalizer](docs/screenshots/equalizer.png) | ![Presets](docs/screenshots/presets.png) | ![Import](docs/screenshots/import.png) | ![Tune](docs/screenshots/tune.png) |
+| Equalizer | Presets | Import |
+|---|---|---|
+| ![Equalizer](docs/screenshots/equalizer.png) | ![Presets](docs/screenshots/presets.png) | ![Import](docs/screenshots/import.png) |
+
+| Tune | Stage | Level |
+|---|---|---|
+| ![Tune](docs/screenshots/tune.png) | ![Stage](docs/screenshots/stage.png) | ![Level](docs/screenshots/level.png) |
 
 ## Features
 
@@ -37,12 +41,17 @@ right.
   [AutoEq](https://github.com/jaakkopasanen/AutoEq) database (6,000+ headphones)
 - **Export** your EQ in the standard parametric format
 - **Tune** — find the EQ you actually prefer, by ear (see below)
+- **Stage** — a soundstage for headphones: width, crossfeed, dialogue lift and
+  room, applied on the Mac (see below)
+- **Level** — live output level and a 14-day listening history
 - **Diagnostics panel** logging every packet exchanged with the device
 
 Works over **USB or Bluetooth**. USB is used whenever the 5K is plugged in;
 otherwise the app controls the device over Bluetooth LE. Either way it only
 speaks to the 5K's control interface and never touches the audio path, so
-playback is unaffected.
+playback is unaffected. The one exception is opt-in: while the **Stage** is
+switched on, the Mac's audio is processed on its way to the output device
+(the 5K's own EQ still runs on the device, untouched).
 
 ## Install
 
@@ -65,7 +74,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.1.0.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.2.0.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -73,7 +82,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.1.0.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.2.0.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -146,6 +155,46 @@ hearing test in any medical sense — if you are worried about your hearing, see
 audiologist. And for most people with ordinary hearing the answer is "nothing to
 correct", which the app will tell you plainly rather than inventing a curve.
 
+## Stage
+
+Headphones put the band inside your head. The **Stage** tab spreads it back
+out: mid/side width with a brilliance shelf on the sides, an interaural
+crossfeed (each ear hears a delayed, darkened copy of the other channel — the
+cue that moves sound out of the skull), a mid-only dialogue lift, and sparse
+early reflections with a short diffuse tail. Presets for **Music**, **Movie**
+and **Theater**, plus geometry controls — Distance, Span, Center, Size — and a
+**Night** mode that evens out movie dynamics without touching dialogue.
+
+![Stage](docs/screenshots/stage.png)
+
+Unlike everything else in this app, the Stage runs on the Mac, not on the 5K:
+it processes what the Mac plays on its way to the output device, using a
+system audio tap (macOS asks once for the System Audio Recording permission;
+macOS 14.2+). The 5K keeps doing its own EQ on-device, so nothing is applied
+twice. Settings are kept per output device, and the whole pipeline exists only
+while the Stage is switched on — off means off, with the app back to being a
+pure remote control.
+
+Honesty notes, because this feature category is full of overpromising: it
+works on the stereo mix — it widens and rooms what is already there. Surround
+content stays downmixed, nothing tracks your head, and mono content (most
+YouTube speech) gives Width and Crossfeed nothing to work with — the pane
+tells you when that is what's playing rather than letting you hunt for a
+difference that cannot exist.
+
+## Level
+
+Live output level, time listened, and how much of it was loud — today and for
+the previous week, kept 14 days. Useful for the "why are my ears tired"
+conversation with yourself. Metering rides the Stage engine when it runs, or a
+listen-only tap (nothing inserted into the audio path) when you switch **Track
+listening levels** on by itself.
+
+Levels are digital signal level (dBFS), not sound pressure: the app cannot
+know your headphones' sensitivity or the 5K's analog volume, so it reports
+trends and durations honestly instead of pretending to be a dosimeter. Nothing
+is recorded and nothing leaves the Mac.
+
 ## Build from source
 
 ```sh
@@ -165,6 +214,11 @@ no third-party dependencies.
   AutoEq headphone list and the preset you choose. This happens when you open
   the Import pane, never at launch.
 - No telemetry, analytics, or crash reporting, and nothing is ever uploaded.
+- The Stage and Level features process audio in memory and write none of it
+  anywhere, ever. What is persisted — per-device stage settings and the daily
+  listening totals — lives in
+  `~/Library/Application Support/QudelixBar/stage.json`, alongside a small
+  `diag.txt` engine heartbeat for bug reports. Both are local files.
 - One local file is written, `~/Library/Logs/QudelixBar.log`, holding device
   packet traces. It is never transmitted. Since it records raw packet hex it
   includes the 5K's own Bluetooth address and any preset names stored on it, so

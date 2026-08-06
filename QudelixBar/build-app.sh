@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 APP=../Qudelix.app
 
 if [[ "${1:-}" == "--universal" ]]; then
@@ -44,6 +44,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key>                 <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>Qudelix can use Bluetooth LE to reach the Qudelix 5K.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>The Soundstage and Level features process the Mac's audio output. Nothing is recorded or stored.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Unofficial community app. Not affiliated with Qudelix, Inc.</string>
 </dict>
