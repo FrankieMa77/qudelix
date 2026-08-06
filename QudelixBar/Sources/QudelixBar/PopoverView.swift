@@ -351,7 +351,8 @@ struct UsbAudioRow: View {
                 }
                 // The picker above can only choose among rates the 5K's USB
                 // descriptor OFFERS; the device can pin itself to a single
-                // one. This menu changes the offering itself.
+                // one. This menu changes the offering itself — labelled with
+                // words, because an icon here reads as anything but "rates".
                 if let fsMode = controller.usbFsMode {
                     Menu {
                         Section("Rates the 5K offers over USB — changing "
@@ -371,16 +372,13 @@ struct UsbAudioRow: View {
                             }
                         }
                     } label: {
-                        Image(systemName: fsMode == 4
-                              ? "slider.horizontal.2.square"
-                              : "exclamationmark.lock")
+                        Text(fsMode == 4 ? "all rates" : Self.shortFsLabel(fsMode))
                             .font(.system(size: 10))
                             .foregroundStyle(fsMode == 4
                                              ? AnyShapeStyle(.secondary)
                                              : AnyShapeStyle(.orange))
                     }
                     .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
                     .fixedSize()
                     .help(fsMode == 4
                           ? "The 5K offers all rates over USB."
@@ -402,6 +400,12 @@ struct UsbAudioRow: View {
 
     private static func kHz(_ rate: Double) -> String {
         String(format: "%g", rate / 1000)
+    }
+
+    /// Compact form of the pinned modes for the menu label ("96 only").
+    private static func shortFsLabel(_ idx: Int) -> String {
+        let rates = ["44.1", "48", "88.2", "96"]
+        return idx < rates.count ? "\(rates[idx]) only" : "?"
     }
 }
 
