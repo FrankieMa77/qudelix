@@ -102,7 +102,10 @@ final class QualityAnalyzer {
         vDSP_vthr(magnitudes, 1, &floorVal, &magnitudes, 1, vDSP_Length(Self.fftSize / 2))
         var one: Float = 1
         var db = [Float](repeating: 0, count: Self.fftSize / 2)
-        vDSP_vdbcon(magnitudes, 1, &one, &db, 1, vDSP_Length(Self.fftSize / 2), 1)
+        // Flag 0 = POWER (10·log10): the input is magnitude-squared. Flag 1
+        // treats it as amplitude and doubles every dB in the pipeline —
+        // which silently doubles every threshold tuned against it.
+        vDSP_vdbcon(magnitudes, 1, &one, &db, 1, vDSP_Length(Self.fftSize / 2), 0)
         if windowsAveraged == 0 {
             averagedDb = db
         } else {
@@ -132,75 +135,83 @@ final class QualityAnalyzer {
         for i in bin(300)...bin(8000) {
             totalPower += pow(10, Double(averagedDb[i]) / 10)
         }
-        // Raw zrip/Hann-NORM FFT numbers sit ~104 dB above dBFS at this
-        // size (measured against known-RMS noise); calibrate so the gate
-        // means what it says.
-        let bandPowerDb = 10 * log10(max(totalPower, 1e-16)) - 104
+        // Raw zrip/Hann-NORM FFT numbers summed across the band sit ~79 dB
+        // above dBFS at this size (measured against known-RMS noise);
+        // calibrate so the gate means what it says.
+        let bandPowerDb = 10 * log10(max(totalPower, 1e-16)) - 79
         lastDebug = String(format: "bandPower=%.1f dBFS", bandPowerDb)
-        guard bandPowerDb > -60 else { return .tooQuiet }
+        guard bandPowerDb > -55 else { return .tooQuiet }
 
-        // Reference for the edge search: the 75th-percentile bin level in
-        // the 1–8 kHz band — near the real content level for both tonal
-        // material (peaks) and broadband material, unlike a median, which
-        // tonal music drags down into the gaps between harmonics.
+        // Reference: the 75th-percentile bin level in the 1–8 kHz band —
+        // near the real content level for both tonal and broadband material.
+        // Used only for the profile display and the nothing-up-here gate;
+        // real music tilts 40–80 dB from midband to treble, so no fixed
+        // offset from this reference can find the treble edge (field lesson).
         let refBins = Array(averagedDb[bin(1000)...bin(8000)]).sorted()
         let reference = refBins[(refBins.count * 3) / 4]
 
-        // The spectral edge: the highest frequency still within 40 dB of the
-        // reference, required to hold for a few consecutive bins so a lone
-        // noise spike can't fake extension.
-        let threshold = reference - 40
-        let searchTop = min(bin(sampleRate / 2 - 200), Self.fftSize / 2 - 1)
-        var edgeBin = 0
-        var run = 0
-        for i in stride(from: searchTop, through: bin(8000), by: -1) {
-            if averagedDb[i] > threshold {
-                run += 1
-                if run >= 4 { edgeBin = i + run - 1; break }
-            } else {
-                run = 0
+        // Coarse profile: max level in 250 Hz cells from 9 kHz up. All
+        // classification below works on this — max-hold cells are robust
+        // against the FFT's bin-to-bin variance.
+        let topHz = sampleRate / 2 - 200
+        var cells: [(kHz: Double, level: Float)] = []
+        var f = 9000.0
+        while f + 250 <= topHz {
+            var level: Float = -160
+            for i in bin(f)...bin(f + 250) { level = max(level, averagedDb[i]) }
+            cells.append((kHz: (f + 125) / 1000, level: level))
+            f += 250
+        }
+        guard cells.count > 8 else { return .noTreble }
+
+        // Diagnostic profile at fixed frequencies, reference-relative.
+        var profile = ""
+        for kHz in [10.0, 13, 16, 18, 19, 20, 21, 21.8] where kHz * 1000 < topHz {
+            if let cell = cells.last(where: { $0.kHz <= kHz }) {
+                profile += String(format: " %gk:%.0f", kHz, cell.level - reference)
             }
         }
-        guard edgeBin > 0 else { return .noTreble }
-        let edgeKHz = Double(edgeBin) * binHz / 1000
+        lastDebug += " ref-rel:" + profile
 
-        // Sharpness at the edge: mean level just below it vs just above it.
-        // A codec cutoff is a cliff into digital silence; a master's own
-        // roll-off keeps decaying gradually. Only measurable when there is
-        // spectrum left above the edge to look at.
-        var sharp = true
-        var dropDb: Float = 99
-        let aboveLo = edgeBin + Int(300 / binHz) + 1
-        let aboveHi = edgeBin + Int(1500 / binHz)
-        if aboveHi <= searchTop, aboveHi > aboveLo {
-            let belowLo = max(bin(1000), edgeBin - Int(1500 / binHz))
-            let belowHi = max(belowLo + 1, edgeBin - Int(300 / binHz))
-            var below: Float = 0
-            for i in belowLo...belowHi { below += averagedDb[i] }
-            below /= Float(belowHi - belowLo + 1)
-            var above: Float = 0
-            for i in aboveLo...aboveHi { above += averagedDb[i] }
-            above /= Float(aboveHi - aboveLo + 1)
-            dropDb = below - above
-            // Codec cliffs land in digital silence — 40+ dB down within
-            // this window. The steepest natural masters measure under ~30.
-            sharp = dropDb > 32
-        }
-        lastDebug += String(format: " edge=%.1fk drop=%.0f dB", edgeKHz, dropDb)
+        // Anchor: the low-treble level (9–11 kHz), the yardstick everything
+        // above it is judged against. If even that is buried, there is no
+        // treble to reason about.
+        let anchor = cells.prefix(8).map(\.level).max() ?? -160
+        guard anchor > reference - 40 else { return .noTreble }
 
-        // The device Nyquist clips what is observable: content can never
-        // extend past it, so "reaches the top" at a 44.1/48 device rate is
-        // still only "lossless-like", never "hi-res". And an edge BELOW any
-        // plausible codec cutoff isn't a codec at all — it's dark material
-        // (a quiet piano passage rolls off by 10 kHz on its own), which is
-        // honestly unjudgeable, not lossy.
-        if edgeKHz >= 22.5 { return .hiRes(cutoffKHz: edgeKHz) }
-        if edgeKHz >= 20.8 { return .losslessLike(cutoffKHz: edgeKHz) }
-        if edgeKHz < 14.5 { return .noTreble }
-        if sharp {
-            return edgeKHz < 18.5 ? .lossy(cutoffKHz: edgeKHz)
-                                  : .lossyHigh(cutoffKHz: edgeKHz)
+        // A codec cliff: ≥20 dB lost within one kHz, somewhere above 12 kHz.
+        // The steepest natural masters shed under ~15 dB/kHz; encoders drop
+        // into digital silence. Position separates the suspects — 320 kbps
+        // cuts by ~20 kHz, while 44.1 lossless played at a higher device
+        // rate shows its OWN legitimate cliff at the source Nyquist (~22 k).
+        var cliffKHz = 0.0
+        var cliffDrop: Float = 0
+        for i in 0..<(cells.count - 4) where cells[i].kHz >= 12 {
+            let drop = cells[i].level - cells[i + 4].level
+            if drop > cliffDrop {
+                cliffDrop = drop
+                cliffKHz = cells[i].kHz + 0.5
+            }
         }
-        return .natural(cutoffKHz: edgeKHz)
+        if cliffDrop >= 20 {
+            lastDebug += String(format: " cliff=%.1fk (%.0f dB)", cliffKHz, cliffDrop)
+            switch cliffKHz {
+            case ..<18.5: return .lossy(cutoffKHz: cliffKHz)
+            case ..<20.25: return .lossyHigh(cutoffKHz: cliffKHz)
+            case ..<22.5: return .losslessLike(cutoffKHz: cliffKHz)
+            default: return .hiRes(cutoffKHz: cliffKHz)
+            }
+        }
+
+        // No cliff: find where the content fades below the anchor by 35 dB.
+        // Fading only near the very top (or not at all) means nothing cut
+        // it; fading early is the master's own darkness.
+        let fadeKHz = cells.last(where: { $0.level > anchor - 35 })?.kHz ?? 0
+        lastDebug += String(format: " fade=%.1fk", fadeKHz)
+        let topKHz = topHz / 1000
+        if fadeKHz >= 22.5 { return .hiRes(cutoffKHz: fadeKHz) }
+        if fadeKHz >= min(20.9, topKHz - 0.5) { return .losslessLike(cutoffKHz: fadeKHz) }
+        if fadeKHz < 14.5 { return .noTreble }
+        return .natural(cutoffKHz: fadeKHz)
     }
 }
