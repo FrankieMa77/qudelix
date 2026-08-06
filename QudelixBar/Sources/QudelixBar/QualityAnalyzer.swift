@@ -27,9 +27,16 @@ final class QualityAnalyzer {
         case natural(cutoffKHz: Double)
 
         /// The lossy/lossless binary used for rate switching. nil = no vote.
+        ///
+        /// A cliff near the 20 kHz boundary abstains: the same physical
+        /// cliff measures a few hundred Hz differently at different device
+        /// rates, and a boundary-riding verdict that voted would ping-pong
+        /// the rate (observed live: 20.9 kHz at a 96 k device rate, 20.1 at
+        /// 44.1 — one cliff, two verdicts). Clear cases still vote.
         var isLosslessClass: Bool? {
             switch self {
-            case .lossy, .lossyHigh: return false
+            case .lossy: return false
+            case .lossyHigh(let k): return k < 19.7 ? false : nil
             case .losslessLike, .hiRes: return true
             case .tooQuiet, .noTreble, .natural: return nil
             }
