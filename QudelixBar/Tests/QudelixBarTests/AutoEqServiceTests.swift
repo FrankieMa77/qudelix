@@ -23,6 +23,17 @@ final class AutoEqServiceTests: XCTestCase {
                                   options: options)
     }
 
+    /// Two request bodies compared as JSON rather than as bytes: `JSONEncoder`
+    /// does not promise a stable key order between calls, and it is the request
+    /// that has to be identical, not the byte stream carrying it.
+    private func assertSameRequest(_ a: EqualizeRequest, _ b: EqualizeRequest,
+                                   _ why: String,
+                                   file: StaticString = #filePath,
+                                   line: UInt = #line) throws {
+        XCTAssertEqual(try json(a) as NSDictionary, try json(b) as NSDictionary, why,
+                       file: file, line: line)
+    }
+
     /// A response in the documented shape: shelf, peaks, shelf.
     private func fixture(filterCount: Int, preamp: Double = -6.7) -> Data {
         var filters = [#"{"type":"LOW_SHELF","fc":105.0,"q":0.7,"gain":5.526633896855957}"#]
@@ -128,6 +139,163 @@ final class AutoEqServiceTests: XCTestCase {
                                   options: CorrectionOptions(bassBoostGain: 4, tilt: -0.5)))
         XCTAssertEqual(tuned["bass_boost_gain"] as? Double, 4)
         XCTAssertEqual(tuned["tilt"] as? Double, -0.5)
+    }
+
+    // MARK: - Frequency ceiling
+
+    /// The ceiling is a request parameter: the optimizer fits inside it and
+    /// returns filters that already stop there. Nothing edits the response.
+    func testCeilingConstrainsTheOptimizerRequest() throws {
+        let root = try json(body(bandCount: 10,
+                                 options: CorrectionOptions(maxCorrectionHz: 12000)))
+        let config = try XCTUnwrap(root["parametric_eq_config"] as? [String: Any])
+        XCTAssertEqual((config["optimizer"] as? [String: Any])?["max_f"] as? Double, 12000)
+        XCTAssertEqual((config["filter_defaults"] as? [String: Any])?["max_fc"] as? Double, 12000)
+
+        // The pinned treble shelf has to stay inside the bound the same request
+        // declares, so it comes down with it.
+        let filters = try XCTUnwrap(config["filters"] as? [[String: Any]])
+        XCTAssertEqual(filters.last?["type"] as? String, "HIGH_SHELF")
+        XCTAssertEqual(filters.last?["fc"] as? Double, 10000, "10 kHz is already under 12 kHz")
+
+        let low = try json(body(bandCount: 10,
+                                options: CorrectionOptions(maxCorrectionHz: 9000)))
+        let lowFilters = try XCTUnwrap(
+            (low["parametric_eq_config"] as? [String: Any])?["filters"] as? [[String: Any]])
+        XCTAssertEqual(lowFilters.last?["fc"] as? Double, 9000)
+    }
+
+    /// Everything that isn't a real ceiling must leave the request exactly as
+    /// it has always been sent.
+    func testRequestWithoutACeilingIsUnchanged() throws {
+        let root = try json(body(bandCount: 10))
+        let config = try XCTUnwrap(root["parametric_eq_config"] as? [String: Any])
+        XCTAssertEqual((config["optimizer"] as? [String: Any])?["max_f"] as? Double, 20000)
+        XCTAssertEqual((config["filter_defaults"] as? [String: Any])?["max_fc"] as? Double, 16000)
+        let filters = try XCTUnwrap(config["filters"] as? [[String: Any]])
+        XCTAssertEqual(filters.last?["fc"] as? Double, 10000)
+
+        for absent: Double? in [nil, .nan, .infinity, -.infinity] {
+            try assertSameRequest(body(bandCount: 10,
+                                       options: CorrectionOptions(maxCorrectionHz: absent)),
+                                  body(bandCount: 10),
+                                  "\(String(describing: absent)) is not a ceiling")
+        }
+    }
+
+    func testCeilingIsClampedIntoSomethingSendable() {
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+        func ceiling(_ hz: Double?) -> Double? {
+            CorrectionOptions(maxCorrectionHz: hz).correctionCeiling(for: limits)
+        }
+        XCTAssertEqual(ceiling(16400), 16400)
+        // Never above what the device can even address.
+        XCTAssertEqual(ceiling(25000), limits.maxFc)
+        XCTAssertEqual(ceiling(.greatestFiniteMagnitude), limits.maxFc)
+        // A wild verdict must not produce a nonsense request.
+        XCTAssertEqual(ceiling(500), CorrectionOptions.minCorrectionHz)
+        XCTAssertEqual(ceiling(0), CorrectionOptions.minCorrectionHz)
+        XCTAssertEqual(ceiling(-1000), CorrectionOptions.minCorrectionHz)
+        // Non-finite has no intention behind it to honour.
+        XCTAssertNil(ceiling(.nan))
+        XCTAssertNil(ceiling(.infinity))
+        XCTAssertNil(ceiling(nil))
+    }
+
+    /// A ceiling above the device's own top is the same request as no ceiling —
+    /// not a licence to raise any other bound.
+    func testCeilingAboveTheDeviceMaxSendsTheUnrestrictedRequest() throws {
+        try assertSameRequest(body(bandCount: 10,
+                                   options: CorrectionOptions(maxCorrectionHz: 48000)),
+                              body(bandCount: 10),
+                              "clamped to the device's own 20 kHz")
+    }
+
+    func testAbsurdlyLowCeilingLandsOnTheFloor() throws {
+        let root = try json(body(bandCount: 10,
+                                 options: CorrectionOptions(maxCorrectionHz: 200)))
+        let config = try XCTUnwrap(root["parametric_eq_config"] as? [String: Any])
+        XCTAssertEqual((config["optimizer"] as? [String: Any])?["max_f"] as? Double,
+                       CorrectionOptions.minCorrectionHz)
+        XCTAssertEqual((config["filter_defaults"] as? [String: Any])?["max_fc"] as? Double,
+                       CorrectionOptions.minCorrectionHz)
+        // The fit still starts where it always did.
+        XCTAssertEqual((config["optimizer"] as? [String: Any])?["min_f"] as? Double, 20)
+    }
+
+    /// Two curves fitted to different ceilings are different curves, so the
+    /// stale-fallback cache must not hand one back for the other.
+    @MainActor
+    func testCeilingedRequestDoesNotReuseAnUnrestrictedFit() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        stub.enqueue(.failure(URLError(.timedOut)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+
+        _ = try await service.correction(
+            for: candidate, shapedFor: limits,
+            options: CorrectionOptions(target: "Harman over-ear 2018"))
+        do {
+            _ = try await service.correction(
+                for: candidate, shapedFor: limits,
+                options: CorrectionOptions(target: "Harman over-ear 2018",
+                                           maxCorrectionHz: 16400))
+            XCTFail("expected the failure to surface")
+        } catch {
+            guard case CorrectionError.offline = error else {
+                return XCTFail("expected .offline, got \(error)")
+            }
+        }
+    }
+
+    /// A curve that stops at 16 kHz must never look like a mystery later.
+    @MainActor
+    func testAppliedCeilingIsNamedInTheProvenance() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let result = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10),
+            options: CorrectionOptions(target: "Harman over-ear 2018",
+                                       maxCorrectionHz: 16400))
+        XCTAssertTrue(result.provenance.contains("16.4 kHz"), result.provenance)
+
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let plain = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10),
+            options: CorrectionOptions(target: "Harman over-ear 2018"))
+        XCTAssertFalse(plain.provenance.contains("kHz"), plain.provenance)
+    }
+
+    /// The published-preset path can't honour a ceiling — the fit happened at
+    /// publication time — so it has to say so rather than drop it silently.
+    /// The wording is checked without a download; `correction(for:…)` appends
+    /// exactly this string.
+    func testPublishedPresetReportsAnUnhonouredCeiling() throws {
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+        let warning = try XCTUnwrap(AutoEqIndex.ceilingWarning(
+            for: CorrectionOptions(maxCorrectionHz: 16400), limits: limits))
+        XCTAssertTrue(warning.contains("16.4 kHz"), warning)
+        XCTAssertTrue(warning.contains("not applied"), warning)
+
+        XCTAssertNil(AutoEqIndex.ceilingWarning(for: CorrectionOptions(), limits: limits))
+        XCTAssertNil(AutoEqIndex.ceilingWarning(
+            for: CorrectionOptions(maxCorrectionHz: .nan), limits: limits))
+        // Reported as what was actually sent, not as what was asked for.
+        let clamped = try XCTUnwrap(AutoEqIndex.ceilingWarning(
+            for: CorrectionOptions(maxCorrectionHz: 100), limits: limits))
+        XCTAssertTrue(clamped.contains("8.0 kHz"), clamped)
+    }
+
+    func testCeilingIsSpelledWithOneDecimal() {
+        XCTAssertEqual(CorrectionOptions.describeCeiling(16400), "16.4 kHz")
+        XCTAssertEqual(CorrectionOptions.describeCeiling(16000), "16.0 kHz")
+        XCTAssertEqual(CorrectionOptions.describeCeiling(19_512.7), "19.5 kHz")
     }
 
     func testTwoBandDeviceStillGetsExactlyTwoFilters() {

@@ -360,6 +360,22 @@ final class AutoEqIndex: ObservableObject {
 extension AutoEqIndex: CorrectionSource {
     var displayName: String { "AutoEq published preset" }
 
+    /// Why a requested frequency ceiling went unhonoured, or nil when none was
+    /// asked for.
+    ///
+    /// A published file was fitted once, for everyone, long before this
+    /// request; there is no optimizer run here to constrain. Saying so is the
+    /// only honest answer — dropping the request quietly would leave the user
+    /// believing the curve stops where they asked it to. Separate from the
+    /// download so the wording can be checked without one.
+    nonisolated static func ceilingWarning(for options: CorrectionOptions,
+                                           limits: DeviceEQLimits) -> String? {
+        guard let ceiling = options.correctionCeiling(for: limits) else { return nil }
+        return "the \(CorrectionOptions.describeCeiling(ceiling)) limit was not applied — "
+            + "a published preset is fitted at publication time; "
+            + "use “Fit to my device” to have the correction stop there"
+    }
+
     func prepare() { loadIfNeeded() }
 
     func search(_ query: String) -> [CorrectionCandidate] {
@@ -382,6 +398,9 @@ extension AutoEqIndex: CorrectionSource {
         }
 
         var warnings: [String] = []
+        if let unhonoured = Self.ceilingWarning(for: options, limits: limits) {
+            warnings.append(unhonoured)
+        }
         let reshaped = file.bands.prefix(limits.bandCount).filter { !limits.admits($0) }.count
         if reshaped > 0 {
             warnings.append("\(reshaped) band(s) fall outside what the device accepts and will be clamped")

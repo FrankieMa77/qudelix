@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
 /// AutoEq's optimizer for a correction fitted to this device's own limits.
 struct ImportView: View {
     @EnvironmentObject var controller: QudelixController
+    /// Read for one thing only: the live quality verdict, which is what the
+    /// frequency-ceiling offer below is pre-filled from.
+    @EnvironmentObject var stageState: StageState
 
     /// The published-preset path (also the search box's text holder, so the
     /// DEBUG preview seeding keeps working unchanged).
@@ -17,6 +20,10 @@ struct ImportView: View {
     @State private var bassBoost: Double = 0
     @State private var tilt: Double = 0
     @State private var applying: String?
+    /// Deliberately plain `@State`, never `@AppStorage`: it describes what is
+    /// playing at this moment, not a preference. Remembering it across launches
+    /// would silently apply one evening's stream to next month's corrections.
+    @State private var limitToSourceCutoff = false
 
     /// Which correction source the results list is showing.
     private enum Mode { case optimized, published }
@@ -86,6 +93,8 @@ struct ImportView: View {
 
             if mode == .optimized { personalization }
 
+            sourceCutoffOffer
+
             switch mode {
             case .optimized: optimizedSection
             case .published: publishedSection
@@ -134,6 +143,59 @@ struct ImportView: View {
                         .buttonStyle(.link).font(.system(size: 9))
                 }
             }
+        }
+    }
+
+    // MARK: - Frequency ceiling
+
+    /// The cutoff the live verdict is reporting, in Hz, or nil when it isn't
+    /// reporting one that could inform a correction.
+    ///
+    /// Only the two lossy verdicts carry a cutoff worth acting on. Everything
+    /// else — lossless, hi-res, a natural roll-off, too quiet to judge, or no
+    /// verdict at all because detection is off or the engine isn't running —
+    /// has nothing to say about where a correction should stop.
+    private var detectedCutoffHz: Double? {
+        let kHz: Double
+        switch stageState.qualityVerdict {
+        case .lossy(let k), .lossyHigh(let k): kHz = k
+        default: return nil
+        }
+        guard kHz.isFinite else { return nil }
+        let hz = kHz * 1000
+        // A cliff at the top of the audible band constrains nothing; offering
+        // to "limit" a correction to 20 kHz would be offering a no-op.
+        guard hz >= CorrectionOptions.minCorrectionHz, hz < 20000 else { return nil }
+        return hz
+    }
+
+    /// What the apply below actually sends: nil unless the user ticked the box
+    /// *and* the verdict still carries a cutoff.
+    private var requestedCeilingHz: Double? {
+        limitToSourceCutoff ? detectedCutoffHz : nil
+    }
+
+    /// Shown only when there is a real cutoff to offer, and unticked when it
+    /// appears. There is no disabled or "unknown" version of this control: a
+    /// greyed-out box invites the user to wonder what it would have said, and
+    /// the answer is nothing.
+    @ViewBuilder
+    private var sourceCutoffOffer: some View {
+        if let hz = detectedCutoffHz {
+            Toggle(isOn: $limitToSourceCutoff) {
+                Text("Limit correction to \(CorrectionOptions.describeCeiling(hz)) — what's playing now stops there")
+                    .font(.system(size: 10))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .help("""
+                Boosting above where the source stops amplifies the codec's own \
+                artefacts, and the pre-gain it costs is taken off the whole band. \
+                This measures what is playing right now, while the correction you \
+                write is permanent — worth ticking only if most of what you listen \
+                to is limited like this.
+                """)
         }
     }
 
@@ -260,9 +322,13 @@ struct ImportView: View {
 
     private func apply(_ candidate: CorrectionCandidate) {
         let source = activeSource
+        // The ceiling goes to both sources. The published path can't honour it
+        // and says so; suppressing it here would replace an explicit warning
+        // with a silent difference between the two modes.
         let options = mode == .optimized
-            ? CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt)
-            : CorrectionOptions()
+            ? CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt,
+                                maxCorrectionHz: requestedCeilingHz)
+            : CorrectionOptions(maxCorrectionHz: requestedCeilingHz)
         applying = candidate.id
         Task {
             defer { applying = nil }

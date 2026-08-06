@@ -48,6 +48,44 @@ struct CorrectionOptions: Equatable {
     var tilt: Double = 0
     /// nil lets the source pick the target its measurement is recommended for.
     var target: String?
+
+    /// Upper frequency the correction should be fitted over, in Hz, or nil for
+    /// the device's full range.
+    ///
+    /// This exists because a source that stops at 16 kHz makes everything above
+    /// it a bad investment: a boost up there amplifies the codec's own
+    /// artefacts, and it is paid for with pre-gain across the *whole* band. It
+    /// is deliberately never set automatically — a correction written to the
+    /// device outlives whatever happened to be playing when the cutoff was
+    /// measured, so the choice belongs to the user.
+    ///
+    /// It constrains the *request*: the optimizer fits inside it and returns
+    /// filters that already stop there. Nothing filters the response.
+    var maxCorrectionHz: Double?
+}
+
+extension CorrectionOptions {
+    /// Lowest ceiling worth sending. Below this a "correction" is a tone
+    /// control, and no cutoff a codec produces lands here — a figure this low
+    /// means the measurement went wrong, not that the music stops at 5 kHz.
+    static let minCorrectionHz: Double = 8000
+
+    /// The requested ceiling made safe for this device, or nil for none.
+    ///
+    /// Non-finite is treated as absent rather than clamped: NaN has no
+    /// intention behind it to honour. Everything else is pulled into
+    /// [`minCorrectionHz`, device max] so a wild verdict cannot turn into a
+    /// nonsense request.
+    func correctionCeiling(for limits: DeviceEQLimits) -> Double? {
+        guard let asked = maxCorrectionHz, asked.isFinite else { return nil }
+        return min(max(asked, Self.minCorrectionHz), limits.maxFc)
+    }
+
+    /// How a ceiling is written wherever a user reads it. One decimal: the
+    /// measurement is not precise enough to justify a second.
+    static func describeCeiling(_ hz: Double) -> String {
+        String(format: "%.1f kHz", hz / 1000)
+    }
 }
 
 /// One thing a user can pick out of a correction source's catalogue.
@@ -517,28 +555,39 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     /// Exactly `bandCount` filters, shaped the way AutoEq's own presets are: a
     /// bass shelf, a treble shelf, and peaks in between. Asking for the device's
     /// band count is what removes the clamping step later.
-    nonisolated static func deviceFilters(bandCount: Int) -> [FilterSpec] {
+    /// `ceiling`, when given, moves the pinned treble shelf down with it: the
+    /// shelf's `fc` has to stay inside `filter_defaults`, and a shelf pinned
+    /// above the bound the same request declares is a rejected request.
+    nonisolated static func deviceFilters(bandCount: Int,
+                                          ceiling: Double? = nil) -> [FilterSpec] {
         let n = max(1, bandCount)
         guard n >= 3 else {
             return Array(repeating: FilterSpec(type: .peaking), count: n)
         }
+        let treble = min(highShelfFc, ceiling ?? highShelfFc)
         return [FilterSpec(type: .lowShelf, fc: lowShelfFc, q: shelfQ)]
             + Array(repeating: FilterSpec(type: .peaking), count: n - 2)
-            + [FilterSpec(type: .highShelf, fc: highShelfFc, q: shelfQ)]
+            + [FilterSpec(type: .highShelf, fc: treble, q: shelfQ)]
     }
 
-    nonisolated static func config(for limits: DeviceEQLimits) -> ParametricEQConfig {
-        ParametricEQConfig(
-            optimizer: OptimizerConfig(minF: limits.minFc, maxF: limits.maxFc,
+    /// A ceiling can only ever tighten this config. `maxFilterFc` already keeps
+    /// filter centres below the range the fit covers, and a ceiling asking for
+    /// something *higher* than an existing bound is not a reason to relax it.
+    nonisolated static func config(for limits: DeviceEQLimits,
+                                   ceiling: Double? = nil) -> ParametricEQConfig {
+        let fitTop = min(limits.maxFc, ceiling ?? limits.maxFc)
+        let centreTop = min(limits.maxFc, limits.maxFilterFc, ceiling ?? limits.maxFc)
+        return ParametricEQConfig(
+            optimizer: OptimizerConfig(minF: limits.minFc, maxF: fitTop,
                                        maxTime: optimizerMaxTime, minStd: optimizerMinStd),
             filterDefaults: FilterDefaults(
                 minFc: limits.minFc,
-                maxFc: min(limits.maxFc, limits.maxFilterFc),
+                maxFc: centreTop,
                 minQ: max(limits.minQ, minFittedQ),
                 maxQ: min(limits.maxQ, maxFittedQ),
                 minGain: limits.minGain,
                 maxGain: limits.maxGain),
-            filters: deviceFilters(bandCount: limits.bandCount))
+            filters: deviceFilters(bandCount: limits.bandCount, ceiling: centreTop))
     }
 
     nonisolated static func requestBody(model: String, source: String, rig: String?, target: String,
@@ -551,7 +600,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             // and the server matches on the exact string.
             rig: rig,
             target: target,
-            parametricEqConfig: config(for: limits),
+            parametricEqConfig: config(for: limits,
+                                       ceiling: options.correctionCeiling(for: limits)),
             // Zero means "the target as published"; sending an explicit zero
             // would still be a request to flatten the target's own bass.
             bassBoostGain: options.bassBoostGain == 0 ? nil : options.bassBoostGain,
@@ -670,8 +720,13 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     nonisolated private static func cacheKey(model: String, source: String, rig: String?,
                                              target: String, limits: DeviceEQLimits,
                                              options: CorrectionOptions) -> String {
+        // The ceiling belongs in the key: a curve fitted to 16 kHz is a
+        // different curve, and serving it back for an unrestricted request
+        // would be handing over a fit the caller didn't ask for.
         [model, source, rig ?? "", target, String(limits.bandCount),
-         String(options.bassBoostGain), String(options.tilt)].joined(separator: "\u{1}")
+         String(options.bassBoostGain), String(options.tilt),
+         options.correctionCeiling(for: limits).map { String($0) } ?? ""]
+            .joined(separator: "\u{1}")
     }
 
     // MARK: CorrectionSource
@@ -690,8 +745,13 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         var resolved = options
         resolved.target = chosen
 
+        // Say the ceiling out loud, and say the one that was actually sent
+        // rather than the one that was asked for. Months later, a curve that
+        // stops at 16 kHz must not look like a defect.
+        let ceiling = resolved.correctionCeiling(for: limits)
         let provenance = "\(candidate.title) · \(candidate.detail) → \(chosen)"
             + " · \(limits.bandCount) bands"
+            + (ceiling.map { " · fitted up to \(CorrectionOptions.describeCeiling($0))" } ?? "")
         do {
             let (file, warnings) = try await equalize(model: candidate.title,
                                                       source: candidate.source,
