@@ -592,6 +592,25 @@ final class QudelixController: ObservableObject {
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
     }
 
+    /// Switch the device between its 10-band and 20-band EQ modes. The two
+    /// modes are separate EQ groups with separate presets, so the curve
+    /// changes completely — that is the device's design, not a bug here.
+    ///
+    /// Deliberately NOT optimistic: `eqGroup` re-targets only when the
+    /// device confirms the flip through its config notification (the same
+    /// path that follows a switch made in any other app), so the band table
+    /// can never disagree with what the hardware is actually running.
+    func setEqMode(twentyBand: Bool) {
+        guard canWrite else { return }
+        let desired: QxEqGroup = twentyBand ? .b20 : .user
+        guard desired != eqGroup else { return }
+        DebugLog.shared.log("requesting EQ mode → \(twentyBand ? "20-band" : "10-band")")
+        transportSend(.setEqMode, [twentyBand ? 1 : 0])
+        // The device pushes the config change; also ask, in case the push
+        // is lost — a silently ignored click is the worst outcome here.
+        transportSend(.reqDevConfig, [QxConfigMask.sys])
+    }
+
     func loadPreset(_ index: Int) {
         guard canWrite, (0..<Self.presetCount).contains(index) else { return }
         activePreset = index

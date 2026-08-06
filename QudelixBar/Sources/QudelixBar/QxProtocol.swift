@@ -40,6 +40,7 @@ enum QxCmd: UInt16 {
     case setEqPresetName  = 0x070A
     case reqEqPresetName  = 0x070B  // [presetIndex]
     case rspEqPresetName  = 0x070C
+    case setEqMode        = 0x070E  // [mode]: 0 = usr/spk (10-band), 1 = b20 (20-band)
     case setEqBandParam   = 0x070F  // [group, chMask, band, filter, freqHi, freqLo, gainHi, gainLo, qHi, qLo]
     case setEqMute        = 0x0710
     case reqEqData        = 0x0750

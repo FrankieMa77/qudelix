@@ -34,7 +34,8 @@ right.
 - **Live device status** — battery, charging, firmware, sample rate, input source
 - **Volume** control with mute
 - **10-band parametric EQ** editor: filter type, frequency, gain, Q, plus pre-gain
-- **20-band mode** — follows whichever EQ mode the device is in
+- **20-band mode** — switch between 10 and 20 bands from the EQ pane; the app
+  also follows a switch made anywhere else
 - **Live response curve** showing the combined filter shape
 - **20 preset slots**, loaded and saved by name
 - **Preset import** from a file, or from the

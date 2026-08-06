@@ -327,7 +327,22 @@ struct EqEditorView: View {
 
             HStack {
                 Button("Flatten") { controller.flatten() }
-                Text("\(controller.bandCount)-band")
+                // Reflects the device's mode and asks it to switch; the
+                // selection only moves once the device confirms, so a brief
+                // lag after clicking is the round trip, not a lost click.
+                Picker("", selection: Binding(
+                    get: { controller.eqGroup == .b20 },
+                    set: { controller.setEqMode(twentyBand: $0) })) {
+                    Text("10").tag(false)
+                    Text("20").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+                .frame(width: 76)
+                .help("EQ bands. The two modes keep separate presets, so "
+                      + "switching changes the active curve.")
+                Text("bands")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                 Spacer()
