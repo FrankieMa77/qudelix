@@ -13,8 +13,7 @@ struct QxDeviceState {
     /// On firmware 3.x the *command encoding* is identical for both — the
     /// official app picks its encoding on `isV2` (firmware 2.x), not on band
     /// count. 20-band differs only in EQ group (2 = b20), band count (20), the
-    /// default frequency table, and the preset read-back layout. It is simply
-    /// not implemented here yet; this app always targets group 0.
+    /// default frequency table, and the preset read-back layout.
     var eqMode: Int?
     var batteryPercent: Int?
     var batteryMilliVolts: Int?
@@ -30,6 +29,11 @@ struct QxDeviceState {
     var eqEnabled: Bool?
     var eqPresetIdx: Int?
     var presetNameMask: Int = 0    // 20 bits — slots with saved names
+    /// Which EQ group the three fields above describe (the eq config block
+    /// carries the active group's byte: 0 = usr, 2 = b20). Consumers must
+    /// check it — a 10-band mask read against 20-band mode names the wrong
+    /// slots.
+    var eqCfgGroup: Int?
     var dacOutPwr2Vrms = false     // +6 dB headroom when true
     var dacFilterType: Int?
 }
@@ -154,8 +158,13 @@ enum QxStatusParser {
         if mask & QxConfigMask.eq != 0, d.count > off {
             // fw >= 3: [group byte] + groupCfg(4) + presetNameCfg(4);
             // if group == usr(0), the spk group follows in the same block.
+            // The device sends the block for whichever group its eq_mode
+            // makes active — usr(0) in 10-band mode, b20(2) in 20-band —
+            // so both are taken, tagged with eqCfgGroup for the consumer.
             let group = d[off]; off += 1
-            off += parseEqGroupCfg(d, at: off, into: &state, applies: group == 0)
+            let applies = group == 0 || group == 2
+            if applies { state.eqCfgGroup = Int(group) }
+            off += parseEqGroupCfg(d, at: off, into: &state, applies: applies)
             if group == 0, d.count > off {
                 off += 1  // spk group byte
                 off += parseEqGroupCfg(d, at: off, into: &state, applies: false)

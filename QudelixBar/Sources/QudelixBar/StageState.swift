@@ -56,14 +56,20 @@ final class StageState: ObservableObject {
         if let saved = StageStateFile.load() {
             stageByDevice = saved.stageByDevice.mapValues { $0.clamped() }
             levelTracking = saved.levelTracking
-            exposureDays = saved.exposure.map { day in
-                // The file is user-writable: clamp what comes off it so a
-                // hand-edited value can't trap Int() in the Level pane.
+            // The file is user-writable: clamp what comes off it so a
+            // hand-edited value can't trap Int() in the Level pane, drop
+            // duplicate day keys (ForEach identity), and apply the 14-day
+            // cap here too — the append path's trim never sees a file that
+            // arrived oversized.
+            var seenDays = Set<String>()
+            exposureDays = Array(saved.exposure.map { day in
                 DayExposure(day: String(day.day.prefix(10)),
                             audibleSeconds: min(max(day.audibleSeconds, 0), 172_800),
                             loudSeconds: min(max(day.loudSeconds, 0), 172_800),
                             energySum: min(max(day.energySum, 0), 1e12))
             }
+            .filter { seenDays.insert($0.day).inserted }
+            .suffix(14))
         }
     }
 
@@ -71,6 +77,15 @@ final class StageState: ObservableObject {
         guard !started else { return }
         started = true
         watcher.onChange = { [weak self] in self?.outputsChanged() }
+        // The output's sample rate changed under a running engine: every
+        // coefficient is designed for the old rate, so restart on fresh
+        // device info. The refresh re-enumerates and lands in
+        // outputsChanged → reconcile, which brings the engine back up.
+        engine.onDeviceConfigurationChange = { [weak self] in
+            guard let self, self.engine.isRunning else { return }
+            self.engine.stop()
+            self.watcher.refreshNow()
+        }
         watcher.start()
         outputsChanged()
         startMetering()
@@ -122,17 +137,32 @@ final class StageState: ObservableObject {
         }
     }
 
+    /// The last default output seen, to tell a device *change* from a device
+    /// *appearing* after a spell with none.
+    private var lastOutputUID: String?
+
     /// The default output changed, or the device list did. The stage follows
     /// the default output, so per-device settings swap with it.
     private func outputsChanged() {
         let uid = outputUID
         if let uid {
-            let deviceStage = stageByDevice[uid] ?? StageSettings()
-            if !deviceStage.audiblyEquals(stage) || deviceStage.enabled != stage.enabled {
-                stage = deviceStage
-                engine.processor.applyStage(stage)
+            if lastOutputUID == nil, stageByDevice[uid] == nil,
+               stage.enabled || stage.doesAnything {
+                // Edits made while NO output existed have no device key.
+                // A device appearing must adopt them, not silently discard
+                // them — but only onto a device with no saved profile of
+                // its own.
+                stageByDevice[uid] = stage
+                scheduleSave()
+            } else {
+                let deviceStage = stageByDevice[uid] ?? StageSettings()
+                if !deviceStage.audiblyEquals(stage) || deviceStage.enabled != stage.enabled {
+                    stage = deviceStage
+                    engine.processor.applyStage(stage)
+                }
             }
         }
+        lastOutputUID = uid
 
         // A disconnect-reconnect can settle on the same default output while
         // still having killed our aggregate's sub-device; the running check
@@ -206,9 +236,13 @@ final class StageState: ObservableObject {
         diagTicks += 1
         if diagTicks % 15 == 0, !persistenceDisabled {
             let d = engine.processor.renderDiagnostics()
-            let content = "running=\(engine.isRunning) status=\"\(engine.status)\" "
+            // Sanitized like every other log path: the status line carries
+            // the output device's name, which for Bluetooth is a
+            // radio-supplied string — a newline in it forges heartbeat lines.
+            let content = DebugLog.sanitized(
+                "running=\(engine.isRunning) status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
-                + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room))"
+                + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room))")
             if engine.isRunning || content != lastDiagContent {
                 lastDiagContent = content
                 let line = Self.diagFormatter.string(from: Date()) + " " + content + "\n"
@@ -216,11 +250,15 @@ final class StageState: ObservableObject {
                 // Append, keep the tail: the history between two snapshots is
                 // exactly what a "worked then, broken now" hunt needs.
                 DispatchQueue.global(qos: .utility).async {
-                    let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                    let existing = Self.readDiagTail(url)
                     let kept = existing.split(separator: "\n").suffix(200)
                         .joined(separator: "\n")
                     try? (kept + (kept.isEmpty ? "" : "\n") + line)
                         .write(to: url, atomically: true, encoding: .utf8)
+                    // Device names are personal data; same posture as the
+                    // packet log.
+                    try? FileManager.default.setAttributes(
+                        [.posixPermissions: 0o600], ofItemAtPath: url.path)
                 }
             }
         }
@@ -273,8 +311,27 @@ final class StageState: ObservableObject {
         }
     }
 
+    /// The diag file is ours, but a symlink could be planted at its path and
+    /// `String(contentsOf:)` would follow it into an arbitrarily large file.
+    /// Refuse symlinks and cap the read; oversized or unreadable starts fresh.
+    private nonisolated static func readDiagTail(_ url: URL) -> String {
+        let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return open(path, O_RDONLY | O_NOFOLLOW)
+        }
+        guard fd >= 0 else { return "" }
+        defer { close(fd) }
+        var data = Data(count: 256 * 1024)
+        let n = data.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+        guard n > 0 else { return "" }
+        return String(data: data.prefix(n), encoding: .utf8) ?? ""
+    }
+
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
+        // POSIX-pinned: a non-Gregorian system calendar would otherwise
+        // change the keys and split every day's history in two.
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()

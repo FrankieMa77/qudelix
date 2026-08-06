@@ -22,6 +22,15 @@ final class BatteryAlerts: NSObject {
     private static let canNotify = Bundle.main.bundleIdentifier != nil
         && Bundle.main.bundleURL.pathExtension == "app"
 
+    /// Call when a connection episode ends. The low/very-low latches
+    /// deliberately survive (a Bluetooth blip must not re-announce the same
+    /// low battery), but the charging-edge sentinel must not compare across
+    /// the gap: the device may well have been put on a charger while away,
+    /// and announcing that hours later as "started charging" is wrong.
+    func connectionReset() {
+        wasCharging = nil
+    }
+
     /// Feed every battery/charging update through here; cheap when nothing
     /// changed. Latches survive brief disconnects on purpose — a Bluetooth
     /// blip must not re-announce the same low battery.

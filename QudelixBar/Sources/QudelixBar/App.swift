@@ -1,8 +1,21 @@
 import AppKit
 import SwiftUI
 
+/// The debounced saves and the 30-second exposure cadence assume someone
+/// flushes the remainder at the end; without this hook, quitting always
+/// discarded the last half-minute of listening history and any edit made in
+/// the final half-second.
+@MainActor
+final class QuitFlushDelegate: NSObject, NSApplicationDelegate {
+    var onTerminate: (() -> Void)?
+    func applicationWillTerminate(_ notification: Notification) {
+        onTerminate?()
+    }
+}
+
 @main
 struct QudelixBarApp: App {
+    @NSApplicationDelegateAdaptor(QuitFlushDelegate.self) private var quitDelegate
     @StateObject private var controller = QudelixController()
     /// App-owned, not popover-owned: the stage engine and the exposure meter
     /// must survive the popover closing.
@@ -39,6 +52,9 @@ struct QudelixBarApp: App {
                     started = true
                     controller.start()
                     stageState.start()
+                    quitDelegate.onTerminate = { [weak stageState] in
+                        stageState?.saveNow()
+                    }
                 }
             }
             .onChange(of: trayTooltip, initial: true) { _, tip in

@@ -32,6 +32,12 @@ enum AudioOutputs {
         return id
     }
 
+    /// Live read of a device's nominal rate — for the moment an engine
+    /// starts, when a cached value may predate a rate change.
+    static func currentNominalRate(_ id: AudioDeviceID) -> Double {
+        nominalRate(id)
+    }
+
     /// The Core Audio process object for a pid, needed to exclude a process
     /// from a tap.
     static func processObject(for pid: pid_t) -> AudioObjectID? {
@@ -123,12 +129,20 @@ final class OutputWatcher: ObservableObject {
         guard listeners.isEmpty else { return }
         refresh()
 
-        for selector in [kAudioHardwarePropertyDevices,
-                         kAudioHardwarePropertyDefaultOutputDevice] {
+        // Device-list events come in bursts (a Bluetooth connect fires one
+        // per stream coming up) and are throttled. A default-output change
+        // is a single decisive event and refreshes IMMEDIATELY: anything
+        // keyed off the default device (per-device stage settings, the
+        // engine's target) must not act on the old default for the length
+        // of a throttle window.
+        for (selector, immediate) in [(kAudioHardwarePropertyDevices, false),
+                                      (kAudioHardwarePropertyDefaultOutputDevice, true)] {
             let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
                 // Already on the main queue (registered below); hop through
                 // the actor to satisfy isolation.
-                Task { @MainActor in self?.scheduleRefresh() }
+                Task { @MainActor in
+                    if immediate { self?.refreshNow() } else { self?.scheduleRefresh() }
+                }
             }
             var addr = AudioObjectPropertyAddress(
                 mSelector: selector,
@@ -138,6 +152,14 @@ final class OutputWatcher: ObservableObject {
                                                 &addr, .main, block)
             listeners.append((addr, block))
         }
+    }
+
+    /// Re-enumerate immediately, publish, and notify — for events that must
+    /// not wait out the throttle.
+    func refreshNow() {
+        debounce?.cancel()
+        debounce = nil
+        refresh()
     }
 
     /// Throttle, not debounce: re-arming on every event would let a flapping

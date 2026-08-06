@@ -219,7 +219,10 @@ no third-party dependencies.
   anywhere, ever. What is persisted — per-device stage settings and the daily
   listening totals — lives in
   `~/Library/Application Support/QudelixBar/stage.json`, alongside a small
-  `diag.txt` engine heartbeat for bug reports. Both are local files.
+  `diag.txt` engine heartbeat for bug reports. Both are local files, readable
+  only by your user account. Like the packet log, `diag.txt` records the
+  names of your audio output devices, so give it the same glance before
+  attaching it to a bug report.
 - One local file is written, `~/Library/Logs/QudelixBar.log`, holding device
   packet traces. It is never transmitted. Since it records raw packet hex it
   includes the 5K's own Bluetooth address and any preset names stored on it, so

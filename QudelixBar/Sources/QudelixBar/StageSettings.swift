@@ -125,8 +125,14 @@ enum StageStateFile {
 
     static var url: URL { directory.appendingPathComponent("stage.json") }
 
+    /// A genuine state file is a few KB. Anything bigger is not ours;
+    /// refusing to read it beats decoding a crafted mountain into memory.
+    private static let maxBytes = 1_000_000
+
     static func load() -> PersistedStageState? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              (attrs[.size] as? Int ?? 0) <= maxBytes,
+              let data = try? Data(contentsOf: url) else { return nil }
         if let state = try? JSONDecoder().decode(PersistedStageState.self, from: data) {
             return state
         }
@@ -134,8 +140,10 @@ enum StageStateFile {
         // defaults and silently destroy the settings in it. Park the
         // undecodable document where the user (or a newer app version) can
         // recover it.
-        try? data.write(to: directory.appendingPathComponent("stage.json.recovered"),
-                        options: .atomic)
+        let parked = directory.appendingPathComponent("stage.json.recovered")
+        try? data.write(to: parked, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: parked.path)
         return nil
     }
 
@@ -144,5 +152,9 @@ enum StageStateFile {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(state) else { return }
         try? data.write(to: url, options: .atomic)
+        // Listening history and device identifiers: user-private, like the
+        // packet log (Data.write creates 0644 under the default umask).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: url.path)
     }
 }

@@ -9,6 +9,7 @@ import SwiftUI
 /// room for paragraphs and an over-tall pane pushes its own buttons out of view.
 struct TuneView: View {
     @EnvironmentObject var controller: QudelixController
+    @EnvironmentObject var stageState: StageState
     @StateObject private var tuner = ABTuner()
     @StateObject private var tones = ToneTester()
 
@@ -48,6 +49,19 @@ struct TuneView: View {
                 case .finished: toneResult
                 }
             }
+        }
+        // The tone test needs a quiet channel: while the Stage engine is
+        // inserted in the audio path, the system mix would keep playing
+        // through it and mask every near-threshold presentation. Mute the
+        // mix for the session — the tones themselves are played by this
+        // process, which the engine's tap excludes, so they stay audible.
+        // View-scoped on purpose: the session dies with the popover, and so
+        // must the mute (a stopped engine clears it as well).
+        .onChange(of: tones.phase) { _, phase in
+            stageState.engine.processor.setMuted(phase == .running)
+        }
+        .onDisappear {
+            stageState.engine.processor.setMuted(false)
         }
     }
 

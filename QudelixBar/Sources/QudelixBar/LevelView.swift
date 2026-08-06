@@ -134,8 +134,12 @@ struct LevelView: View {
                 stat("Listened", Self.duration(day.audibleSeconds))
                 stat("Loud", Self.duration(day.loudSeconds),
                      highlight: day.loudSeconds > 3600)
-                stat("Average", String(format: "%.0f dBFS",
-                                       10 * log10(day.energySum / max(day.audibleSeconds, 1))))
+                // energySum can be zero with audible seconds on a crafted
+                // file; log10(0) renders "-Inf dBFS".
+                stat("Average", day.energySum > 0
+                     ? String(format: "%.0f dBFS",
+                              10 * log10(day.energySum / max(day.audibleSeconds, 1)))
+                     : "—")
             }
         }
     }

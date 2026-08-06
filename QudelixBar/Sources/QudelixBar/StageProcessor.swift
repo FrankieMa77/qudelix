@@ -485,10 +485,14 @@ final class StageProcessor {
                 ss += v * v
                 p += first.stride
             }
-            os_unfair_lock_lock(meterLock)
-            meterSumSquares += ss
-            meterFrames += first.frames
-            os_unfair_lock_unlock(meterLock)
+            // In monitor mode the samples are unscrubbed; a NaN buffer must
+            // not poison the whole second's accumulator.
+            if ss.isFinite {
+                os_unfair_lock_lock(meterLock)
+                meterSumSquares += ss
+                meterFrames += first.frames
+                os_unfair_lock_unlock(meterLock)
+            }
         }
 
         // Monitor mode writes nothing: the original audio is still playing
@@ -514,6 +518,15 @@ final class StageProcessor {
 
         for _ in 0..<frames {
             var L = pl.pointee, R = pr.pointee
+
+            // Tapped apps can and do emit NaN/Inf samples (a buggy plugin, a
+            // WebAudio page). Every recursion below — the crossfeed LPs, the
+            // tail combs, the biquad states — is absorbing: one NaN in and
+            // it never leaves, and the soft clipper passes NaN through
+            // (Swift's min/max return NaN for a NaN operand). Scrub at the
+            // door so the stage stays self-healing.
+            if !L.isFinite { L = 0 }
+            if !R.isFinite { R = 0 }
 
             // Width, and dialogue on the mid only. The side additionally gets
             // a width-scaled brilliance shelf: high-frequency side energy is
@@ -626,6 +639,17 @@ final class StageProcessor {
             pl += l.stride
             pr += r.stride
         }
+
+        // The one-pole states decay through the denormal band after the
+        // input goes silent, which costs real CPU on Intel (no FTZ is set on
+        // the HAL thread). Flushing the scalars once per buffer keeps the
+        // spike bounded to a single cycle.
+        if abs(crossLPl) < 1e-20 { crossLPl = 0 }
+        if abs(crossLPr) < 1e-20 { crossLPr = 0 }
+        if abs(roomLPStateL) < 1e-20 { roomLPStateL = 0 }
+        if abs(roomLPStateR) < 1e-20 { roomLPStateR = 0 }
+        if abs(tailLPL) < 1e-20 { tailLPL = 0 }
+        if abs(tailLPR) < 1e-20 { tailLPR = 0 }
     }
 
     /// Padé tanh approximation: transparent at normal levels, saturating

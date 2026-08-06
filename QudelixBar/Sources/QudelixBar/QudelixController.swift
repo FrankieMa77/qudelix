@@ -206,6 +206,8 @@ final class QudelixController: ObservableObject {
         lastImportSummary = nil
         requestedNames = false
         pendingGroup = nil
+        pendingEqMode = nil
+        batteryAlerts.connectionReset()
         state = QxDeviceState()
 
         // The EQ belongs to the device too. `eqGroup` in particular reaches the
@@ -423,7 +425,14 @@ final class QudelixController: ObservableObject {
 
     private func applyState() {
         evaluateCompatibility()
-        if let mode = state.eqMode { setEqGroup(mode == 1 ? .b20 : .user) }
+        // Consume eq_mode like the other user-changeable fields below:
+        // `state` is cumulative, and re-running setEqGroup on every packet
+        // would let any stale notification resolve a mode switch that is
+        // still waiting on its real confirmation.
+        if let mode = state.eqMode {
+            setEqGroup(mode == 1 ? .b20 : .user)
+            state.eqMode = nil
+        }
         if let fw = state.fwVersion { firmwareVersion = fw }
         if let b = state.batteryPercent { batteryPercent = b }
         charging = state.charging
@@ -431,8 +440,13 @@ final class QudelixController: ObservableObject {
         if let sr = state.sampleRateLabel { sampleRate = sr }
         if let src = state.inputSourceLabel { inputSource = src }
         if let m = state.usbMute { muted = m }
-        if let en = state.eqEnabled { eqEnabled = en }
-        if let idx = state.eqPresetIdx { setActivePreset(idx) }
+        // EQ group config only applies when it describes the group we're
+        // targeting: in 20-band mode the block carries the b20 group, and
+        // reading the 10-band group's preset index / name mask against it
+        // highlights the wrong slot and fetches the wrong names.
+        let eqCfgApplies = state.eqCfgGroup == Int(eqGroup.rawValue)
+        if let en = state.eqEnabled, eqCfgApplies { eqEnabled = en }
+        if let idx = state.eqPresetIdx, eqCfgApplies { setActivePreset(idx) }
         volumeMax = state.dacOutPwr2Vrms ? min(state.volumeLimitDb ?? 6, 6)
                                          : min(state.volumeLimitDb ?? 0, 0)
         // After volumeMax, so the slider's value always sits inside its range —
@@ -468,8 +482,9 @@ final class QudelixController: ObservableObject {
 
         // Fetch saved preset names once the name mask is known — but not while a
         // group change is still queued, or we would request names using the mask
-        // parsed for the group we are about to leave.
-        if !requestedNames, pendingGroup == nil, state.presetNameMask != 0 {
+        // parsed for the group we are about to leave. The mask must also
+        // belong to the current group, for the same reason.
+        if !requestedNames, pendingGroup == nil, eqCfgApplies, state.presetNameMask != 0 {
             requestedNames = true
             for i in 0..<Self.presetCount where state.presetNameMask & (1 << i) != 0 {
                 transportSend(.reqEqPresetName, [eqGroup.rawValue, UInt8(i)])
@@ -530,6 +545,9 @@ final class QudelixController: ObservableObject {
 
     /// Re-target the EQ when the device reports a different mode.
     private func setEqGroup(_ group: QxEqGroup) {
+        // Whatever the device reports IS the truth now; a click waiting on
+        // confirmation is resolved either way.
+        pendingEqMode = nil
         guard group != eqGroup else { pendingGroup = nil; return }
         // Rate limited, but the change is *deferred* rather than dropped. Simply
         // discarding it left `eqGroup` — which selects the band count and the
@@ -559,7 +577,11 @@ final class QudelixController: ObservableObject {
         }
         requestedNames = false
         presetNames = [:]
+        // The active-slot highlight belongs to the group we just left; the
+        // config re-request below refreshes it for this group.
+        activePreset = nil
         transportSend(.reqEqPreset, [group.requestMask])
+        transportSend(.reqDevConfig, [0xC0])   // sys2 | eq → this group's cfg + name mask
     }
 
     // MARK: - Actions
@@ -592,6 +614,13 @@ final class QudelixController: ObservableObject {
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
     }
 
+    /// What the last setEqMode click asked for, while the device has not yet
+    /// confirmed. Without it, a "switch back" click made inside the round
+    /// trip compares equal to the still-unchanged `eqGroup` and is swallowed
+    /// — the device then lands on the mode the user just backed out of.
+    private var pendingEqMode: QxEqGroup?
+    private var lastEqModeSend = Date.distantPast
+
     /// Switch the device between its 10-band and 20-band EQ modes. The two
     /// modes are separate EQ groups with separate presets, so the curve
     /// changes completely — that is the device's design, not a bug here.
@@ -603,12 +632,25 @@ final class QudelixController: ObservableObject {
     func setEqMode(twentyBand: Bool) {
         guard canWrite else { return }
         let desired: QxEqGroup = twentyBand ? .b20 : .user
-        guard desired != eqGroup else { return }
+        // Compare against what was last ASKED for, not only what the device
+        // last confirmed.
+        guard desired != (pendingEqMode ?? eqGroup) else { return }
+        // One human click per send; the picker is the only caller, and this
+        // is a hardware write with no other throttle.
+        guard Date().timeIntervalSince(lastEqModeSend) > 0.3 else { return }
+        lastEqModeSend = Date()
+        pendingEqMode = desired == eqGroup ? nil : desired
         DebugLog.shared.log("requesting EQ mode → \(twentyBand ? "20-band" : "10-band")")
         transportSend(.setEqMode, [twentyBand ? 1 : 0])
-        // The device pushes the config change; also ask, in case the push
-        // is lost — a silently ignored click is the worst outcome here.
-        transportSend(.reqDevConfig, [QxConfigMask.sys])
+        // The device pushes the config change. Also ask — a silently ignored
+        // click is the worst outcome here — but only after the device has
+        // had time to apply: an immediate read can race the switch and
+        // report the old mode as if it were a fresh confirmation.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, self.pendingEqMode != nil else { return }
+            self.transportSend(.reqDevConfig, [QxConfigMask.sys])
+        }
     }
 
     func loadPreset(_ index: Int) {

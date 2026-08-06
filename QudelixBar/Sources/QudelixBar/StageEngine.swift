@@ -41,6 +41,8 @@ final class StageEngine: ObservableObject {
     private var procID: AudioDeviceIOProcID?
     /// The device the engine is currently attached to.
     private(set) var runningDeviceUID: String?
+    /// The rate the DSP was designed at, read fresh at start.
+    private(set) var runningSampleRate: Double?
 
     struct EngineError: LocalizedError {
         let message: String
@@ -56,7 +58,8 @@ final class StageEngine: ObservableObject {
             isRunning = true
             status = String(format: "%@ → %@ @ %g kHz",
                             mode == .insert ? "Stage active" : "Metering",
-                            device.name, device.sampleRate / 1000)
+                            device.name,
+                            (runningSampleRate ?? device.sampleRate) / 1000)
         } catch {
             stop()
             status = error.localizedDescription
@@ -74,6 +77,7 @@ final class StageEngine: ObservableObject {
     #endif
 
     func stop() {
+        unwatchRate()
         if let procID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -95,6 +99,7 @@ final class StageEngine: ObservableObject {
         // a mute armed for the next start.
         processor.setMuted(false)
         runningDeviceUID = nil
+        runningSampleRate = nil
         if isRunning {
             isRunning = false
             status = "Off."
@@ -106,12 +111,17 @@ final class StageEngine: ObservableObject {
             throw EngineError(message: "This feature needs macOS 14.2 or newer.")
         }
 
-        var excluded: [AudioObjectID] = []
-        if let own = AudioOutputs.processObject(for: getpid()) {
-            excluded = [own]
+        // Excluding ourselves is what stops our own output from feeding back
+        // into the capture. If the translation fails there is no safe tap to
+        // make: proceeding would silently build a feedback loop through the
+        // room combs. Refuse loudly instead.
+        guard let own = AudioOutputs.processObject(for: getpid()) else {
+            throw EngineError(message: "Couldn't identify this app to the audio "
+                + "system, so the engine won't start (it would hear itself). "
+                + "Try again, or relaunch the app.")
         }
 
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [own])
         desc.name = "Qudelix stage tap"
         desc.isPrivate = true
         desc.muteBehavior = mode == .insert ? .mutedWhenTapped : .unmuted
@@ -119,8 +129,11 @@ final class StageEngine: ObservableObject {
         try check(AudioHardwareCreateProcessTap(desc, &tapID),
                   "Creating the system audio tap")
 
-        // Design the stage at the rate the device is actually clocked at.
-        processor.prepare(sampleRate: device.sampleRate)
+        // Design the stage at the rate the device is actually clocked at,
+        // read fresh — the watcher's cached value can predate a rate change.
+        let rate = AudioOutputs.currentNominalRate(device.id)
+        runningSampleRate = rate
+        processor.prepare(sampleRate: rate)
         processor.setMonitorOnly(mode == .monitor)
 
         let description: [String: Any] = [
@@ -147,6 +160,40 @@ final class StageEngine: ObservableObject {
         }, "Installing the render callback")
 
         try check(AudioDeviceStart(aggregateID, procID), "Starting audio")
+
+        watchRate(of: device.id)
+    }
+
+    /// Fires when the running output's configuration shifts under the engine
+    /// (a sample-rate change in Audio MIDI Setup, another app renegotiating
+    /// the device). The coefficients are designed for the old rate, so the
+    /// owner should restart the engine.
+    var onDeviceConfigurationChange: (() -> Void)?
+
+    private var rateListener: (device: AudioDeviceID,
+                               block: AudioObjectPropertyListenerBlock)?
+
+    private func watchRate(of device: AudioDeviceID) {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.onDeviceConfigurationChange?() }
+        }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(device, &addr, .main, block)
+        rateListener = (device, block)
+    }
+
+    private func unwatchRate() {
+        guard let listener = rateListener else { return }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        AudioObjectRemovePropertyListenerBlock(listener.device, &addr, .main,
+                                               listener.block)
+        rateListener = nil
     }
 
     private func check(_ err: OSStatus, _ what: String) throws {

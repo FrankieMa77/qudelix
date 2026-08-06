@@ -77,10 +77,11 @@ struct PopoverView: View {
                     case .equalizer: EqEditorView(editingBand: $editingBand)
                     case .presets: PresetsView()
                     case .importing: ImportView()
-                    case .tune: TuneView()
-                    // Stage and Level can outgrow the fixed pane area (the
-                    // geometry disclosure, a long history), so they scroll
-                    // inside it rather than resizing the window.
+                    // Tune, Stage and Level can outgrow the fixed pane area
+                    // (a tone result with both warnings, the geometry
+                    // disclosure, a long history), so they scroll inside it
+                    // rather than resizing the window.
+                    case .tune: ScrollView { TuneView() }
                     case .stage: ScrollView { StageView() }
                     case .level: ScrollView { LevelView() }
                     }
