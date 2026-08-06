@@ -418,6 +418,11 @@ final class StageProcessor {
     private var tailLPR: Float = 0
     private var roomLPStateL: Float = 0
     private var roomLPStateR: Float = 0
+    // Previous clipper input per channel — the anti-aliased soft clipper
+    // shapes the segment between two samples, so it has memory like every
+    // filter above it, and like them it must be wiped on re-engage.
+    private var adaaPrevL: Float = 0
+    private var adaaPrevR: Float = 0
 
     // Night-mode envelope (stage render state). Rests at the comfort level,
     // not at silence — an envelope resting near zero makes every stage
@@ -443,6 +448,7 @@ final class StageProcessor {
         roomLPStateL = 0; roomLPStateR = 0
         sideShelfZ1 = 0; sideShelfZ2 = 0
         dialogueZ1 = 0; dialogueZ2 = 0
+        adaaPrevL = 0; adaaPrevR = 0
         nightEnv = 0.05
     }
 
@@ -719,8 +725,14 @@ final class StageProcessor {
 
             // Soft clip instead of hard headroom: unity below ~0.5, gentle
             // saturation above, so theatrical levels survive the widening.
-            L = softClip(L * p.trim)
-            R = softClip(R * p.trim)
+            // Anti-aliased, and per channel: the shaper's memory is the
+            // previous sample of the same signal, so L and R carry their own.
+            let xl = L * p.trim
+            let xr = R * p.trim
+            L = softClipADAA(xl, prev: adaaPrevL)
+            R = softClipADAA(xr, prev: adaaPrevR)
+            adaaPrevL = xl
+            adaaPrevR = xr
             pl.pointee = L
             pr.pointee = R
             pl += l.stride
@@ -741,10 +753,59 @@ final class StageProcessor {
 
     /// Padé tanh approximation: transparent at normal levels, saturating
     /// smoothly toward ±1.7 — never lets a widened peak slam the DAC.
+    /// Internal rather than private so the anti-aliasing suite can measure
+    /// it against the ADAA path; behaviourally it is the same curve.
     @inline(__always)
-    private func softClip(_ x: Float) -> Float {
+    func softClip(_ x: Float) -> Float {
         let c = min(max(x, -3), 3)
         return c * (27 + c * c) / (27 + 9 * c * c)
+    }
+
+    /// F(±3) for the antiderivative below: (1/9)·(4.5 + 12·ln 12). Spelled
+    /// as a literal instance constant, not a `static let` — a static would
+    /// cost a swift_once check on every sample of the render thread.
+    private let softClipKneeF = 3.813_208_866_384_000_5
+
+    /// Antiderivative of `softClip`. Writing the shaper as
+    /// f(x) = (1/9)·[x + 24x/(x²+3)] on |x| ≤ 3 integrates in closed form;
+    /// past the knee f is ±1, so F continues as a straight line. F is even
+    /// on the inner branch, so both saturated branches hang off the same
+    /// knee value. Double throughout: the caller subtracts two nearly equal
+    /// values of F, and in Float that cancellation would eat most of the
+    /// mantissa and hand back noise where the fix is supposed to be.
+    @inline(__always)
+    private func softClipF(_ x: Double) -> Double {
+        if x > 3 { return softClipKneeF + (x - 3) }
+        if x < -3 { return softClipKneeF - (x + 3) }
+        return (x * x / 2 + 12 * log(x * x + 3)) / 9
+    }
+
+    /// First-order antiderivative anti-aliasing for the soft clipper.
+    ///
+    /// A memoryless waveshaper manufactures harmonics far above the ones it
+    /// was fed; everything past Nyquist folds back down as inharmonic tones
+    /// that sit *below* the music and can never be filtered out again. A
+    /// loud 11 kHz tone alone lands fold-back at 15 kHz and 7 kHz. Averaging
+    /// the shaper across the segment between consecutive samples — which is
+    /// what differencing its antiderivative computes — suppresses precisely
+    /// the content that would have folded, for the price of one log() and a
+    /// half-sample of group delay.
+    ///
+    /// Stateful by nature: `prev` is the previous input to the shaper for
+    /// THIS channel, and the caller owns it (see `adaaPrevL`/`adaaPrevR`).
+    @inline(__always)
+    func softClipADAA(_ x: Float, prev: Float) -> Float {
+        let x1 = Double(x), x0 = Double(prev)
+        let dx = x1 - x0
+        // Held or barely-moving signals make the quotient 0/0. Near that
+        // limit the numerator is almost pure cancellation error and the
+        // denominator is vanishing, so the result explodes into noise;
+        // below the threshold the segment is short enough that the direct
+        // shaper at its midpoint is both well-conditioned and accurate.
+        if abs(dx) < 1e-6 {
+            return softClip(Float((x1 + x0) * 0.5))
+        }
+        return Float((softClipF(x1) - softClipF(x0)) / dx)
     }
 
     private func copyOut(_ outList: UnsafeMutableAudioBufferListPointer) {
