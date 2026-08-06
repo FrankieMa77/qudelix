@@ -56,9 +56,12 @@ struct ParametricEQFile {
         }
 
         guard !parsed.isEmpty else { return nil }
-        if parsed.count > QxEq.bandCount {
-            out.droppedBands = parsed.count - QxEq.bandCount
-            parsed = Array(parsed.prefix(QxEq.bandCount))
+        // Cap at the LARGEST band count any EQ group supports — which mode
+        // the device is in isn't known here. The apply step trims to the
+        // active mode's count and reports what didn't fit.
+        if parsed.count > QxEq.maxBandCount {
+            out.droppedBands = parsed.count - QxEq.maxBandCount
+            parsed = Array(parsed.prefix(QxEq.maxBandCount))
         }
         out.bands = parsed
         return out

@@ -748,9 +748,16 @@ final class QudelixController: ObservableObject {
                 updateBand(i, b)
             }
         }
-        lastImportSummary = "Applied \(file.bands.count) band(s), pre-gain "
+        // A file can carry more bands than the ACTIVE mode holds (a 12-band
+        // file in 10-band mode): count those as dropped too, and say which
+        // mode would fit them.
+        let applied = min(file.bands.count, bandCount)
+        let dropped = file.droppedBands + max(0, file.bands.count - bandCount)
+        lastImportSummary = "Applied \(applied) band(s), pre-gain "
             + String(format: "%+.1f dB", file.preamp)
-            + (file.droppedBands > 0 ? " · \(file.droppedBands) extra band(s) dropped" : "")
+            + (dropped > 0 ? " · \(dropped) band(s) dropped"
+                + (file.bands.count > bandCount && eqGroup != .b20
+                   ? " (fit in 20-band mode)" : "") : "")
         DebugLog.shared.log("import: \(lastImportSummary ?? "")")
     }
 
