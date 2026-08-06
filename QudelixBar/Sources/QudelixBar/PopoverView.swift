@@ -39,10 +39,10 @@ struct PopoverView: View {
     /// Height of everything between the header and the footer, fixed so the
     /// window doesn't resize when switching panes — the jumping was the
     /// annoyance, not any one size. Sized to fit the tallest pane, the
-    /// 10-band EQ table, plus the USB-audio row; every other pane top-aligns
-    /// into the same space, and Stage/Level scroll internally if they ever
-    /// exceed it.
-    private static let contentHeight: CGFloat = 592
+    /// 10-band EQ table, plus the two USB-audio rows; every other pane
+    /// top-aligns into the same space, and Stage/Level scroll internally if
+    /// they ever exceed it.
+    private static let contentHeight: CGFloat = 613
 
     var body: some View {
         VStack(spacing: 0) {
@@ -327,6 +327,7 @@ struct UsbAudioRow: View {
         if let device = stageState.qudelixOutput {
             let available = AudioOutputs.availableNominalRates(device.id)
             let rates = available.isEmpty ? [44100, 48000, 88200, 96000] : available
+            VStack(spacing: 5) {
             HStack(spacing: 8) {
                 Text("USB audio")
                     .font(.system(size: 10))
@@ -390,13 +391,60 @@ struct UsbAudioRow: View {
                             + "restarts for a moment).")
                 }
             }
-            .onAppear { stageState.watcher.refreshNow() }
             .help("The rate macOS runs the Qudelix at — the same setting as "
                   + "Audio MIDI Setup. macOS resamples anything at a different "
                   + "rate and never switches this automatically, so match your "
                   + "library: most music is 44.1 kHz, most video 48 kHz. "
                   + "While Soundstage is on, audio is processed on the Mac and "
                   + "resampling happens regardless.")
+
+            // The automation must never act silently: this line is its
+            // on/off switch AND its running commentary — what it heard,
+            // what it did about it.
+            HStack(spacing: 8) {
+                Toggle(isOn: Binding(
+                    get: { stageState.qualityMasterOn },
+                    set: { stageState.setQualityMaster($0) })) {
+                    Text("Auto rate")
+                        .font(.system(size: 10))
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.mini)
+                .help("Measures whether what's playing is lossy or lossless "
+                      + "and matches the USB rate: lossless → 44.1 kHz "
+                      + "(bit-perfect), lossy → the rate you picked. Separate "
+                      + "detection/switching toggles live in the Level pane.")
+                Text(verbatim: autoStatus(current: device.sampleRate))
+                    .font(.system(size: 10))
+                    .foregroundStyle(stageState.qualityVerdict?.isLosslessClass == true
+                                     && stageState.qualityMasterOn
+                                     ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                Spacer()
+            }
+            }
+            .onAppear { stageState.watcher.refreshNow() }
+        }
+    }
+
+    private func autoStatus(current: Double) -> String {
+        if !stageState.detectQuality { return "off — the rate stays as you set it" }
+        if !stageState.autoRate { return "detecting only — switching is off (Level pane)" }
+        guard stageState.engine.isRunning else { return "waiting for audio" }
+        switch stageState.qualityVerdict {
+        case nil: return "listening to what's playing…"
+        case .tooQuiet, .noTreble: return "can't judge this material — holding"
+        case .natural: return "master rolls off naturally — holding"
+        case .lossy(let k):
+            return String(format: "lossy (%.1f kHz) — keeping your rate", k)
+        case .lossyHigh(let k):
+            return String(format: "borderline cliff (%.1f kHz) — holding", k)
+        case .losslessLike, .hiRes:
+            if stageState.autoSetRate == current, current == 44100 {
+                return "lossless — set 44.1 kHz automatically"
+            }
+            if current == 44100 { return "lossless — 44.1 kHz already right" }
+            return "lossless — switching shortly…"
         }
     }
 

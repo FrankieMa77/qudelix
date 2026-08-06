@@ -38,6 +38,9 @@ final class StageState: ObservableObject {
     private var lastAutoSwitch = Date.distantPast
     /// The rate the user last picked by hand; lossy content returns here.
     private var manualRateHz: Double?
+    /// The rate the automation last set, nil once the user overrides it —
+    /// the UI marks the rate as auto-chosen while this matches reality.
+    @Published private(set) var autoSetRate: Double?
 
     // Listening exposure (digital level, dBFS — not calibrated SPL).
     @Published private(set) var currentLevelDb: Double?
@@ -73,6 +76,7 @@ final class StageState: ObservableObject {
     func setNominalRate(_ rate: Double, for device: AudioOutput, manual: Bool = false) {
         if manual {
             manualRateHz = rate
+            autoSetRate = nil       // the user's hand overrides the automation
             scheduleSave()
         }
         AudioOutputs.setNominalRate(device.id, rate)
@@ -178,6 +182,22 @@ final class StageState: ObservableObject {
     func setAutoRate(_ on: Bool) {
         autoRate = on
         scheduleSave()
+    }
+
+    /// The one switch a user needs: on = detect and act, off = do neither.
+    /// The Level pane keeps the granular pair for those who want detection
+    /// without automation.
+    var qualityMasterOn: Bool { detectQuality && autoRate }
+
+    func setQualityMaster(_ on: Bool) {
+        if on {
+            setDetectQuality(true)
+            setAutoRate(true)
+        } else {
+            setAutoRate(false)
+            setDetectQuality(false)
+            autoSetRate = nil
+        }
     }
 
     // MARK: - Engine lifecycle
@@ -432,24 +452,34 @@ final class StageState: ObservableObject {
         guard let rate = engine.runningSampleRate,
               let raw = analyzer.classify(sampleRate: rate) else { return }
 
+        // Boundary jitter guard: the same physical cliff measures a few
+        // hundred Hz differently between rounds, and near the 20.25 kHz
+        // class boundary that flips the DISPLAYED verdict back and forth.
+        // A standing lossless verdict holds through ambiguous-zone readings.
+        var effective = raw
+        if let cur = qualityVerdict, case .losslessLike = cur,
+           case .lossyHigh(let k) = raw, k >= 19.7 {
+            effective = .losslessLike(cutoffKHz: k)
+        }
+
         // Stability is judged on the verdict's KIND — the measured cutoff
         // rides along and refreshes on every publish.
-        if let previous = rawVerdict, previous.kind == raw.kind {
+        if let previous = rawVerdict, previous.kind == effective.kind {
             rawVerdictStreak += 1
         } else {
             rawVerdictStreak = 1
         }
-        rawVerdict = raw
+        rawVerdict = effective
         guard rawVerdictStreak >= 3 else { return }
 
-        let kindChanged = qualityVerdict?.kind != raw.kind
+        let kindChanged = qualityVerdict?.kind != effective.kind
         if kindChanged {
-            DebugLog.shared.log("stream quality verdict → \(raw) [\(analyzer.lastDebug)]")
+            DebugLog.shared.log("stream quality verdict → \(effective) [\(analyzer.lastDebug)]")
         }
         let previousClass = qualityVerdict?.isLosslessClass
-        qualityVerdict = raw
-        if raw.isLosslessClass != previousClass {
-            verdictStableSince = raw.isLosslessClass != nil ? Date() : nil
+        qualityVerdict = effective
+        if effective.isLosslessClass != previousClass {
+            verdictStableSince = effective.isLosslessClass != nil ? Date() : nil
         }
         autoSwitchIfDue()
     }
@@ -483,6 +513,7 @@ final class StageState: ObservableObject {
         guard available.contains(target), device.sampleRate != target else { return }
 
         lastAutoSwitch = Date()
+        autoSetRate = target
         DebugLog.shared.log(String(format:
             "stream quality %@ — switching USB rate to %g kHz",
             lossless ? "lossless-class" : "lossy", target / 1000))
