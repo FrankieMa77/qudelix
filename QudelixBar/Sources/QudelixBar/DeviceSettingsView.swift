@@ -28,8 +28,7 @@ struct DeviceSettingsView: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .frame(width: 300)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Channel trim

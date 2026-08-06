@@ -5,6 +5,7 @@ struct PopoverView: View {
     @EnvironmentObject var controller: QudelixController
     @State private var pane: Pane = .equalizer
     @State private var showDiagnostics = false
+    @State private var showDeviceSettings = false
     @State private var editingBand: Int?
 
     enum Pane: String, CaseIterable, Identifiable {
@@ -123,7 +124,12 @@ struct PopoverView: View {
             }
 
             Divider()
-            FooterBar(showDiagnostics: $showDiagnostics)
+            FooterBar(showDiagnostics: $showDiagnostics,
+                      showDeviceSettings: $showDeviceSettings)
+            if showDeviceSettings {
+                Divider()
+                DeviceSettingsView().padding(.horizontal, 14).padding(.bottom, 10)
+            }
             if showDiagnostics {
                 Divider()
                 DiagnosticsView().padding(.horizontal, 14).padding(.bottom, 10)
@@ -766,7 +772,7 @@ struct DisconnectedView: View {
 struct FooterBar: View {
     @EnvironmentObject var controller: QudelixController
     @Binding var showDiagnostics: Bool
-    @State private var showDeviceSettings = false
+    @Binding var showDeviceSettings: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -792,18 +798,24 @@ struct FooterBar: View {
                 .help("Forget the remembered Bluetooth device and look for another")
             }
 
-            Button { showDeviceSettings.toggle() } label: {
-                Image(systemName: "slider.horizontal.3").font(.system(size: 10))
+            // Worded, not a bare icon: an unlabelled glyph in a row of glyphs
+            // is indistinguishable from decoration, and these settings are
+            // the kind you go looking for exactly once.
+            Button {
+                showDeviceSettings.toggle()
+                if showDeviceSettings { showDiagnostics = false }
+            } label: {
+                Label("Device", systemImage: "slider.horizontal.3")
+                    .font(.system(size: 10))
             }
             .buttonStyle(.borderless)
             .disabled(!connected)
             .help("Device settings — channel trim, volume limit")
-            .popover(isPresented: $showDeviceSettings, arrowEdge: .bottom) {
-                DeviceSettingsView()
-                    .environmentObject(controller)
-            }
 
-            Button { showDiagnostics.toggle() } label: {
+            Button {
+                showDiagnostics.toggle()
+                if showDiagnostics { showDeviceSettings = false }
+            } label: {
                 Image(systemName: "waveform.path.ecg").font(.system(size: 10))
             }
             .buttonStyle(.borderless)
