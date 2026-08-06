@@ -192,6 +192,14 @@ enum QxEqGroup: UInt8 {
     /// Bitmask used with ReqEqPreset.
     var requestMask: UInt8 { UInt8(1 << rawValue) }
 
+    /// Channel mask for EQ writes. Only the speaker group has two parameter
+    /// channels; the official app sends the both-channels mask exclusively
+    /// there. On the single-channel groups the extra bit makes the firmware
+    /// write a phantom second channel over adjacent struct memory — read
+    /// back from real hardware as a 20-band preset whose stored low bands
+    /// were overwritten by frequency-table echoes, i.e. quietly destroyed.
+    var writeChannelMask: UInt8 { self == .speaker ? 3 : 1 }
+
     /// The device's own default centre frequencies (`Ny.Fc`).
     var defaultFreqs: [Int] {
         self == .b20

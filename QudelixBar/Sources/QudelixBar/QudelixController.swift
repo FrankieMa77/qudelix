@@ -594,6 +594,18 @@ final class QudelixController: ObservableObject {
         // writing is unaffected either way.
         guard p.looksPlausible else {
             DebugLog.shared.log("preset decode implausible for group \(eqGroup) — ignoring")
+            // An unreadable device state is exactly when the snapshot is
+            // the best truth available: restoring rewrites the device
+            // cleanly instead of leaving the UI flat and the struct broken.
+            presetRead = true
+            restoreIfNeeded()
+            // The raw buffer is the only way to fix a wrong layout against
+            // real hardware; dump it once per readback.
+            let hex = assembler.buffer.map { String(format: "%02X", $0) }.joined(separator: " ")
+            DebugLog.shared.log("raw preset buffer: \(hex)")
+            let decoded = p.bands.map { String(format: "f%d g%.1f q%.2f %d",
+                                               $0.freq, $0.gain, $0.q, $0.filter.rawValue) }
+            DebugLog.shared.log("decoded: preGain \(p.preGain) | " + decoded.joined(separator: " · "))
             return
         }
         // `looksPlausible` is deliberately wider than the editor's range, so a
@@ -840,7 +852,7 @@ final class QudelixController: ObservableObject {
         v.q = v.q.isFinite ? max(0.1, min(10, v.q)) : 1.0
         bands[index] = v
 
-        let payload: [UInt8] = [eqGroup.rawValue, QxEq.chMaskBoth, UInt8(index), v.filter.rawValue]
+        let payload: [UInt8] = [eqGroup.rawValue, eqGroup.writeChannelMask, UInt8(index), v.filter.rawValue]
             + QxPacket.int16BE(v.freq)
             + QxPacket.int16BE(Int((v.gain * QxScale.gain).rounded()))
             + QxPacket.int16BE(Int((v.q * QxScale.q).rounded()))
@@ -949,7 +961,7 @@ final class QudelixController: ObservableObject {
 
     private func sendEqParam(_ cmd: QxCmd, band: Int, scaled: Int) {
         transportSendCoalesced(cmd,
-                          [eqGroup.rawValue, QxEq.chMaskBoth, UInt8(clamping: band)]
+                          [eqGroup.rawValue, eqGroup.writeChannelMask, UInt8(clamping: band)]
                             + QxPacket.int16BE(scaled),
                           key: "\(cmd)-\(band)")
     }
