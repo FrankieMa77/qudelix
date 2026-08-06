@@ -515,12 +515,14 @@ struct EqEditorView: View {
                 Text("Pre-gain").font(.system(size: 10)).foregroundStyle(.secondary)
                 Slider(value: Binding(get: { controller.preGain },
                                       set: { controller.setPreGain($0) }),
-                       in: -12...12, step: 0.5)
+                       in: EQHeadroom.range, step: 0.5)
                     .frame(width: 92)
                 Text(String(format: "%+.1f", controller.preGain))
                     .font(.system(size: 10).monospacedDigit())
                     .frame(width: 30, alignment: .trailing)
             }
+
+            headroomRow
 
             Divider()
 
@@ -563,6 +565,47 @@ struct EqEditorView: View {
 }
 
 extension EqEditorView {
+    /// Says what the curve's boosts cost in headroom, and offers the pre-gain
+    /// that cancels them.
+    ///
+    /// Offered, never applied on its own: pre-gain is a number people set
+    /// deliberately, and moving it under them would be a change to the sound
+    /// they never asked for. When the curve already has the headroom the row
+    /// says so and drops the button: a sentence that reports the state is
+    /// worth more than a control that would change nothing.
+    @ViewBuilder
+    var headroomRow: some View {
+        let advice = controller.eqHeadroom
+        HStack(spacing: 6) {
+            Text(headroomText(advice))
+            Spacer()
+            if let suggestion = advice.suggestion {
+                Button(String(format: "Set %.1f dB", suggestion)) {
+                    controller.applySuggestedPreGain()
+                }
+                .controlSize(.mini)
+                .font(.system(size: 10))
+                .help("Attenuates ahead of the filters by as much as the bands "
+                      + "boost, so the equalizer passes on no more level than it "
+                      + "was given. Clipping already in the source is untouched.")
+            }
+        }
+        .font(.system(size: 9))
+        .foregroundStyle(.secondary)
+    }
+
+    private func headroomText(_ advice: EQHeadroom.Advice) -> String {
+        // Below a tenth of a dB there is nothing the device could store, so
+        // treat it as no boost at all rather than reporting "+0.0".
+        guard advice.peakBoost >= 0.05 else { return "No band boost to offset." }
+        let boost = String(format: "Bands boost by up to %.1f dB", advice.peakBoost)
+        if advice.shortfall >= 0.05 {
+            return boost + String(format: " — %.1f dB more than pre-gain can take back.",
+                                  advice.shortfall)
+        }
+        return advice.suggestion == nil ? boost + "; pre-gain covers it." : boost + "."
+    }
+
     /// 10 bands fit inline; 20 would add ~250pt to the window, so the table
     /// scrolls in that case. The height is definite, not a maximum — a scroll
     /// view given only a max collapses inside this self-sizing popover.

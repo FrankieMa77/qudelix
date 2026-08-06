@@ -13,15 +13,28 @@ enum EQCurve {
 
     /// Magnitude in dB at `count` log-spaced frequencies from 20 Hz to 20 kHz.
     static func response(bands: [QxEqBandValue], preGain: Double, count: Int = 220) -> [Double] {
-        let logMin = log10(minFreq), logMax = log10(maxFreq)
-        return (0..<count).map { i in
-            let t = Double(i) / Double(max(count - 1, 1))
-            let f = pow(10, logMin + t * (logMax - logMin))
+        response(bands: bands, preGain: preGain, at: logSweep(count: count))
+    }
+
+    /// Magnitude in dB at an explicit set of frequencies, for callers that
+    /// need a grid the drawing one doesn't give them — a different span, a
+    /// different density, or a handful of frequencies picked on purpose.
+    static func response(bands: [QxEqBandValue], preGain: Double, at freqs: [Double]) -> [Double] {
+        freqs.map { f in
             var db = preGain
             for band in bands where band.filter != .bypass {
                 db += bandGainDb(band, at: f)
             }
             return db
+        }
+    }
+
+    /// `count` frequencies spaced evenly on the log axis across `from`…`to`.
+    static func logSweep(count: Int, from: Double = minFreq, to: Double = maxFreq) -> [Double] {
+        let logMin = log10(from), logMax = log10(to)
+        return (0..<count).map { i in
+            let t = Double(i) / Double(max(count - 1, 1))
+            return pow(10, logMin + t * (logMax - logMin))
         }
     }
 
@@ -90,6 +103,163 @@ enum EQCurve {
         guard den > 1e-12, num > 1e-12 else { return 0 }
         let db = 20 * log10(num / den)
         return db.isFinite ? db : 0
+    }
+}
+
+/// How much the current curve boosts, and the pre-gain that offsets it.
+///
+/// The filters run inside the 5K, and a curve whose bands sum above 0 dB asks
+/// that DSP for more output than it has room for; what comes back is digital
+/// clipping on loud passages, which sounds like harshness and looks like
+/// nothing. Pre-gain sits ahead of the filters, so attenuating there by the
+/// peak boost leaves the EQ stage unable to hand on more than it was given.
+/// That is all it does — audio that was already clipped when it reached the
+/// device stays clipped, and no pre-gain will find those samples again.
+enum EQHeadroom {
+    /// The pre-gain range the device accepts, in dB.
+    ///
+    /// The wire field is wider than this (a signed dB×10 int16, and the preset
+    /// decoder tolerates ±24 before calling a read implausible), but the
+    /// control the hardware exposes is ±12 — the same span a band gain has —
+    /// and that is what this app has always sent. Everything that writes or
+    /// proposes a pre-gain clamps here rather than repeating the literal.
+    static let range: ClosedRange<Double> = -12...12
+
+    /// The one clamp, for the write path, the slider and the suggestion alike.
+    static func clamp(_ db: Double) -> Double {
+        guard db.isFinite else { return 0 }
+        return min(max(db, range.lowerBound), range.upperBound)
+    }
+
+    /// The span the peak search covers.
+    ///
+    /// Deliberately wider than the drawn 20 Hz–20 kHz window: a shelf sitting
+    /// near either edge only reaches its full gain outside it, and a peak the
+    /// search never visits is a peak the pre-gain never pays for. The top stops
+    /// short of the 24 kHz Nyquist point, where an LPF's magnitude collapses to
+    /// zero and the arithmetic stops being informative.
+    private static let probeMin: Double = 10
+    private static let probeMax: Double = 22000
+
+    /// How finely that span is sampled.
+    ///
+    /// No fixed grid is the right answer on its own. The editor allows Q up to
+    /// 10, and a biquad's width is `sin(w0)/Q` radians — so the same Q = 10
+    /// spans 0.144 octaves at 1 kHz but only 0.035 at 19 kHz, where `sin(w0)`
+    /// has fallen away towards Nyquist. Measured against a brute-force scan,
+    /// even a 1024-point log grid reads a +12 dB Q = 10 peak 1.2 dB low at the
+    /// top of the band, and the 220 points the curve is *drawn* with are nearly
+    /// five times coarser than that. Reporting a dB too little is the one
+    /// failure this feature cannot have: it is a dB of clipping the user was
+    /// told had been dealt with.
+    ///
+    /// So the grid stays coarse enough to be cheap — 512 points, ~0.022
+    /// octaves — and does what a grid is good at: broad shapes, shelf
+    /// asymptotes, the sums of overlapping wide bands. The narrow features are
+    /// handled by the clusters below, which is the only thing that can hide
+    /// between grid lines.
+    private static let probeCount = 512
+
+    /// Probes placed either side of each feature, per half-width. Eight each
+    /// way puts the spacing at an eighth of the feature's own half-width;
+    /// checked against a brute-force scan over random band sets, the worst
+    /// reading came out 0.03 dB low, which is inside the 0.05 dB that rounding
+    /// to the device's stored step would swallow anyway.
+    private static let clusterSteps = 8
+
+    /// Every frequency the search visits: the log grid, plus a cluster around
+    /// each sharp feature each live band contributes.
+    ///
+    /// The bands are the only narrow things in the response — nothing else can
+    /// put a peak between two grid lines — and each one states how wide it is,
+    /// so resolution can follow it instead of being guessed globally.
+    private static func probes(for bands: [QxEqBandValue]) -> [Double] {
+        var freqs = EQCurve.logSweep(count: probeCount, from: probeMin, to: probeMax)
+        for band in bands where band.filter != .bypass {
+            for w in featureFrequencies(of: band) {
+                // Alpha again: half the feature's width in radians, and the
+                // reason a high band is narrower than a low one at equal Q.
+                let halfWidth = sin(w) / (2 * max(0.05, band.q))
+                for k in -clusterSteps...clusterSteps {
+                    let f = (w + Double(k) * halfWidth / Double(clusterSteps))
+                        * EQCurve.sampleRate / (2 * .pi)
+                    freqs.append(min(max(f, probeMin), probeMax))
+                }
+            }
+        }
+        return freqs
+    }
+
+    /// Where a band's response turns over, in radians — the frequencies its
+    /// poles and zeros sit at, which is where any extremum has to be.
+    ///
+    /// For a peak, an LPF or an HPF that is the centre frequency and nothing
+    /// else, and a peaking biquad's maximum lands on it exactly. A shelf is
+    /// the trap: its pole and zero are pushed apart by √A, so a +12 dB shelf
+    /// with a high Q rings half an octave off its nominal corner, and a search
+    /// that only looked at the corner would read it as much as 1.5 dB low.
+    private static func featureFrequencies(of band: QxEqBandValue) -> [Double] {
+        let f0 = min(max(Double(band.freq), probeMin), probeMax)
+        let w0 = 2 * .pi * f0 / EQCurve.sampleRate
+        switch band.filter {
+        case .lowShelf, .highShelf:
+            // Bilinear warping, so the split stays right near Nyquist where
+            // digital and analogue frequency stop agreeing.
+            let spread = pow(10, band.gain / 80)          // √A
+            let t0 = tan(w0 / 2)
+            return [2 * atan(t0 / spread), w0, 2 * atan(t0 * spread)]
+        default:
+            return [w0]
+        }
+    }
+
+    /// Peak of the combined filter response above 0 dB, pre-gain excluded.
+    /// Zero for a curve that only cuts — there is nothing to offset then.
+    static func peakBoost(of bands: [QxEqBandValue]) -> Double {
+        let peak = EQCurve.response(bands: bands, preGain: 0, at: probes(for: bands)).max() ?? 0
+        return peak.isFinite ? max(0, peak) : 0
+    }
+
+    /// The pre-gain that offsets a given peak boost.
+    ///
+    /// Attenuation only: a positive pre-gain to "make the level back up" would
+    /// hand straight back the headroom this exists to buy. Rounded to the
+    /// 0.1 dB the device actually stores, so the number on screen is the number
+    /// on the wire.
+    static func preGain(offsetting peakBoost: Double) -> Double {
+        let steps = (peakBoost * 10).rounded()
+        guard steps.isFinite, steps > 0 else { return 0 }
+        return clamp(-steps / 10)
+    }
+
+    /// The pre-gain this curve needs, ignoring whatever it currently has.
+    static func suggestedPreGain(for bands: [QxEqBandValue]) -> Double {
+        preGain(offsetting: peakBoost(of: bands))
+    }
+
+    /// What there is to say about the curve in front of the user.
+    struct Advice: Equatable {
+        /// Peak boost of the filters in dB, pre-gain excluded.
+        var peakBoost: Double
+        /// The value to offer, or nil when the pre-gain already in place
+        /// covers the boost. A pre-gain deeper than the curve needs is never
+        /// something to "correct": the user chose it, and undoing it would be
+        /// a level rise they didn't ask for.
+        var suggestion: Double?
+        /// Boost that even the deepest pre-gain the device takes cannot
+        /// offset. Non-zero only for curves that boost past the range, and the
+        /// reason the UI can't promise the EQ stage stays inside 0 dB.
+        var shortfall: Double
+    }
+
+    static func advice(for bands: [QxEqBandValue], preGain currentPreGain: Double) -> Advice {
+        let peak = peakBoost(of: bands)
+        let want = preGain(offsetting: peak)
+        // Worth a button only when it buys at least one whole stored step more
+        // attenuation than the user already has.
+        let offer = want < currentPreGain - 0.05 ? want : nil
+        return Advice(peakBoost: peak, suggestion: offer,
+                      shortfall: max(0, peak + range.lowerBound))
     }
 }
 

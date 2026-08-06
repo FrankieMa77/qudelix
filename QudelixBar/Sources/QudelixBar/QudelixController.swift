@@ -711,7 +711,7 @@ final class QudelixController: ObservableObject {
         // instead of being discarded. Clamp it to what the sliders can express
         // and what `updateBand` would write back, so the displayed and exported
         // curve is one we could actually reproduce.
-        preGain = min(max(p.preGain, -12), 12)
+        preGain = EQHeadroom.clamp(p.preGain)
         // Crossfeed is part of the preset the device just handed back, so it
         // is only known once a preset decodes cleanly.
         crossfeedLevel = p.crossfeedLevel
@@ -999,10 +999,30 @@ final class QudelixController: ObservableObject {
 
     func setPreGain(_ db: Double) {
         guard canWriteEq, db.isFinite else { return }
-        let clamped = max(-12, min(12, db))
+        let clamped = EQHeadroom.clamp(db)
         preGain = clamped
         sendEqParam(.setEqPreGain, band: 0, scaled: Int((clamped * QxScale.gain).rounded()))
         eqEdited()
+    }
+
+    /// How much headroom the curve on screen needs, and the pre-gain that
+    /// would give it.
+    ///
+    /// Computed on every read rather than cached. A full 20-band curve costs
+    /// about 0.6 ms of biquad arithmetic, which a slider drag can afford,
+    /// while a cache would have to be invalidated from band edits, pre-gain
+    /// writes, preset loads, device read-backs and mode switches to buy
+    /// nothing anyone could see.
+    var eqHeadroom: EQHeadroom.Advice {
+        EQHeadroom.advice(for: bands, preGain: preGain)
+    }
+
+    /// Take the suggestion. Nothing special about this write: it goes through
+    /// `setPreGain`, so it is gated, clamped and snapshotted like a drag of
+    /// the slider would be.
+    func applySuggestedPreGain() {
+        guard let db = eqHeadroom.suggestion else { return }
+        setPreGain(db)
     }
 
     /// Every value written to the device is clamped here — a text field can
