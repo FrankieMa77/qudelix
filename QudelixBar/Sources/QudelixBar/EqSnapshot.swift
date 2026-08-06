@@ -33,13 +33,15 @@ enum EqSnapshotFile {
     }
 
     static func load() -> EqSnapshot? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              (attrs[.size] as? Int ?? 0) <= 100_000,
-              let data = try? Data(contentsOf: url),
+        guard let data = SafeFile.read(url, cap: 100_000),
               let snap = try? JSONDecoder().decode(EqSnapshot.self, from: data)
         else { return nil }
         // Off-disk values head for the device; clamp like every other input.
         var s = snap
+        // The name heads for the UI: the one string in this pipeline that a
+        // handcrafted file controls gets the same scrub every device string
+        // gets (control/bidi scalars out, length capped).
+        s.name = s.name.map(QudelixController.displayName)
         s.preGain = s.preGain.isFinite ? min(max(s.preGain, -12), 12) : 0
         s.bands = s.bands.map { band in
             var b = band

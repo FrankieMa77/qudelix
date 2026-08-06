@@ -215,6 +215,26 @@ final class BLETransport: NSObject {
             return
         }
         central.scanForPeripherals(withServices: nil, options: nil)
+        // Duty-cycle the unfiltered scan: continuous discovery is this
+        // app's single biggest idle energy cost, and a 5K that isn't in
+        // range now is rarely in range one second later. Bursts of 10 s
+        // scanning, then 50 s of radio quiet — worst-case pickup latency
+        // rises to a minute, which a menu bar companion can afford. The
+        // pinned-reconnect path above never reaches this (it connects by
+        // identifier without scanning).
+        scanBurstEnd?.cancel()
+        let pause = DispatchWorkItem { [weak self] in
+            guard let self, self.peripheral == nil else { return }
+            self.central.stopScan()
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.scanRestSeconds) { [weak self] in
+                guard let self, self.peripheral == nil,
+                      self.central.state == .poweredOn else { return }
+                self.beginScan()
+            }
+        }
+        scanBurstEnd = pause
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scanBurstSeconds,
+                                      execute: pause)
     }
 
     /// Backoff between reconnect attempts, and a ceiling on a pending connect.
@@ -227,7 +247,10 @@ final class BLETransport: NSObject {
     private var reconnectDelay: TimeInterval = 0.5
     private static let maxReconnectDelay: TimeInterval = 8
     private static let connectTimeoutSeconds: TimeInterval = 10
+    private static let scanBurstSeconds: TimeInterval = 10
+    private static let scanRestSeconds: TimeInterval = 50
     private var connectTimeout: DispatchWorkItem?
+    private var scanBurstEnd: DispatchWorkItem?
     private var scanScheduled = false
 
     private func scheduleScan() {

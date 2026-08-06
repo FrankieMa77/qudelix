@@ -121,6 +121,25 @@ struct PersistedStageState: Codable {
     var manualRateHz: Double?
 }
 
+/// Reads for user-writable state files. `Data(contentsOf:)` follows a
+/// symlink that the size pre-check (attributesOfItem stats the LINK) never
+/// saw — a planted link at one of our paths defeats every cap. Same
+/// O_NOFOLLOW posture the log files have had all along.
+enum SafeFile {
+    static func read(_ url: URL, cap: Int) -> Data? {
+        let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return open(path, O_RDONLY | O_NOFOLLOW)
+        }
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var data = Data(count: cap + 1)
+        let n = data.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+        guard n > 0, n <= cap else { return nil }   // oversized = not ours
+        return data.prefix(n)
+    }
+}
+
 enum StageStateFile {
     static var directory: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
@@ -137,9 +156,7 @@ enum StageStateFile {
     private static let maxBytes = 1_000_000
 
     static func load() -> PersistedStageState? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              (attrs[.size] as? Int ?? 0) <= maxBytes,
-              let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = SafeFile.read(url, cap: maxBytes) else { return nil }
         if let state = try? JSONDecoder().decode(PersistedStageState.self, from: data) {
             return state
         }

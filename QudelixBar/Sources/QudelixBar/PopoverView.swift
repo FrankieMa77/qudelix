@@ -1,3 +1,4 @@
+import CoreAudio
 import SwiftUI
 
 struct PopoverView: View {
@@ -322,32 +323,24 @@ struct VolumeControl: View {
 struct UsbAudioRow: View {
     @EnvironmentObject var stageState: StageState
     @EnvironmentObject var controller: QudelixController
+    // Cached: both are mach round-trips into coreaudiod, and this body
+    // re-evaluates on every publish (once a second with the meter running).
+    // Refreshed when the row appears and when the device identity changes.
+    @State private var availableRates: [Double] = []
+    @State private var bitDepth: Int?
 
     var body: some View {
         if let device = stageState.qudelixOutput {
-            let available = AudioOutputs.availableNominalRates(device.id)
-            let rates = available.isEmpty ? [44100, 48000, 88200, 96000] : available
             VStack(spacing: 5) {
             HStack(spacing: 8) {
                 Text("USB audio")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
-                Picker("", selection: Binding(
-                    get: { device.sampleRate },
-                    // manual: the user's own pick is the baseline that
-                    // auto rate switching returns to on lossy content.
-                    set: { stageState.setNominalRate($0, for: device, manual: true) })) {
-                    ForEach(rates, id: \.self) { r in
-                        Text(Self.kHz(r)).tag(r)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
-                .labelsHidden()
+                ratePicker(device)
                 Text("kHz")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
-                if let bits = AudioOutputs.outputBitDepth(device.id) {
+                if let bits = bitDepth {
                     Text("\(bits)-bit")
                         .font(.system(size: 9).monospacedDigit())
                         .foregroundStyle(.tertiary)
@@ -423,8 +416,35 @@ struct UsbAudioRow: View {
                 Spacer()
             }
             }
-            .onAppear { stageState.watcher.refreshNow() }
+            .onAppear {
+                stageState.watcher.refreshNow()
+                refreshDeviceFacts(device.id)
+            }
+            .onChange(of: device.id) { _, id in refreshDeviceFacts(id) }
         }
+    }
+
+    private func ratePicker(_ device: AudioOutput) -> some View {
+        let rates: [Double] = availableRates.isEmpty
+            ? [44100, 48000, 88200, 96000] : availableRates
+        let binding = Binding<Double>(
+            get: { device.sampleRate },
+            // manual: the user's own pick is the baseline that auto rate
+            // switching returns to on lossy content.
+            set: { stageState.setNominalRate($0, for: device, manual: true) })
+        return Picker("", selection: binding) {
+            ForEach(rates, id: \.self) { r in
+                Text(Self.kHz(r)).tag(r)
+            }
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.mini)
+        .labelsHidden()
+    }
+
+    private func refreshDeviceFacts(_ id: AudioDeviceID) {
+        availableRates = AudioOutputs.availableNominalRates(id)
+        bitDepth = AudioOutputs.outputBitDepth(id)
     }
 
     private func autoStatus(current: Double) -> String {
@@ -638,7 +658,7 @@ struct PresetsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if controller.activePreset == nil || controller.activePreset == 255 {
+            if controller.activePreset == nil {
                 Text("Current EQ is a custom setting, not a saved slot.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }

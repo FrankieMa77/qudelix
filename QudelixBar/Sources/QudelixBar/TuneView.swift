@@ -62,6 +62,12 @@ struct TuneView: View {
         }
         .onDisappear {
             stageState.engine.processor.setMuted(false)
+            // The sessions are view-owned and die with the popover — but
+            // their DEVICE state must not: an abandoned tone test leaves
+            // the EQ switched off, an abandoned comparison leaves a trial
+            // curve and its session pre-gain applied.
+            if tones.phase == .running { tones.stop(controller) }
+            if tuner.phase == .running { tuner.cancel(controller) }
         }
     }
 

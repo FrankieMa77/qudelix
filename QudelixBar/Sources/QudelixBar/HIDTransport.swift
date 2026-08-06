@@ -49,7 +49,6 @@ final class HIDTransport {
     /// device has stopped accepting reports, so this link is no longer usable.
     var onLinkUnusable: (() -> Void)?
 
-    var isOpen: Bool { attachedDevice != nil }
 
     func start() {
         queue.async { self.startOnQueue() }
@@ -62,11 +61,6 @@ final class HIDTransport {
         // Match the vendor-defined interface only: the 5K also exposes
         // consumer-control/audio HID interfaces we must not claim.
         //
-        // Vendor 0x0A12 is Cambridge Silicon Radio / Qualcomm, shared by a great
-        // many unrelated Bluetooth dongles and audio devices, so vendor alone is
-        // far too broad — writing this protocol to someone's random CSR dongle
-        // would be bad. Product ID is matched too, and deviceAttached() makes a
-        // final check on the product name before opening anything.
         // Product ID is deliberately NOT part of the match: 0x4003 is what one
         // 5K reports, and pinning it would lock out any unit or firmware that
         // reports something else. Safety comes from two later checks instead —

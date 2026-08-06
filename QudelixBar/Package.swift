@@ -16,6 +16,10 @@ let package = Package(
         .executableTarget(
             name: "qxusb",
             path: "Sources/qxusb"
+        ),
+        .testTarget(
+            name: "QudelixBarTests",
+            dependencies: ["QudelixBar"]
         )
     ]
 )

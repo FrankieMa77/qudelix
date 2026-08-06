@@ -52,8 +52,12 @@ struct QudelixBarApp: App {
                     started = true
                     controller.start()
                     stageState.start()
-                    quitDelegate.onTerminate = { [weak stageState] in
+                    quitDelegate.onTerminate = { [weak stageState, weak controller] in
+                        // A stale EQ snapshot doesn't just lose the last
+                        // edit — the next connect restores over it.
+                        controller?.flushEqSnapshot()
                         stageState?.saveNow()
+                        stageState?.engine.stop()
                     }
                 }
             }
@@ -112,7 +116,7 @@ struct QudelixBarApp: App {
             }
             lines.append(line)
         }
-        if let idx = controller.activePreset, idx != 255 {
+        if let idx = controller.activePreset {
             lines.append("Preset: \(controller.presetLabel(idx))")
         } else {
             lines.append("Preset: custom")
@@ -143,7 +147,15 @@ extension NSImage {
     /// The given SF symbols drawn side by side as one template image, sized
     /// for the menu bar. Drawn through a drawingHandler so it re-rasterises
     /// at the screen's actual scale instead of shipping a 1x bitmap.
+    /// Composed images are cached: the label re-evaluates on every publish
+    /// (once a second while the meter runs), and a fresh NSImage instance
+    /// defeats SwiftUI's diffing, redrawing the status item each time. The
+    /// cache key is the symbol list — a handful of distinct states, ever.
+    private static var trayCache: [String: NSImage] = [:]
+
     static func traySymbols(_ names: [String]) -> NSImage {
+        let key = names.joined(separator: "|")
+        if let cached = trayCache[key] { return cached }
         let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
         let images = names.compactMap {
             NSImage(systemSymbolName: $0, accessibilityDescription: nil)?
@@ -165,6 +177,7 @@ extension NSImage {
             return true
         }
         composed.isTemplate = true
+        trayCache[key] = composed
         return composed
     }
 }

@@ -124,8 +124,12 @@ final class QudelixController: ObservableObject {
     private var restoreDecided = false
     /// Whether this connection has read the device's EQ at least once.
     private var presetRead = false
+    /// Whether this connection has seen the device report its eq_mode.
+    private var sawEqMode = false
     /// The name attached to the current curve (import file, AutoEq entry).
     private var eqSourceName: String?
+    private var lastImplausibleDump = Date.distantPast
+    private var lastStateLogLine = ""
 
     /// Call after any EQ mutation reaches the device. Debounced twice:
     /// a quick app-side snapshot, and a slower ask for the device to
@@ -156,6 +160,14 @@ final class QudelixController: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: snap)
     }
 
+    /// For the quit path: the debounced snapshot must not die with the
+    /// process — a stale snapshot doesn't just lose the last edit, the next
+    /// connect RESTORES over it.
+    func flushEqSnapshot() {
+        snapshotWork?.cancel()
+        snapshotNow()
+    }
+
     private func snapshotNow() {
         let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: bands,
                               preGain: preGain, enabled: eqEnabled,
@@ -169,16 +181,24 @@ final class QudelixController: ObservableObject {
     /// a different curve than this app last saw — a hard restart reverted
     /// its RAM state, or a reset wiped it — put the last one back.
     private func restoreIfNeeded() {
-        // Both must hold before the once-per-connection decision is taken:
-        // the read-back can beat the handshake's compatibility verdict, and
-        // deciding while writes are still gated would silently skip the
-        // restore for the whole connection.
-        guard !restoreDecided, presetRead, compatibility.canWrite else { return }
+        // Everything here must hold before the once-per-connection decision
+        // is taken: the read-back can beat the compatibility verdict, a
+        // pending group switch gates the very writes a restore would send
+        // (they'd be dropped silently), and deciding against the handshake's
+        // provisional group burns the decision before eq_mode has spoken.
+        guard !restoreDecided, presetRead, compatibility.canWrite,
+              pendingGroup == nil, pendingEqMode == nil else { return }
+        if let snap = eqSnapshot, snap.groupRaw != eqGroup.rawValue, !sawEqMode {
+            return   // the device's real mode isn't known yet; stay undecided
+        }
         restoreDecided = true
         guard let snap = eqSnapshot, snap.groupRaw == eqGroup.rawValue,
               snap.bands.count == bandCount,
               !snap.matches(bands: bands, preGain: preGain) else { return }
         DebugLog.shared.log("device EQ differs from last seen — restoring")
+        // The same preamble apply() sends: band params are only meaningful
+        // against the parametric EQ type.
+        transportSend(.setEqType, [eqGroup.rawValue, 1])
         setPreGain(snap.preGain)
         for (i, band) in snap.bands.enumerated() { updateBand(i, band) }
         if eqEnabled != snap.enabled { setEqEnabled(snap.enabled) }
@@ -292,6 +312,8 @@ final class QudelixController: ObservableObject {
         pendingEqMode = nil
         restoreDecided = false
         presetRead = false
+        sawEqMode = false
+        eqSourceName = nil
         batteryAlerts.connectionReset()
         state = QxDeviceState()
 
@@ -521,15 +543,16 @@ final class QudelixController: ObservableObject {
         // would let any stale notification resolve a mode switch that is
         // still waiting on its real confirmation.
         if let mode = state.eqMode {
+            sawEqMode = true
             setEqGroup(mode == 1 ? .b20 : .user)
             state.eqMode = nil
         }
-        if let fw = state.fwVersion { firmwareVersion = fw }
-        if let b = state.batteryPercent { batteryPercent = b }
-        charging = state.charging
+        if let fw = state.fwVersion, fw != firmwareVersion { firmwareVersion = fw }
+        if let b = state.batteryPercent, b != batteryPercent { batteryPercent = b }
+        if charging != state.charging { charging = state.charging }
         batteryAlerts.update(batteryPercent: batteryPercent, charging: charging)
-        if let sr = state.sampleRateLabel { sampleRate = sr }
-        if let src = state.inputSourceLabel { inputSource = src }
+        if let sr = state.sampleRateLabel, sr != sampleRate { sampleRate = sr }
+        if let src = state.inputSourceLabel, src != inputSource { inputSource = src }
         if let m = state.usbMute { muted = m }
         if let fs = state.usbFsMode { usbFsMode = fs }
         // EQ group config only applies when it describes the group we're
@@ -567,12 +590,18 @@ final class QudelixController: ObservableObject {
         case .ok: compat = "ok"
         case .unsupported(let t, _): compat = "UNSUPPORTED(\(t))"
         }
-        DebugLog.shared.log("compat=\(compat) model=\(state.deviceId) eqMode=\(state.eqMode.map(String.init) ?? "?")")
-        DebugLog.shared.log("state: fw=\(firmwareVersion ?? "?") batt=\(batteryPercent.map { "\($0)%" } ?? "?")"
+        // Change-only: a battery push every five seconds was writing three
+        // identical log lines per packet, forever.
+        let stateLine = "compat=\(compat) model=\(state.deviceId)"
+            + " | fw=\(firmwareVersion ?? "?") batt=\(batteryPercent.map { "\($0)%" } ?? "?")"
             + " vol=\(String(format: "%.1fdB", volumeDb))"
             + " max=\(String(format: "%.0f", volumeMax)) sr=\(sampleRate ?? "?") src=\(inputSource ?? "?")"
             + " eq=\(eqEnabled ? "on" : "off") preset=\(activePreset.map(String.init) ?? "?")"
-            + " nameMask=\(String(state.presetNameMask, radix: 2))")
+            + " nameMask=\(String(state.presetNameMask, radix: 2))"
+        if stateLine != lastStateLogLine {
+            lastStateLogLine = stateLine
+            DebugLog.shared.log(stateLine)
+        }
 
         // Fetch saved preset names once the name mask is known — but not while a
         // group change is still queued, or we would request names using the mask
@@ -600,12 +629,17 @@ final class QudelixController: ObservableObject {
             presetRead = true
             restoreIfNeeded()
             // The raw buffer is the only way to fix a wrong layout against
-            // real hardware; dump it once per readback.
-            let hex = assembler.buffer.map { String(format: "%02X", $0) }.joined(separator: " ")
-            DebugLog.shared.log("raw preset buffer: \(hex)")
-            let decoded = p.bands.map { String(format: "f%d g%.1f q%.2f %d",
-                                               $0.freq, $0.gain, $0.q, $0.filter.rawValue) }
-            DebugLog.shared.log("decoded: preGain \(p.preGain) | " + decoded.joined(separator: " · "))
+            // real hardware — but the device decides how many readbacks
+            // happen, and a hostile one could flood these ~400-char lines
+            // until rotation evicts the history a bug report needs.
+            if Date().timeIntervalSince(lastImplausibleDump) > 10 {
+                lastImplausibleDump = Date()
+                let hex = assembler.buffer.map { String(format: "%02X", $0) }.joined(separator: " ")
+                DebugLog.shared.log("raw preset buffer: \(hex)")
+                let decoded = p.bands.map { String(format: "f%d g%.1f q%.2f %d",
+                                                   $0.freq, $0.gain, $0.q, $0.filter.rawValue) }
+                DebugLog.shared.log("decoded: preGain \(p.preGain) | " + decoded.joined(separator: " · "))
+            }
             return
         }
         // `looksPlausible` is deliberately wider than the editor's range, so a
@@ -638,6 +672,10 @@ final class QudelixController: ObservableObject {
     /// dropped rather than stored: nothing indexes an array with this, but a
     /// bogus index silently un-highlights every row.
     private func setActivePreset(_ idx: Int) {
+        // 255 is the device's explicit "custom curve, no slot" sentinel —
+        // dropping it left the previous slot highlighted for a curve it no
+        // longer describes.
+        if idx == 255 { activePreset = nil; return }
         guard (0..<Self.presetCount).contains(idx) else { return }
         activePreset = idx
     }
@@ -686,9 +724,11 @@ final class QudelixController: ObservableObject {
         }
         requestedNames = false
         presetNames = [:]
-        // The active-slot highlight belongs to the group we just left; the
-        // config re-request below refreshes it for this group.
+        // The active-slot highlight and the curve's source name belong to
+        // the group we just left; the config re-request below refreshes the
+        // slot for this group.
         activePreset = nil
+        eqSourceName = nil
         transportSend(.reqEqPreset, [group.requestMask])
         transportSend(.reqDevConfig, [0xC0])   // sys2 | eq → this group's cfg + name mask
     }

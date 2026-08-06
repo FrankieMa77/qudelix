@@ -12,7 +12,7 @@ enum QxCmd: UInt16 {
     case rspDevStatus     = 0x0111
     case reqDevConfig     = 0x0120  // arg = bitmask (0x3C = playTime|batt|mic|dac, 0xC0 = sys2|eq)
     case rspDevConfig     = 0x0121
-    case reqEqPreset      = 0x0123  // arg = group bitmask (1 = usr, 2 = spk)
+    case reqEqPreset      = 0x0123  // arg = group bitmask (1 = usr, 2 = spk, 4 = b20)
     case rspEqPresetL     = 0x0124
     case rspEqPresetH     = 0x0125
     case rspEqPreset      = 0x0128
@@ -39,7 +39,7 @@ enum QxCmd: UInt16 {
     case saveEqPreset     = 0x0708  // [presetIndex]
     case loadEqPreset     = 0x0709  // [presetIndex]
     case setEqPresetName  = 0x070A
-    case reqEqPresetName  = 0x070B  // [presetIndex]
+    case reqEqPresetName  = 0x070B  // [group, presetIndex]
     case rspEqPresetName  = 0x070C
     case setEqMode        = 0x070E  // [mode]: 0 = usr/spk (10-band), 1 = b20 (20-band)
     case setEqBandParam   = 0x070F  // [group, chMask, band, filter, freqHi, freqLo, gainHi, gainLo, qHi, qLo]
@@ -210,8 +210,9 @@ enum QxEqGroup: UInt8 {
 }
 
 enum QxEq {
-    static let groupUser: UInt8 = 0
-    static let chMaskBoth: UInt8 = 0x03
+    // NOTE: no both-channels write mask lives here on purpose. Sending it
+    // on a single-channel group makes the firmware corrupt its own stored
+    // preset struct; the per-group mask is QxEqGroup.writeChannelMask.
     /// Largest band count across groups — sizing only; use the group's own.
     static let maxBandCount = 20
     static let bandCount = 10

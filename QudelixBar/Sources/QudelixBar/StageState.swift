@@ -318,6 +318,9 @@ final class StageState: ObservableObject {
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.meterTick() }
         }
+        // Half a second of slack lets the OS coalesce this wake with
+        // others — metering doesn't care exactly when within the second.
+        timer.tolerance = 0.5
         RunLoop.main.add(timer, forMode: .common)
         meterTimer = timer
     }
@@ -439,9 +442,17 @@ final class StageState: ObservableObject {
     /// verdict changes only after three consecutive agreeing raw results —
     /// track transitions and quiet passages flicker, listeners don't.
     private var qualityWindowsFed = 0
+    private var qualityRate: Double?
 
     private func qualityTick() {
         guard detectQuality else { return }
+        // Rate changed (including by our own switch): half-accumulated
+        // spectra belong to the old rate.
+        if engine.runningSampleRate != qualityRate {
+            qualityRate = engine.runningSampleRate
+            analyzer.reset()
+            qualityWindowsFed = 0
+        }
         let samples = engine.processor.drainSpectrumSamples(QualityAnalyzer.fftSize)
         guard samples.count >= QualityAnalyzer.fftSize else { return }
         analyzer.feed(samples)
@@ -511,6 +522,14 @@ final class StageState: ObservableObject {
             target = manualRateHz ?? device.sampleRate
         }
         guard available.contains(target), device.sampleRate != target else { return }
+
+        // First automatic act with no manual baseline yet: the rate we're
+        // ABOUT to leave becomes the baseline, or lossy content could never
+        // return anywhere — switch down once, ratchet forever.
+        if manualRateHz == nil {
+            manualRateHz = device.sampleRate
+            scheduleSave()
+        }
 
         lastAutoSwitch = Date()
         autoSetRate = target

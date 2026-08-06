@@ -202,6 +202,13 @@ final class StageProcessor {
     func prepare(sampleRate: Double) {
         self.sampleRate = max(8000, sampleRate)
         epoch &+= 1
+        // The spectrum ring holds samples timed for the OLD rate; an FFT
+        // window mixing both mislabels every bin frequency. Unlike the DSP
+        // rings this one is shared by lock, not epoch, so clear it here.
+        os_unfair_lock_lock(specLock)
+        specWritten = 0
+        specWriteIdx = 0
+        os_unfair_lock_unlock(specLock)
         redesign()
     }
 
@@ -362,13 +369,15 @@ final class StageProcessor {
     private var specWritten = 0
 
     /// Copy out the most recent `count` samples in playback order. Returns
-    /// empty until enough audio has passed since the last engine start.
+    /// empty until enough audio has passed since the last prepare().
     func drainSpectrumSamples(_ count: Int) -> [Float] {
         let n = min(count, Self.specRingSize)
+        // Allocated BEFORE the lock: the render thread blocks on this lock,
+        // and a malloc slow path is the one unbounded thing in here.
+        var out = [Float](repeating: 0, count: n)
         os_unfair_lock_lock(specLock)
         defer { os_unfair_lock_unlock(specLock) }
         guard specWritten >= n else { return [] }
-        var out = [Float](repeating: 0, count: n)
         let mask = Self.specRingSize - 1
         var idx = (specWriteIdx - n) & mask
         for i in 0..<n {

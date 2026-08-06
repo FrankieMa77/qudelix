@@ -121,6 +121,12 @@ final class QualityAnalyzer {
         windowsAveraged += 1
     }
 
+    /// Drop any half-accumulated spectra — for rate changes, where mixing
+    /// windows from two rates mislabels every bin frequency.
+    func reset() {
+        windowsAveraged = 0
+    }
+
     /// The last classification's raw numbers, for diagnostics.
     private(set) var lastDebug = ""
 
