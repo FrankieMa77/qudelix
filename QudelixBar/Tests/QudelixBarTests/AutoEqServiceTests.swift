@@ -272,6 +272,171 @@ final class AutoEqServiceTests: XCTestCase {
         XCTAssertFalse(plain.provenance.contains("kHz"), plain.provenance)
     }
 
+    /// A target the user picked is a deliberate choice and is said out loud,
+    /// same as the ceiling; the measurement's own recommendation is not
+    /// treated as news.
+    @MainActor
+    func testChosenTargetIsNamedInTheProvenanceAndTheDefaultIsNot() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+
+        let chosen = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10),
+            options: CorrectionOptions(target: "AutoEq in-ear"))
+        XCTAssertTrue(chosen.provenance.contains("your choice"), chosen.provenance)
+
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        service.seedForPreview([], targets: [
+            AutoEqTarget(label: "Harman over-ear 2018",
+                        recommended: [AutoEqMeasurement(source: "oratory1990", form: "over-ear",
+                                                        rig: "GRAS 45BC ")],
+                        compatible: [])
+        ])
+        let byDefault = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10), options: CorrectionOptions())
+        XCTAssertFalse(byDefault.provenance.contains("your choice"), byDefault.provenance)
+        XCTAssertTrue(byDefault.provenance.contains("Harman over-ear 2018"), byDefault.provenance)
+    }
+
+    /// Bass and tilt are named only when they actually moved the curve —
+    /// otherwise the provenance would claim a personalization that never
+    /// happened.
+    @MainActor
+    func testPersonalizationIsNamedInTheProvenanceOnlyWhenNonZero() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+
+        let tuned = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10),
+            options: CorrectionOptions(bassBoostGain: 3, tilt: -0.2,
+                                       target: "Harman over-ear 2018"))
+        XCTAssertTrue(tuned.provenance.contains("+3.0 dB bass"), tuned.provenance)
+        XCTAssertTrue(tuned.provenance.contains("-0.20 dB/oct tilt"), tuned.provenance)
+
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let plain = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10),
+            options: CorrectionOptions(target: "Harman over-ear 2018"))
+        XCTAssertFalse(plain.provenance.contains("bass"), plain.provenance)
+        XCTAssertFalse(plain.provenance.contains("tilt"), plain.provenance)
+    }
+
+    /// A different target is a different curve. Serving the first request's
+    /// cached fallback for the second would hand back a fit for a target the
+    /// caller never asked for.
+    @MainActor
+    func testCacheDoesNotCrossTargets() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        stub.enqueue(.failure(URLError(.timedOut)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+
+        _ = try await service.correction(
+            for: candidate, shapedFor: limits,
+            options: CorrectionOptions(target: "Harman over-ear 2018"))
+        do {
+            _ = try await service.correction(
+                for: candidate, shapedFor: limits,
+                options: CorrectionOptions(target: "AutoEq in-ear"))
+            XCTFail("expected the failure to surface rather than a fit for the other target")
+        } catch {
+            guard case CorrectionError.offline = error else {
+                return XCTFail("expected .offline, got \(error)")
+            }
+        }
+    }
+
+    /// Bass and tilt are already part of the cache key; a personalized fit
+    /// must not be handed back for a request that asked for none.
+    @MainActor
+    func testCacheDoesNotCrossPersonalization() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        stub.enqueue(.failure(URLError(.timedOut)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+
+        _ = try await service.correction(
+            for: candidate, shapedFor: limits,
+            options: CorrectionOptions(target: "Harman over-ear 2018"))
+        do {
+            _ = try await service.correction(
+                for: candidate, shapedFor: limits,
+                options: CorrectionOptions(bassBoostGain: 3, tilt: -0.2,
+                                           target: "Harman over-ear 2018"))
+            XCTFail("expected the failure to surface rather than the flat fit")
+        } catch {
+            guard case CorrectionError.offline = error else {
+                return XCTFail("expected .offline, got \(error)")
+            }
+        }
+    }
+
+    /// A target picked in the UI has to reach the wire, not just the
+    /// provenance line — this is what the server actually fits against.
+    @MainActor
+    func testChosenTargetReachesTheEqualizeRequest() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+
+        // Seeded with a target that would recommend something else, so a
+        // pass here can only be explained by the explicit choice winning.
+        service.seedForPreview([], targets: [
+            AutoEqTarget(label: "Harman over-ear 2018",
+                        recommended: [AutoEqMeasurement(source: "oratory1990", form: "over-ear",
+                                                        rig: "GRAS 45BC ")],
+                        compatible: [])
+        ])
+        _ = try await service.correction(
+            for: candidate, shapedFor: .qudelix(bandCount: 10),
+            options: CorrectionOptions(target: "AutoEq in-ear"))
+
+        let sent = try XCTUnwrap(stub.requests.first)
+        let root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: XCTUnwrap(sent.httpBody)) as? [String: Any])
+        XCTAssertEqual(root["target"] as? String, "AutoEq in-ear")
+    }
+
+    /// Leaving the picker on its default must resolve exactly as it always
+    /// has: the measurement's own recommendation, fetched from the service's
+    /// own target list rather than a hardcoded guess.
+    @MainActor
+    func testDefaultTargetStillResolvesToTheMeasurementsRecommendation() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        service.seedForPreview([], targets: [
+            AutoEqTarget(label: "Harman over-ear 2018",
+                        recommended: [AutoEqMeasurement(source: "oratory1990", form: "over-ear",
+                                                        rig: "GRAS 45BC ")],
+                        compatible: [])
+        ])
+
+        _ = try await service.correction(for: candidate, shapedFor: .qudelix(bandCount: 10),
+                                         options: CorrectionOptions())
+
+        let sent = try XCTUnwrap(stub.requests.first)
+        let root = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: XCTUnwrap(sent.httpBody)) as? [String: Any])
+        XCTAssertEqual(root["target"] as? String, "Harman over-ear 2018")
+    }
+
     /// The published-preset path can't honour a ceiling — the fit happened at
     /// publication time — so it has to say so rather than drop it silently.
     /// The wording is checked without a download; `correction(for:…)` appends
@@ -290,6 +455,19 @@ final class AutoEqServiceTests: XCTestCase {
         let clamped = try XCTUnwrap(AutoEqIndex.ceilingWarning(
             for: CorrectionOptions(maxCorrectionHz: 100), limits: limits))
         XCTAssertTrue(clamped.contains("8.0 kHz"), clamped)
+    }
+
+    /// The published-preset path can't honour a target choice either — the
+    /// file was fitted to one target at publication time — so it has to say
+    /// so exactly as it does for an unhonoured ceiling.
+    func testUnhonouredTargetWarningNamesTheTargetAndOnlyFiresWhenOneWasChosen() throws {
+        XCTAssertNil(AutoEqService.unhonouredTargetWarning(for: CorrectionOptions()),
+                     "the recommended default needs no warning")
+
+        let warning = try XCTUnwrap(AutoEqService.unhonouredTargetWarning(
+            for: CorrectionOptions(target: "AutoEq in-ear")))
+        XCTAssertTrue(warning.contains("AutoEq in-ear"), warning)
+        XCTAssertTrue(warning.contains("not applied"), warning)
     }
 
     func testCeilingIsSpelledWithOneDecimal() {
@@ -463,6 +641,43 @@ final class AutoEqServiceTests: XCTestCase {
             compatible: [])
         XCTAssertEqual(AutoEqService.target(for: trimmed, in: [mismatch]),
                        "Harman over-ear 2018")
+    }
+
+    /// Over-ear and in-ear targets are fitted for different acoustics, so the
+    /// grouping is what makes the picker legible to someone who can't tell
+    /// the labels apart on sight.
+    func testTargetFormIsReadOffItsOwnMeasurementsNotInvented() {
+        let overEar = AutoEqTarget(label: "Harman over-ear 2018",
+                                   recommended: [AutoEqMeasurement(source: "oratory1990",
+                                                                   form: "over-ear", rig: nil)],
+                                   compatible: [])
+        XCTAssertEqual(overEar.form, "over-ear")
+
+        let mixed = AutoEqTarget(
+            label: "AutoEq generic",
+            recommended: [AutoEqMeasurement(source: "a", form: "over-ear", rig: nil)],
+            compatible: [AutoEqMeasurement(source: "b", form: "in-ear", rig: nil)])
+        XCTAssertNil(mixed.form, "endorsing both forms picks neither")
+
+        let unknown = AutoEqTarget(label: "Mystery",
+                                   recommended: [AutoEqMeasurement(source: "a", form: nil, rig: nil)],
+                                   compatible: [])
+        XCTAssertNil(unknown.form, "the catalogue doesn't say, so nothing is guessed")
+    }
+
+    func testGroupedTargetsSortsByFormAndKeepsTheUnknownsTogether() {
+        let overEar = AutoEqTarget(label: "Harman over-ear 2018",
+                                   recommended: [AutoEqMeasurement(source: "a", form: "over-ear", rig: nil)],
+                                   compatible: [])
+        let inEar = AutoEqTarget(label: "Harman in-ear 2019",
+                                 recommended: [AutoEqMeasurement(source: "b", form: "in-ear", rig: nil)],
+                                 compatible: [])
+        let unknown = AutoEqTarget(label: "Mystery target", recommended: [], compatible: [])
+
+        let groups = AutoEqService.groupedTargets([unknown, inEar, overEar])
+        XCTAssertEqual(groups.map(\.form), ["over-ear", "in-ear", nil])
+        XCTAssertEqual(groups.first?.targets.map(\.label), ["Harman over-ear 2018"])
+        XCTAssertEqual(groups.last?.targets.map(\.label), ["Mystery target"])
     }
 
     func testRankingPutsPrefixMatchesFirst() {

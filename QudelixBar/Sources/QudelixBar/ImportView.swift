@@ -19,6 +19,9 @@ struct ImportView: View {
     @State private var mode: Mode = .optimized
     @State private var bassBoost: Double = 0
     @State private var tilt: Double = 0
+    /// nil is "recommended for this measurement" — resolved per candidate at
+    /// apply time, the same as it always has been.
+    @State private var selectedTarget: String?
     @State private var applying: String?
     /// Deliberately plain `@State`, never `@AppStorage`: it describes what is
     /// playing at this moment, not a preference. Remembering it across launches
@@ -127,6 +130,7 @@ struct ImportView: View {
     @ViewBuilder
     private var personalization: some View {
         VStack(alignment: .leading, spacing: 2) {
+            targetRow
             slider("Bass", value: $bassBoost, in: -6...6,
                    display: String(format: "%+.1f dB", bassBoost),
                    help: "Low-shelf lift on top of the target. 0 dB is the target as published.")
@@ -138,12 +142,43 @@ struct ImportView: View {
                 Text("Fitted to the \(controller.bandCount)-band mode — nothing is clamped on the way to the device.")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                if bassBoost != 0 || tilt != 0 {
-                    Button("Reset") { bassBoost = 0; tilt = 0 }
+                if bassBoost != 0 || tilt != 0 || selectedTarget != nil {
+                    Button("Reset") { bassBoost = 0; tilt = 0; selectedTarget = nil }
                         .buttonStyle(.link).font(.system(size: 9))
                 }
             }
         }
+    }
+
+    /// The target picker. Only meaningful on the optimizer path — a published
+    /// preset is already fitted to whichever target its author chose, and
+    /// `apply` names that as unhonoured rather than pretending to redirect it.
+    @ViewBuilder
+    private var targetRow: some View {
+        HStack(spacing: 8) {
+            Text("Target")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .leading)
+            Picker("", selection: $selectedTarget) {
+                Text("Recommended for this measurement").tag(String?.none)
+                ForEach(AutoEqService.groupedTargets(optimizer.targets)) { group in
+                    Section(group.form?.capitalized ?? "Other targets") {
+                        ForEach(group.targets, id: \.label) { target in
+                            Text(target.label).tag(String?(target.label))
+                        }
+                    }
+                }
+            }
+            .labelsHidden()
+            .controlSize(.small)
+        }
+        .help("""
+            Which published target curve the correction is fitted to, before \
+            bass and tilt are layered on top. Over-ear and in-ear curves are \
+            fitted for different acoustics and aren't interchangeable, which \
+            is why they're grouped apart here.
+            """)
     }
 
     // MARK: - Frequency ceiling
@@ -322,13 +357,14 @@ struct ImportView: View {
 
     private func apply(_ candidate: CorrectionCandidate) {
         let source = activeSource
-        // The ceiling goes to both sources. The published path can't honour it
-        // and says so; suppressing it here would replace an explicit warning
-        // with a silent difference between the two modes.
+        // The ceiling and the target both go to both sources. The published
+        // path can't honour either — the fit happened at publication time —
+        // and says so; suppressing them here would replace an explicit
+        // warning with a silent difference between the two modes.
         let options = mode == .optimized
             ? CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt,
-                                maxCorrectionHz: requestedCeilingHz)
-            : CorrectionOptions(maxCorrectionHz: requestedCeilingHz)
+                                target: selectedTarget, maxCorrectionHz: requestedCeilingHz)
+            : CorrectionOptions(target: selectedTarget, maxCorrectionHz: requestedCeilingHz)
         applying = candidate.id
         Task {
             defer { applying = nil }

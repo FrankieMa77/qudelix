@@ -397,8 +397,15 @@ extension AutoEqIndex: CorrectionSource {
             throw AutoEqService.mapped(error, host: Self.host)
         }
 
+        // Both of these are things the caller asked for that this path cannot
+        // deliver, and both are reported here rather than by whoever happens to
+        // be presenting the result — a caller that forgets to ask would
+        // otherwise apply a correction that quietly ignored half the request.
         var warnings: [String] = []
         if let unhonoured = Self.ceilingWarning(for: options, limits: limits) {
+            warnings.append(unhonoured)
+        }
+        if let unhonoured = AutoEqService.unhonouredTargetWarning(for: options) {
             warnings.append(unhonoured)
         }
         let reshaped = file.bands.prefix(limits.bandCount).filter { !limits.admits($0) }.count

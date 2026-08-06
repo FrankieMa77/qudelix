@@ -211,6 +211,26 @@ struct AutoEqTarget: Hashable {
     let label: String
     let recommended: [AutoEqMeasurement]
     let compatible: [AutoEqMeasurement]
+
+    /// The one form every pairing this target is published against agrees on,
+    /// or nil when they don't. The catalogue has no field that names a
+    /// target's form directly — this is read off the measurements it
+    /// endorses, and a target recommended for both over-ear and in-ear gear
+    /// picks no side rather than have one guessed for it.
+    var form: String? {
+        let forms = Set((recommended + compatible).compactMap(\.form))
+        return forms.count == 1 ? forms.first : nil
+    }
+}
+
+/// One form-factor grouping of the target catalogue, for a picker meant to be
+/// read by someone who doesn't already know these labels apart.
+struct AutoEqTargetGroup: Identifiable {
+    /// nil for whatever the catalogue doesn't pin to a single form; shown
+    /// last rather than folded into a guess.
+    let form: String?
+    let targets: [AutoEqTarget]
+    var id: String { form ?? "\u{1}other" }
 }
 
 /// The three filter shapes the API's `FilterTypeEnum` admits. They map 1:1 onto
@@ -404,7 +424,9 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     @Published private(set) var state: State = .idle
     @Published private(set) var models: [AutoEqModel] = []
 
-    private var targets: [AutoEqTarget] = []
+    /// Read by the target picker as well as resolved internally, so it needs
+    /// to be visible outside the class rather than just cached for this file.
+    @Published private(set) var targets: [AutoEqTarget] = []
     private var loadTask: Task<Void, Never>?
 
     /// Last correction that actually came back, per request shape. A transient
@@ -548,6 +570,34 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         }
         let form = measurement.form ?? "over-ear"
         return form == "over-ear" ? "Harman over-ear 2018" : "Harman in-ear 2019"
+    }
+
+    /// Targets sorted into the shapes a non-expert already thinks in, rather
+    /// than handed over as one flat list of labels nothing tells apart. Over-
+    /// ear and in-ear targets are fitted for different acoustics and are not
+    /// interchangeable, so the form they were published for is what the
+    /// grouping is built on.
+    nonisolated static func groupedTargets(_ targets: [AutoEqTarget]) -> [AutoEqTargetGroup] {
+        let byForm = Dictionary(grouping: targets, by: \.form)
+        let known = ["over-ear", "in-ear", "earbud"].compactMap { form in
+            byForm[form].map { AutoEqTargetGroup(form: form, targets: $0) }
+        }
+        let rest = byForm[nil].map { [AutoEqTargetGroup(form: nil, targets: $0)] } ?? []
+        return known + rest
+    }
+
+    /// Why a target the user picked goes unhonoured on the published-preset
+    /// path, or nil when the default (the measurement's own recommendation)
+    /// was left in place.
+    ///
+    /// A published file is fitted to one target at the moment it's
+    /// published; there is no refit here to redirect at request time. Saying
+    /// so is the only honest answer — dropping the choice silently would
+    /// leave the user believing the file matches a target it never saw.
+    nonisolated static func unhonouredTargetWarning(for options: CorrectionOptions) -> String? {
+        guard let target = options.target else { return nil }
+        return "the “\(target)” target was not applied — a published preset is fitted to "
+            + "one target at publication time; use “Fit to my device” to choose one"
     }
 
     // MARK: Request construction
@@ -745,12 +795,27 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         var resolved = options
         resolved.target = chosen
 
+        // A target the user picked is worth flagging as a deliberate choice;
+        // the measurement's own recommendation speaks for itself and needs no
+        // extra words, or a correction that has always used the default
+        // would start reading as if something had changed about it.
+        let targetWasChosen = options.target != nil
+        var personalized: [String] = []
+        if options.bassBoostGain != 0 {
+            personalized.append(String(format: "%+.1f dB bass", options.bassBoostGain))
+        }
+        if options.tilt != 0 {
+            personalized.append(String(format: "%+.2f dB/oct tilt", options.tilt))
+        }
+
         // Say the ceiling out loud, and say the one that was actually sent
         // rather than the one that was asked for. Months later, a curve that
         // stops at 16 kHz must not look like a defect.
         let ceiling = resolved.correctionCeiling(for: limits)
         let provenance = "\(candidate.title) · \(candidate.detail) → \(chosen)"
+            + (targetWasChosen ? " (your choice)" : "")
             + " · \(limits.bandCount) bands"
+            + personalized.map { " · \($0)" }.joined()
             + (ceiling.map { " · fitted up to \(CorrectionOptions.describeCeiling($0))" } ?? "")
         do {
             let (file, warnings) = try await equalize(model: candidate.title,
