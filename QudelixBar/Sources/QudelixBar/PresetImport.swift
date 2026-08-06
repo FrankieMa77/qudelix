@@ -92,6 +92,134 @@ struct ParametricEQFile {
     }
 }
 
+// MARK: - Shared HTTP
+
+/// Non-2xx response, with enough of the body to be worth showing a user.
+struct HTTPStatusError: Error {
+    let status: Int
+    /// First couple of KB only — APIs put their `detail` at the front.
+    let body: String
+}
+
+/// The one network path every correction source uses.
+///
+/// Session configuration, redirect pinning and the streaming size ceiling live
+/// here rather than on any single source: a second path would be a second
+/// chance to forget one of the three.
+enum PinnedHTTP {
+    /// Hosts this app is willing to talk to, and the only places a redirect
+    /// may land. Nothing sensitive travels on these requests — the session is
+    /// ephemeral and carries no cookies or credentials — but a host check made
+    /// when building a URL is worth nothing if a 302 can move the request
+    /// afterwards.
+    static let allowedHosts: Set<String> = ["raw.githubusercontent.com", "autoeq.app"]
+
+    private final class HostPinnedRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            guard let host = request.url?.host, PinnedHTTP.allowedHosts.contains(host),
+                  request.url?.scheme == "https" else {
+                completionHandler(nil)
+                return
+            }
+            completionHandler(request)
+        }
+    }
+
+    private static let redirectPolicy = HostPinnedRedirects()
+
+    /// One shared session. A computed property would build a fresh `URLSession`
+    /// per fetch, and a session retains itself until it is invalidated — which
+    /// never happens here — so every load would leak it along with its
+    /// delegate queue.
+    static let session: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 20
+        cfg.timeoutIntervalForResource = 60
+        return URLSession(configuration: cfg, delegate: redirectPolicy, delegateQueue: nil)
+    }()
+
+    /// Build a request only for a host on the list, over TLS.
+    static func request(_ url: URL, accept: String) throws -> URLRequest {
+        guard url.scheme == "https", let host = url.host, allowedHosts.contains(host) else {
+            throw URLError(.badURL)
+        }
+        var req = URLRequest(url: url)
+        req.setValue(accept, forHTTPHeaderField: "Accept")
+        return req
+    }
+
+    /// How much of an error body is read before giving up on it.
+    static let maxErrorBodyBytes = 2048
+
+    /// Download with a hard ceiling that is enforced *while* the body arrives.
+    ///
+    /// `session.data(for:)` buffers the whole response before returning, so a
+    /// size check on its result only rejects a body already sitting in memory.
+    /// Streaming lets us stop reading — and cancel — the moment a response runs
+    /// past what the payload could plausibly be.
+    static func fetch(_ request: URLRequest, limit: Int) async throws -> Data {
+        let (stream, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            stream.task.cancel()
+            throw URLError(.badServerResponse)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            // The status alone is not actionable; the body usually names the
+            // field the server disliked. Read a little, then stop.
+            var head = Data()
+            for try await byte in stream {
+                head.append(byte)
+                if head.count >= maxErrorBodyBytes { break }
+            }
+            stream.task.cancel()
+            throw HTTPStatusError(status: http.statusCode,
+                                  body: String(data: head, encoding: .utf8) ?? "")
+        }
+        if http.expectedContentLength > Int64(limit) {
+            stream.task.cancel()
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        var data = Data()
+        data.reserveCapacity(min(limit, 1 << 16))
+        for try await byte in stream {
+            data.append(byte)
+            if data.count > limit {
+                stream.task.cancel()
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+        }
+        return data
+    }
+}
+
+/// Case-insensitive substring match, with matches whose title *starts* with the
+/// query sorted first, so typing "HD 6" surfaces "HD 600" before "Sennheiser
+/// HD 600". Capped so filtering stays instant while typing.
+///
+/// Shared so every correction source ranks its catalogue the same way.
+func rankByTitle<T>(_ items: [T], query: String, cap: Int = 200,
+                    title: (T) -> String) -> [T] {
+    let q = query.trimmingCharacters(in: .whitespaces)
+    guard !q.isEmpty else { return [] }
+    let lower = q.lowercased()
+    var prefixed: [T] = []
+    var contained: [T] = []
+    for item in items {
+        let t = title(item)
+        guard t.localizedCaseInsensitiveContains(q) else { continue }
+        if t.lowercased().hasPrefix(lower) {
+            prefixed.append(item)
+        } else {
+            contained.append(item)
+        }
+        if prefixed.count + contained.count >= cap { break }
+    }
+    return prefixed + contained
+}
+
 // MARK: - AutoEq online database
 
 /// One headphone entry from AutoEq's recommended-results index.
@@ -137,90 +265,17 @@ final class AutoEqIndex: ObservableObject {
     /// height stays sane — the rest is surfaced as a "refine your search" hint.
     static let displayLimit = 6
 
-    /// Case-insensitive substring match. Matches whose title *starts* with the
-    /// query sort first, so typing "HD 6" surfaces "HD 600" before
-    /// "Sennheiser HD 600". Capped so filtering stays instant while typing.
-    var results: [AutoEqEntry] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return [] }
-        var prefixed: [AutoEqEntry] = []
-        var contained: [AutoEqEntry] = []
-        for e in entries {
-            guard e.title.localizedCaseInsensitiveContains(q) else { continue }
-            if e.title.lowercased().hasPrefix(q.lowercased()) {
-                prefixed.append(e)
-            } else {
-                contained.append(e)
-            }
-            if prefixed.count + contained.count >= 200 { break }
-        }
-        return prefixed + contained
-    }
+    var results: [AutoEqEntry] { rankByTitle(entries, query: query) { $0.title } }
 
     /// Index is ~500 KB today; refuse a wildly larger response rather than
     /// buffering whatever the network hands us.
     nonisolated static let maxIndexBytes = 12_000_000
     nonisolated static let maxPresetBytes = 200_000
 
-    /// Refuses to follow a redirect off the one host we trust.
-    ///
-    /// Nothing sensitive travels with these requests — the session is ephemeral
-    /// and carries no cookies or credentials — but the host check in
-    /// `presetURL` is worth nothing if a 302 can move the request afterwards.
-    private final class HostPinnedRedirects: NSObject, URLSessionTaskDelegate {
-        func urlSession(_ session: URLSession, task: URLSessionTask,
-                        willPerformHTTPRedirection response: HTTPURLResponse,
-                        newRequest request: URLRequest,
-                        completionHandler: @escaping (URLRequest?) -> Void) {
-            guard request.url?.host == AutoEqIndex.host, request.url?.scheme == "https" else {
-                completionHandler(nil)
-                return
-            }
-            completionHandler(request)
-        }
-    }
-
     nonisolated static let host = "raw.githubusercontent.com"
-    private nonisolated static let redirectPolicy = HostPinnedRedirects()
 
-    /// One shared session. A computed property would build a fresh `URLSession`
-    /// per fetch, and a session retains itself until it is invalidated — which
-    /// never happens here — so every index load and preset import would leak it
-    /// along with its delegate queue.
-    nonisolated static let session: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 20
-        cfg.timeoutIntervalForResource = 60
-        cfg.httpAdditionalHeaders = ["Accept": "text/plain"]
-        return URLSession(configuration: cfg, delegate: redirectPolicy, delegateQueue: nil)
-    }()
-
-    /// Download with a hard ceiling that is enforced *while* the body arrives.
-    ///
-    /// `session.data(from:)` buffers the whole response before returning, so a
-    /// size check on its result only rejects a body already sitting in memory.
-    /// Streaming lets us stop reading — and cancel — the moment a response runs
-    /// past what a preset or the index could plausibly be.
     nonisolated static func fetch(_ url: URL, limit: Int) async throws -> Data {
-        let (stream, response) = try await session.bytes(from: url)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            stream.task.cancel()
-            throw URLError(.badServerResponse)
-        }
-        if http.expectedContentLength > Int64(limit) {
-            stream.task.cancel()
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        var data = Data()
-        data.reserveCapacity(min(limit, 1 << 16))
-        for try await byte in stream {
-            data.append(byte)
-            if data.count > limit {
-                stream.task.cancel()
-                throw URLError(.dataLengthExceedsMaximum)
-            }
-        }
-        return data
+        try await PinnedHTTP.fetch(PinnedHTTP.request(url, accept: "text/plain"), limit: limit)
     }
 
     #if DEBUG
@@ -245,8 +300,9 @@ final class AutoEqIndex: ObservableObject {
                 state = entries.isEmpty ? .failed("Index was empty") : .ready
                 DebugLog.shared.log("AutoEq index: \(entries.count) headphones")
             } catch {
-                state = .failed(error.localizedDescription)
-                DebugLog.shared.log("AutoEq index failed: \(error.localizedDescription)")
+                let why = AutoEqService.describe(AutoEqService.mapped(error, host: Self.host))
+                state = .failed(why)
+                DebugLog.shared.log("AutoEq index failed: \(why)")
             }
         }
     }
@@ -290,5 +346,53 @@ final class AutoEqIndex: ObservableObject {
             throw URLError(.cannotParseResponse)
         }
         return parsed
+    }
+}
+
+// MARK: - Published presets as a correction source
+
+/// The published-file path, behind the same seam as the optimizer.
+///
+/// It cannot honour `DeviceEQLimits`: the files were fitted for a generic
+/// 10-band equalizer with no gain ceiling, and the fit is fixed at publication
+/// time. What it can do is say so, instead of letting the device quietly
+/// reshape the curve on the way in.
+extension AutoEqIndex: CorrectionSource {
+    var displayName: String { "AutoEq published preset" }
+
+    func prepare() { loadIfNeeded() }
+
+    func search(_ query: String) -> [CorrectionCandidate] {
+        rankByTitle(entries, query: query) { $0.title }.map {
+            CorrectionCandidate(title: $0.title, source: $0.source, form: nil,
+                                rig: nil, token: $0.path)
+        }
+    }
+
+    func correction(for candidate: CorrectionCandidate,
+                    shapedFor limits: DeviceEQLimits,
+                    options: CorrectionOptions) async throws -> CorrectionResult {
+        let entry = AutoEqEntry(title: candidate.title, source: candidate.source,
+                                path: candidate.token)
+        let file: ParametricEQFile
+        do {
+            file = try await Self.fetchPreset(entry)
+        } catch {
+            throw AutoEqService.mapped(error, host: Self.host)
+        }
+
+        var warnings: [String] = []
+        let reshaped = file.bands.prefix(limits.bandCount).filter { !limits.admits($0) }.count
+        if reshaped > 0 {
+            warnings.append("\(reshaped) band(s) fall outside what the device accepts and will be clamped")
+        }
+        if abs(file.preamp) > limits.maxPreamp {
+            warnings.append(String(format: "pre-gain %.1f dB exceeds the device's ±%.0f dB",
+                                   file.preamp, limits.maxPreamp))
+        }
+        return CorrectionResult(
+            file: file,
+            provenance: "\(candidate.title) · \(candidate.detail) → published preset",
+            warnings: warnings)
     }
 }
