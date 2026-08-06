@@ -157,7 +157,9 @@ struct DeviceHeader: View {
 
             if let batt = controller.batteryPercent {
                 HStack(spacing: 3) {
-                    Image(systemName: controller.charging ? "battery.100.bolt" : batteryIcon(batt))
+                    // A plain bolt, not battery.100.bolt — the bolt inside
+                    // the battery glyph is a few pixels tall and unreadable.
+                    Image(systemName: controller.charging ? "bolt.fill" : batteryIcon(batt))
                         .foregroundStyle(batteryColor(batt))
                     Text("\(batt)%")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())

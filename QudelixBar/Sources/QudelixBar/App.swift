@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -22,22 +23,15 @@ struct QudelixBarApp: App {
                 .environmentObject(controller)
                 .environmentObject(stageState)
         } label: {
-            // The menu bar renders template-style (no colour), so battery
-            // state is shown with shapes and text: a bolt while charging,
-            // the battery glyph plus the percentage once it runs low.
+            // One composed template image, not an HStack of Images — the
+            // menu bar item drops all but the first SF symbol when handed
+            // several. Colour is stripped up there anyway, so battery state
+            // is shapes and text: a bolt while charging, the battery glyph
+            // plus the percentage once it runs low.
             HStack(spacing: 3) {
-                Image(systemName: menuIcon)
-                if case .connected = controller.connection,
-                   let batt = controller.batteryPercent {
-                    if controller.charging {
-                        Image(systemName: "bolt.fill")
-                    } else if batt <= BatteryAlerts.veryLowThreshold {
-                        Image(systemName: "battery.0")
-                        Text("\(batt)%")
-                    } else if batt <= BatteryAlerts.lowThreshold {
-                        Image(systemName: "battery.25")
-                        Text("\(batt)%")
-                    }
+                Image(nsImage: NSImage.traySymbols(traySymbols))
+                if let percent = trayPercent {
+                    Text(percent)
                 }
             }
             .onAppear {
@@ -47,12 +41,114 @@ struct QudelixBarApp: App {
                     stageState.start()
                 }
             }
+            .onChange(of: trayTooltip, initial: true) { _, tip in
+                Self.setTrayTooltip(tip)
+            }
         }
         .menuBarExtraStyle(.window)
     }
 
+    private var connected: Bool {
+        if case .connected = controller.connection { return true }
+        return false
+    }
+
     private var menuIcon: String {
-        if case .connected = controller.connection { return "headphones.circle.fill" }
-        return "headphones.circle"
+        connected ? "headphones.circle.fill" : "headphones.circle"
+    }
+
+    private var traySymbols: [String] {
+        var symbols = [menuIcon]
+        if connected, let batt = controller.batteryPercent {
+            if controller.charging {
+                symbols.append("bolt.fill")
+            } else if batt <= BatteryAlerts.veryLowThreshold {
+                symbols.append("battery.0")
+            } else if batt <= BatteryAlerts.lowThreshold {
+                symbols.append("battery.25")
+            }
+        }
+        return symbols
+    }
+
+    private var trayPercent: String? {
+        guard connected, let batt = controller.batteryPercent, !controller.charging,
+              batt <= BatteryAlerts.lowThreshold else { return nil }
+        return "\(batt)%"
+    }
+
+    /// What hovering the menu bar item shows: charge, preset, link.
+    private var trayTooltip: String {
+        guard case .connected(let rawName) = controller.connection else {
+            return "Qudelix — no device connected"
+        }
+        let cleaned = QudelixController.displayName(
+            rawName.replacingOccurrences(of: " USB DAC 96KHz", with: ""))
+        var lines = [cleaned.isEmpty ? "Qudelix" : cleaned]
+        if let batt = controller.batteryPercent {
+            var line = "Battery \(batt)%"
+            if controller.charging {
+                line += " — charging"
+            } else if batt <= BatteryAlerts.veryLowThreshold {
+                line += " — very low"
+            } else if batt <= BatteryAlerts.lowThreshold {
+                line += " — low"
+            }
+            lines.append(line)
+        }
+        if let idx = controller.activePreset, idx != 255 {
+            lines.append("Preset: \(controller.presetLabel(idx))")
+        } else {
+            lines.append("Preset: custom")
+        }
+        switch controller.link {
+        case .usb: lines.append("Connected over USB")
+        case .bluetooth: lines.append("Connected over Bluetooth")
+        case .none: break
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// MenuBarExtra exposes no NSStatusItem, so the tooltip goes onto the
+    /// status item's window directly. Class-name check, not private API; if
+    /// the window isn't found the tooltip is simply absent, nothing worse.
+    private static func setTrayTooltip(_ text: String) {
+        DispatchQueue.main.async {
+            for window in NSApp.windows where window.className == "NSStatusBarWindow" {
+                guard let view = window.contentView else { continue }
+                view.toolTip = text
+                for sub in view.subviews { sub.toolTip = text }
+            }
+        }
+    }
+}
+
+extension NSImage {
+    /// The given SF symbols drawn side by side as one template image, sized
+    /// for the menu bar. Drawn through a drawingHandler so it re-rasterises
+    /// at the screen's actual scale instead of shipping a 1x bitmap.
+    static func traySymbols(_ names: [String]) -> NSImage {
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let images = names.compactMap {
+            NSImage(systemSymbolName: $0, accessibilityDescription: nil)?
+                .withSymbolConfiguration(config)
+        }
+        let spacing: CGFloat = 2
+        let height = images.map(\.size.height).max() ?? 18
+        let width = images.map(\.size.width).reduce(0, +)
+            + spacing * CGFloat(max(images.count - 1, 0))
+        let composed = NSImage(size: NSSize(width: width, height: height),
+                               flipped: false) { _ in
+            var x: CGFloat = 0
+            for image in images {
+                image.draw(in: NSRect(x: x, y: (height - image.size.height) / 2,
+                                      width: image.size.width,
+                                      height: image.size.height))
+                x += image.size.width + spacing
+            }
+            return true
+        }
+        composed.isTemplate = true
+        return composed
     }
 }
