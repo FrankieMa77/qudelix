@@ -32,10 +32,11 @@ right.
 ## Features
 
 - **Live device status** — battery, charging, firmware, sample rate, input source
+- **Battery in the menu bar** — a bolt while charging, the level once it runs
+  low, and notifications at 20% and 10% (see below)
 - **Volume** control with mute
-- **USB sample rate** — switch the rate macOS runs the 5K at (44.1/48/88.2/96)
-  without a trip to Audio MIDI Setup; macOS resamples anything that doesn't
-  match and never switches this itself, so set it to match what you play
+- **Sample rate** — set the rate macOS runs the 5K at, change which rates the
+  device offers, or let the app match the rate to what you're playing (see below)
 - **10-band parametric EQ** editor: filter type, frequency, gain, Q, plus pre-gain
 - **20-band mode** — switch between 10 and 20 bands from the EQ pane; the app
   also follows a switch made anywhere else
@@ -163,6 +164,59 @@ hearing test in any medical sense — if you are worried about your hearing, see
 audiologist. And for most people with ordinary hearing the answer is "nothing to
 correct", which the app will tell you plainly rather than inventing a curve.
 
+## Sample rate
+
+macOS runs a USB DAC at **one fixed rate** and resamples everything else to it.
+Unlike iOS it never switches that rate to match what you're playing, so a 5K
+parked at 96 kHz plays every 44.1 kHz album through a resampler. The row under
+the volume slider fixes that without a trip to Audio MIDI Setup.
+
+![Sample rate row](docs/screenshots/equalizer.png)
+
+**Pick a rate.** 44.1 / 48 / 88.2 / 96 kHz, applied instantly. Match it to what
+you listen to — most music is 44.1 kHz, most video 48 kHz — and the system stops
+resampling.
+
+**Change what the 5K offers.** The device decides which rates it advertises to
+the Mac, and it can be pinned to a single one; if yours is, macOS has nothing
+else to offer and the picker will show only that rate. The label at the end of
+the row says which rates the device is currently offering and changes it. The
+5K restarts its USB connection to re-enumerate, so audio drops for a second or
+two and the app reconnects on its own.
+
+**Or let it follow the music.** With **Auto rate** ticked, the app measures
+what's playing and matches the rate to it: lossless → 44.1 kHz, lossy → the rate
+you last chose yourself, content that genuinely extends beyond the 44.1 family →
+96 kHz. It only acts on a verdict that has held for ten seconds, leaves at least
+45 seconds between changes, and never switches while the Soundstage is on
+(that path resamples anyway). The row narrates every state in plain words —
+"listening to what's playing…", "lossless — set 44.1 kHz automatically",
+"lossy — keeping your rate" — so nothing happens silently. Untick it and the
+rate stays exactly where you put it.
+
+How the detection decides is described under [Level](#level); the short version
+is that it measures the audio rather than asking the player, so it works with
+Spotify, Apple Music, a local file or a browser tab alike.
+
+## Battery
+
+The 5K reports its charge over both USB and Bluetooth, and the app surfaces it
+in three places so you don't have to open anything to know.
+
+**In the menu bar.** A bolt appears next to the icon while charging. Once the
+charge drops to 20% the icon is joined by the level itself, so a glance at the
+corner of the screen is enough. Hovering shows charge, the active preset and
+which link is carrying the connection.
+
+**In the popover.** The header pill shows the percentage, orange at 20% and red
+at 10%, with the state spelled out in the line underneath.
+
+**As notifications.** Standard macOS notifications at 20% and 10%, and one when
+charging starts. Each fires once per episode — they won't nag if the reading
+hovers around a threshold, and they survive a brief Bluetooth dropout without
+re-announcing the same low battery. macOS asks for notification permission the
+first time one actually fires, not at launch.
+
 ## Stage
 
 Headphones put the band inside your head. The **Stage** tab spreads it back
@@ -202,6 +256,32 @@ Levels are digital signal level (dBFS), not sound pressure: the app cannot
 know your headphones' sensitivity or the 5K's analog volume, so it reports
 trends and durations honestly instead of pretending to be a dosimeter. Nothing
 is recorded and nothing leaves the Mac.
+
+### Is this actually lossless?
+
+The same pane can tell you whether what's playing came from a lossy or a
+lossless source. It doesn't ask the player — no music app exposes that to other
+apps — it measures the audio, which is why it works the same for Spotify, Apple
+Music, a local file or a browser tab.
+
+Lossy encoders discard the top of the spectrum, and where they stop is
+characteristic: around 16 kHz at low bitrates, around 20 kHz at 320 kbps, while
+lossless material carries energy to the edge of its sample rate. The verdict
+appears in plain words with the frequency it measured, and it feeds the
+automatic rate matching described under [Sample rate](#sample-rate).
+
+It is evidence, not proof, and the wording says which:
+
+- A lossless file made **from** a lossy source keeps the original's cutoff and
+  is reported as lossy. That is the correct answer about the audio, even though
+  the file is technically lossless.
+- Warm or old masters roll off on their own before any codec would cut them.
+  The app reports "rolls off naturally — can't judge" rather than accusing them,
+  and casts no vote on the rate.
+- Quiet or dark passages carry no treble to judge at all, and say so.
+
+Switch it off entirely with the toggle if you'd rather not have the app
+listening; with it and the Stage both off, nothing touches your audio.
 
 ## Build from source
 
@@ -250,10 +330,8 @@ Read the source before running them.
 
 - Only the user (headphone) EQ group is exposed, not the speaker group.
 - Preset slots show generic names unless you have named them on the device.
-- 20-band mode is implemented from Qudelix's preset format but has not been
-  tested on real hardware. Writing should behave exactly as 10-band does; if a
-  20-band curve reads back wrong, the app keeps flat defaults rather than
-  showing nonsense. Reports welcome.
+- Only firmware 3.x is supported; see the table above for what happens on
+  anything else.
 - No auto-update mechanism yet.
 
 ## Feedback and contributions
@@ -263,8 +341,6 @@ Bug reports, ideas, and pull requests are all welcome — open an
 
 Especially useful right now:
 
-- **20-band EQ mode** is implemented but has never run on real hardware. If you
-  use it, tell me whether your curve reads back correctly.
 - **Firmware other than 3.1.8**, or any 5K that behaves oddly — the diagnostics
   panel and `~/Library/Logs/QudelixBar.log` capture everything needed.
 - **Intel Macs.** The binary is universal but has only been run on Apple Silicon.
