@@ -73,6 +73,11 @@ final class QudelixController: ObservableObject {
     /// in its own 0…63 steps, or nil if no preset has been read. Read only.
     @Published var crossfeedLevel: Int?
 
+    /// Active Bluetooth codec, when one is in use. Nil over USB.
+    @Published var codecLabel: String?
+    /// True while the amp is in its high-gain / higher-output state.
+    @Published var outputHighGain: Bool?
+
     /// The filter's display name, or nil when the device hasn't reported one
     /// (or reported an index this build has no name for).
     var dacFilterLabel: String? {
@@ -587,6 +592,14 @@ final class QudelixController: ObservableObject {
         batteryAlerts.update(batteryPercent: batteryPercent, charging: charging)
         if let sr = state.sampleRateLabel, sr != sampleRate { sampleRate = sr }
         if let src = state.inputSourceLabel, src != inputSource { inputSource = src }
+        // Only meaningful on a Bluetooth link; over USB the device keeps
+        // reporting whatever it last negotiated, which would be a lie in the
+        // header.
+        let codec = link == .bluetooth ? state.codecLabel : nil
+        if codec != codecLabel { codecLabel = codec }
+        if let gain = state.outputHighGain, gain != outputHighGain {
+            outputHighGain = gain
+        }
         if let m = state.usbMute { muted = m }
         if let fs = state.usbFsMode { usbFsMode = fs }
         // EQ group config only applies when it describes the group we're
@@ -834,6 +847,10 @@ final class QudelixController: ObservableObject {
     private var volumeFieldEditUntil = Date.distantPast
 
     /// Ranges for the UI, so the sliders and the wire agree on the bounds.
+    /// Whether hardware settings can be written right now — for disabling
+    /// controls rather than letting them move and silently do nothing.
+    var canWriteNow: Bool { canWrite }
+
     var trimRange: ClosedRange<Double> { QxVolumeRange.trim }
     var volumeLimitRange: ClosedRange<Double> { QxVolumeRange.limit }
 

@@ -245,6 +245,7 @@ struct DeviceHeader: View {
         case .none: break
         }
         if let fw = controller.firmwareVersion { parts.append("FW \(fw)") }
+        if let codec = controller.codecLabel, codec != "None" { parts.append(codec) }
         if let sr = controller.sampleRate, controller.inputSource != "None" { parts.append(sr) }
         if let src = controller.inputSource, src != "None" { parts.append(src) } else { parts.append("idle") }
         if let b = controller.batteryPercent {
@@ -765,6 +766,7 @@ struct DisconnectedView: View {
 struct FooterBar: View {
     @EnvironmentObject var controller: QudelixController
     @Binding var showDiagnostics: Bool
+    @State private var showDeviceSettings = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -788,6 +790,17 @@ struct FooterBar: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Forget the remembered Bluetooth device and look for another")
+            }
+
+            Button { showDeviceSettings.toggle() } label: {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+            .disabled(!connected)
+            .help("Device settings — channel trim, volume limit")
+            .popover(isPresented: $showDeviceSettings, arrowEdge: .bottom) {
+                DeviceSettingsView()
+                    .environmentObject(controller)
             }
 
             Button { showDiagnostics.toggle() } label: {

@@ -204,6 +204,11 @@ enum UIPreview {
         c.volumeMax = 6
         c.eqEnabled = true
         c.usbFsMode = 0   // pinned to 96 (wire order is descending) — renders the warning state
+        c.trimLeftDb = 0
+        c.trimRightDb = -1.5
+        c.volumeLimitDb = 0
+        c.dacFilterType = 3
+        c.crossfeedLevel = 0
         c.preGain = -6.1
         c.activePreset = 2
         c.presetNames = [0: "Harman", 2: "HD 650", 5: "Bass boost"]
