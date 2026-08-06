@@ -101,6 +101,19 @@ final class StageState: ObservableObject {
         scheduleSave()
     }
 
+    /// For view-originated edits: `uid` is the device the view was SHOWING
+    /// when the control was touched (captured at render time). A slider
+    /// drag can straddle a default-output swap; without the check, the tail
+    /// of the drag mutates the OLD device's saved profile and force-enables
+    /// the stage on the new one.
+    func setStage(_ settings: StageSettings, editedFor uid: String?) {
+        guard uid == outputUID else {
+            DebugLog.shared.log("stage edit dropped: output device changed mid-edit")
+            return
+        }
+        setStage(settings)
+    }
+
     func setLevelTracking(_ on: Bool) {
         levelTracking = on
         reconcile()
@@ -249,7 +262,9 @@ final class StageState: ObservableObject {
                 let url = StageStateFile.directory.appendingPathComponent("diag.txt")
                 // Append, keep the tail: the history between two snapshots is
                 // exactly what a "worked then, broken now" hunt needs.
-                DispatchQueue.global(qos: .utility).async {
+                // Serial queue: two overlapping read-modify-writes on the
+                // global pool would interleave and drop lines.
+                Self.diagQueue.async {
                     let existing = Self.readDiagTail(url)
                     let kept = existing.split(separator: "\n").suffix(200)
                         .joined(separator: "\n")
@@ -310,6 +325,8 @@ final class StageState: ObservableObject {
             scheduleSave()
         }
     }
+
+    private static let diagQueue = DispatchQueue(label: "stage.diag", qos: .utility)
 
     /// The diag file is ours, but a symlink could be planted at its path and
     /// `String(contentsOf:)` would follow it into an arbitrarily large file.

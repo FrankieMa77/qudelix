@@ -87,12 +87,18 @@ enum QxStatusParser {
 
     /// devStatus block: [Yc mask][sub-blocks in ascending bit order].
     /// Returns bytes consumed (including the mask byte).
+    ///
+    /// A block whose size guard fails means the packet is truncated or the
+    /// mask lies — either way every offset after it is garbage, so the whole
+    /// remainder is consumed rather than letting a caller parse the next
+    /// section (a config block, say) from a misaligned position.
     static func parseDevStatus(_ d: [UInt8], into state: inout QxDeviceState) -> Int {
         guard !d.isEmpty else { return 0 }
         let mask = d[0]
         var off = 1
 
-        if mask & QxStatusMask.audio != 0, d.count >= off + 4 {
+        if mask & QxStatusMask.audio != 0 {
+            guard d.count >= off + 4 else { return d.count }
             var r = QxBitReader(Array(d[off..<off + 4]))
             r.skip(5)                       // mute, running, active_call, hfp_codec(2)
             r.skip(4)                       // a2dp_codec
@@ -103,7 +109,8 @@ enum QxStatusParser {
             if inSource < inputSources.count { state.inputSourceLabel = inputSources[inSource] }
             off += 4
         }
-        if mask & QxStatusMask.power != 0, d.count >= off + 8 {
+        if mask & QxStatusMask.power != 0 {
+            guard d.count >= off + 8 else { return d.count }
             var r = QxBitReader(Array(d[off..<off + 8]))
             state.chargerConnected = r.read(1) == 1
             state.charging = r.read(1) == 1
@@ -115,7 +122,8 @@ enum QxStatusParser {
         if mask & QxStatusMask.conn != 0 { off += 16 }
         if mask & QxStatusMask.runtimeInfo != 0 { off += 4 }
         if mask & QxStatusMask.runtimeRms != 0 { off += 16 }
-        if mask & QxStatusMask.vol != 0, d.count >= off + 17 {
+        if mask & QxStatusMask.vol != 0 {
+            guard d.count >= off + 17 else { return d.count }
             parseVolBlock(Array(d[off..<off + 16]), into: &state)
             state.usbMute = d[off + 16] != 0
             off += 17
@@ -124,6 +132,9 @@ enum QxStatusParser {
     }
 
     /// devConfig block: [hy mask][sub-blocks in ascending bit order].
+    /// Same truncation rule as parseDevStatus: a failed size guard poisons
+    /// every later offset, so the remainder is consumed, not misparsed —
+    /// eq_mode read from a misaligned position flips the whole EQ layout.
     static func parseDevConfig(_ d: [UInt8], into state: inout QxDeviceState) -> Int {
         guard !d.isEmpty else { return 0 }
         let mask = d[0]
@@ -132,19 +143,20 @@ enum QxStatusParser {
         if mask & QxConfigMask.sys != 0 {
             // `dd`, 12 bytes. Only eq_mode (bit 36) matters here: it selects
             // between the 10-band user/speaker EQ and the 20-band b20 mode.
-            if d.count >= off + 12 {
-                var r = QxBitReader(Array(d[off..<off + 12]))
-                r.skip(36)
-                state.eqMode = r.read(1)
-            }
+            guard d.count >= off + 12 else { return d.count }
+            var r = QxBitReader(Array(d[off..<off + 12]))
+            r.skip(36)
+            state.eqMode = r.read(1)
             off += 12
         }
-        if mask & QxConfigMask.vol != 0, d.count >= off + 16 {
+        if mask & QxConfigMask.vol != 0 {
+            guard d.count >= off + 16 else { return d.count }
             parseVolBlock(Array(d[off..<off + 16]), into: &state)
             off += 16
-        } else if mask & QxConfigMask.vol != 0 { return off }
+        }
         if mask & QxConfigMask.playTime != 0 { off += 8 }
-        if mask & QxConfigMask.dac != 0, d.count >= off + 4 {
+        if mask & QxConfigMask.dac != 0 {
+            guard d.count >= off + 4 else { return d.count }
             var r = QxBitReader(Array(d[off..<off + 4]))
             r.skip(5)                       // outMode(2), outSel(3)  — v3 layout
             state.dacOutPwr2Vrms = r.read(1) == 1

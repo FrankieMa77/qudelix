@@ -12,6 +12,10 @@ struct StageView: View {
     @EnvironmentObject var stageState: StageState
 
     var body: some View {
+        // Captured at render time: every control created below edits the
+        // device the user was LOOKING at, and StageState drops the write if
+        // the default output changed under an in-flight gesture.
+        let uid = stageState.outputUID
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Toggle(isOn: Binding(
@@ -22,7 +26,7 @@ struct StageView: View {
                         // Flipping on with everything at neutral would be a
                         // no-op that reads as "broken"; start somewhere.
                         if on, !s.doesAnything { s = .music }
-                        stageState.setStage(s)
+                        stageState.setStage(s, editedFor: uid)
                     })) {
                     Text("Soundstage")
                         .font(.system(size: 12, weight: .medium))
@@ -46,9 +50,9 @@ struct StageView: View {
             }
 
             HStack(spacing: 8) {
-                presetButton("Music", .music)
-                presetButton("Movie", .movie)
-                presetButton("Theater", .theater)
+                presetButton("Music", .music, uid: uid)
+                presetButton("Movie", .movie, uid: uid)
+                presetButton("Theater", .theater, uid: uid)
                 if isCustom {
                     Text("Custom")
                         .font(.system(size: 10))
@@ -60,31 +64,31 @@ struct StageView: View {
             VStack(spacing: 8) {
                 slider("Width", value: Binding(
                     get: { stageState.stage.width },
-                    set: { v in mutate { $0.width = v.rounded() } }),
+                    set: { v in mutate(uid) { $0.width = v.rounded() } }),
                     in: 0...200, display: String(format: "%.0f %%", stageState.stage.width),
                     help: "Side-channel level. Dialogue and bass stay centred; "
                         + "ambience and score grow around them.")
                 slider("Crossfeed", value: Binding(
                     get: { stageState.stage.crossfeed * 100 },
-                    set: { v in mutate { $0.crossfeed = v.rounded() / 100 } }),
+                    set: { v in mutate(uid) { $0.crossfeed = v.rounded() / 100 } }),
                     in: 0...100, display: String(format: "%.0f %%", stageState.stage.crossfeed * 100),
                     help: "Each ear hears a delayed, darkened copy of the other "
                         + "channel — sound moves out of the middle of your head.")
                 slider("Dialogue", value: Binding(
                     get: { stageState.stage.dialogue },
-                    set: { v in mutate { $0.dialogue = (v * 2).rounded() / 2 } }),
+                    set: { v in mutate(uid) { $0.dialogue = (v * 2).rounded() / 2 } }),
                     in: 0...6, display: String(format: "+%.1f dB", stageState.stage.dialogue),
                     help: "Presence lift on the centre channel only, so speech "
                         + "cuts through without sharpening the whole mix.")
                 slider("Room", value: Binding(
                     get: { stageState.stage.room * 100 },
-                    set: { v in mutate { $0.room = v.rounded() / 100 } }),
+                    set: { v in mutate(uid) { $0.room = v.rounded() / 100 } }),
                     in: 0...100, display: String(format: "%.0f %%", stageState.stage.room * 100),
                     help: "Sparse early reflections that suggest a room. "
                         + "Subtle on purpose — more is not better.")
                 slider("Night", value: Binding(
                     get: { stageState.stage.nightValue * 100 },
-                    set: { v in mutate { $0.night = v.rounded() / 100 } }),
+                    set: { v in mutate(uid) { $0.night = v.rounded() / 100 } }),
                     in: 0...100, display: String(format: "%.0f %%",
                                                  stageState.stage.nightValue * 100),
                     help: "Evens out movie dynamics: quiet dialogue comes up, "
@@ -99,7 +103,7 @@ struct StageView: View {
                 VStack(spacing: 8) {
                     slider("Distance", value: Binding(
                         get: { stageState.stage.distanceValue * 100 },
-                        set: { v in mutate { $0.distance = v.rounded() / 100 } }),
+                        set: { v in mutate(uid) { $0.distance = v.rounded() / 100 } }),
                         in: 0...100, display: String(format: "%.0f %%",
                                                      stageState.stage.distanceValue * 100),
                         help: "Pushes the sources away from your head: the room's "
@@ -107,14 +111,14 @@ struct StageView: View {
                             + "eases slightly.")
                     slider("Span", value: Binding(
                         get: { stageState.stage.spanValue * 100 },
-                        set: { v in mutate { $0.span = v.rounded() / 100 } }),
+                        set: { v in mutate(uid) { $0.span = v.rounded() / 100 } }),
                         in: 0...100, display: String(format: "%.0f %%",
                                                      stageState.stage.spanValue * 100),
                         help: "The virtual speaker angle the crossfeed simulates — "
                             + "wider span, sources spread further apart.")
                     slider("Center", value: Binding(
                         get: { stageState.stage.centerValue },
-                        set: { v in mutate { $0.center = (v * 2).rounded() / 2 } }),
+                        set: { v in mutate(uid) { $0.center = (v * 2).rounded() / 2 } }),
                         in: -6...3, display: String(format: "%+.1f dB",
                                                     stageState.stage.centerValue),
                         help: "Level of the centre image. Cramped stages are "
@@ -122,7 +126,7 @@ struct StageView: View {
                             + "the sides get room to breathe.")
                     slider("Size", value: Binding(
                         get: { stageState.stage.sizeValue * 100 },
-                        set: { v in mutate { $0.size = v.rounded() / 100 } }),
+                        set: { v in mutate(uid) { $0.size = v.rounded() / 100 } }),
                         in: 0...100, display: String(format: "%.0f %%",
                                                      stageState.stage.sizeValue * 100),
                         help: "Scales the whole room — reflection distances and "
@@ -176,16 +180,17 @@ struct StageView: View {
             && !stageState.stage.audiblyEquals(.theater)
     }
 
-    private func mutate(_ change: (inout StageSettings) -> Void) {
+    private func mutate(_ uid: String?, _ change: (inout StageSettings) -> Void) {
         var s = stageState.stage
         change(&s)
         s.enabled = true   // reaching for a slider IS the intent to hear it
-        stageState.setStage(s)
+        stageState.setStage(s, editedFor: uid)
     }
 
-    private func presetButton(_ label: String, _ preset: StageSettings) -> some View {
+    private func presetButton(_ label: String, _ preset: StageSettings,
+                              uid: String?) -> some View {
         Button(label) {
-            stageState.setStage(preset)
+            stageState.setStage(preset, editedFor: uid)
         }
         .controlSize(.small)
         .buttonStyle(.bordered)

@@ -104,13 +104,27 @@ final class StageProcessor {
         /// unmuted in that mode, so the original audio is what's heard and
         /// echoing it into the output would double it.
         var monitorOnly = false
+        /// Bumped by prepare(): the render thread wipes its rings and filter
+        /// states when it sees a new epoch. The reset happens ON the render
+        /// thread, so prepare never writes render-side memory and no code
+        /// path depends on how the HAL joins a dying IOProc.
+        var epoch: UInt64 = 0
         var stage = StageParams()
     }
 
+    /// One early reflection. Fixed shape, not an array: keeping StageParams
+    /// free of heap references is what makes Config POD (see redesign()).
+    struct EarlyTap {
+        var cross = false
+        var offset = 1
+        var gain: Float = 0
+    }
+
     /// Designed (render-ready) form of StageSettings. Geometry — reflection
-    /// offsets, crossfeed delay, tail lengths — lives here rather than in
-    /// render-side state, so Distance/Span/Size edits swap in through the
-    /// same graveyarded snapshot as everything else.
+    /// offsets, crossfeed delay, tail lengths — and every rate-derived
+    /// coefficient live here rather than in render-side state, so rate
+    /// changes and Distance/Span/Size edits all swap in through the same
+    /// locked snapshot.
     struct StageParams {
         var enabled = false
         var sideGain: Float = 1        // width/100
@@ -126,10 +140,15 @@ final class StageProcessor {
         var dialogue: BiquadSection?   // mid-only presence peak
         var roomWet: Float = 0         // 0…0.8
         var tailFeedback: Float = 0    // 0…0.45, the diffuse tail's decay
-        var earlyL: [(cross: Bool, offset: Int, gain: Float)] = []
-        var earlyR: [(cross: Bool, offset: Int, gain: Float)] = []
+        var earlyL = (EarlyTap(), EarlyTap(), EarlyTap(), EarlyTap())
+        var earlyR = (EarlyTap(), EarlyTap(), EarlyTap(), EarlyTap())
         var tailLenL: Int = 2543
         var tailLenR: Int = 2963
+        /// Room damping and night-mode envelope times, designed at the
+        /// current rate.
+        var roomLPCoef: Float = 0.3
+        var nightAtk: Float = 0.008
+        var nightRel: Float = 0.0006
         /// Night mode: gentle level convergence toward a comfort level —
         /// quiet dialogue up, explosions down. 0 = off, 1 = strongest.
         var night: Float = 0
@@ -149,11 +168,15 @@ final class StageProcessor {
         return p
     }()
     private var config = Config()
-    /// Recently-replaced configs, kept alive so the *last* release of a
-    /// config's arrays can never happen on the render thread (a last release
-    /// is a heap free, and free has no place in an IO cycle) nor inside the
-    /// lock. Trimmed on the main thread, well after any in-flight render.
-    private var retiredConfigs: [Config] = []
+
+    init() {
+        // The whole swap discipline rests on Config being plain data: a POD
+        // copy under the lock retains nothing, so the render thread can
+        // never inherit a last release (a heap free inside an IO cycle).
+        // Anyone who adds an Array or class reference to Config must bring
+        // back a retirement scheme for the old snapshots.
+        assert(_isPOD(Config.self), "Config must stay free of heap references")
+    }
 
     deinit {
         lock.deallocate()
@@ -164,27 +187,20 @@ final class StageProcessor {
     private var stageSettings = StageSettings()
     private var muted = false
     private var monitorOnly = false
+    /// Control-side epoch counter; stamped into every config. prepare()
+    /// bumps it, and the render thread answers by wiping its state.
+    private var epoch: UInt64 = 0
 
     // MARK: Control side
 
-    /// Set the design rate. Called once when the engine starts, before any
-    /// render, with the output device's nominal rate. Everything
-    /// rate-dependent is laid out here, while no IOProc is running — the
-    /// render thread never allocates.
+    /// Set the design rate. Called when the engine starts, with the output
+    /// device's nominal rate. A rate change re-times every ring — stale
+    /// contents would replay pitch-shifted — so the epoch bump makes the
+    /// render thread wipe them on its next cycle. Nothing here touches
+    /// render-side memory directly.
     func prepare(sampleRate: Double) {
         self.sampleRate = max(8000, sampleRate)
-
-        roomLPCoef = Float(1 - exp(-2 * Double.pi * 3500 / self.sampleRate))
-
-        // Night-mode envelope times: ~5 ms attack, ~150 ms release.
-        nightAtk = Float(1 - exp(-1 / (0.005 * self.sampleRate)))
-        nightRel = Float(1 - exp(-1 / (0.15 * self.sampleRate)))
-
-        // A rate change re-times every ring; stale contents would replay
-        // pitch-shifted. No IOProc runs during prepare, so this is safe.
-        resetStageState()
-        stageEngaged = false
-
+        epoch &+= 1
         redesign()
     }
 
@@ -240,18 +256,22 @@ final class StageProcessor {
         // the whole field so the first reflection arrives from farther away.
         let scale = 0.6 + s.sizeValue                    // 0.6…1.6
         let predelay = Int(s.distanceValue * 0.022 * sampleRate)
-        func taps(_ spec: [(Bool, Double, Float)]) -> [(cross: Bool, offset: Int, gain: Float)] {
-            spec.map { cross, ms, gain in
-                (cross: cross,
-                 offset: min(Self.roomBufSize - 1,
-                             Int(ms * scale / 1000 * sampleRate) + predelay),
-                 gain: gain)
-            }
+        func tap(_ cross: Bool, _ ms: Double, _ gain: Float) -> EarlyTap {
+            EarlyTap(cross: cross,
+                     offset: min(Self.roomBufSize - 1,
+                                 Int(ms * scale / 1000 * sampleRate) + predelay),
+                     gain: gain)
         }
-        p.earlyL = taps([(true, 17, 0.80), (false, 23, 0.50), (true, 31, 0.45), (false, 43, 0.32)])
-        p.earlyR = taps([(true, 19, 0.80), (false, 29, 0.50), (true, 37, 0.45), (false, 47, 0.32)])
+        p.earlyL = (tap(true, 17, 0.80), tap(false, 23, 0.50),
+                    tap(true, 31, 0.45), tap(false, 43, 0.32))
+        p.earlyR = (tap(true, 19, 0.80), tap(false, 29, 0.50),
+                    tap(true, 37, 0.45), tap(false, 47, 0.32))
         p.tailLenL = max(64, min(Self.tailBufSize - 1, Int(0.053 * scale * sampleRate)))
         p.tailLenR = max(64, min(Self.tailBufSize - 1, Int(0.061 * scale * sampleRate)))
+        p.roomLPCoef = Float(1 - exp(-2 * Double.pi * 3500 / sampleRate))
+        // Night-mode envelope times: ~5 ms attack, ~150 ms release.
+        p.nightAtk = Float(1 - exp(-1 / (0.005 * sampleRate)))
+        p.nightRel = Float(1 - exp(-1 / (0.15 * sampleRate)))
         p.roomWet = Float(s.room) * 0.8
         p.tailFeedback = Float(s.room) * 0.45
         p.night = Float(s.nightValue)
@@ -266,17 +286,13 @@ final class StageProcessor {
         var next = Config()
         next.muted = muted
         next.monitorOnly = monitorOnly
+        next.epoch = epoch
         next.stage = designStage()
-        retiredConfigs.append(config)   // keep the old one alive past the swap
+        // Config is POD (asserted in init), so this swap is a plain copy:
+        // nothing is retained or released on either side of the lock.
         os_unfair_lock_lock(lock)
         config = next
         os_unfair_lock_unlock(lock)
-        // Depth 32: a render callback outlives at most a handful of UI-paced
-        // redesigns, so dozens of generations of headroom make the "render
-        // thread takes the last reference" window unreachable in practice.
-        if retiredConfigs.count > 32 {
-            retiredConfigs.removeFirst(retiredConfigs.count - 32)
-        }
     }
 
     // MARK: Level metering
@@ -358,7 +374,6 @@ final class StageProcessor {
     private var tailIdxR = 0
     private var tailLPL: Float = 0
     private var tailLPR: Float = 0
-    private var roomLPCoef: Float = 0.3
     private var roomLPStateL: Float = 0
     private var roomLPStateR: Float = 0
 
@@ -366,17 +381,17 @@ final class StageProcessor {
     // not at silence — an envelope resting near zero makes every stage
     // engage open with a burst until the attack catches up.
     private var nightEnv: Double = 0.05
-    private var nightAtk: Float = 0.008
-    private var nightRel: Float = 0.0006
 
     /// False while the stage is idle; the first engaged render wipes the
     /// rings and filter states so hours-old audio can't replay out of
     /// frozen buffers.
     private var stageEngaged = false
+    /// The config epoch this thread last reset for. Render-thread owned.
+    private var renderEpoch: UInt64 = 0
 
-    /// Render thread (engage edge) or control thread with no IOProc running
-    /// (prepare). ~50k float stores — trivial as a one-shot, and the price
-    /// of never hearing a ghost.
+    /// Render thread only — the engage edge and the epoch check both run
+    /// there. ~50k float stores: trivial as a one-shot, and the price of
+    /// never hearing a ghost.
     private func resetStageState() {
         for i in 0..<Self.crossBufSize { crossDelayL[i] = 0; crossDelayR[i] = 0 }
         for i in 0..<Self.roomBufSize { roomBufL[i] = 0; roomBufR[i] = 0 }
@@ -406,6 +421,15 @@ final class StageProcessor {
         os_unfair_lock_lock(lock)
         let cfg = config
         os_unfair_lock_unlock(lock)
+
+        // A new epoch means prepare() ran (engine start, rate change): the
+        // rings hold audio timed for another rate. Wipe them HERE, on the
+        // only thread that touches them.
+        if cfg.epoch != renderEpoch {
+            renderEpoch = cfg.epoch
+            resetStageState()
+            stageEngaged = false
+        }
 
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
         let outList = UnsafeMutableAudioBufferListPointer(output)
@@ -577,19 +601,23 @@ final class StageProcessor {
             // Reads are indexed straight off the stored arrays (no local
             // array binding) so no reference can ever overlap a write and
             // trigger a copy-on-write on the render thread.
-            roomLPStateL += roomLPCoef * (L - roomLPStateL)
-            roomLPStateR += roomLPCoef * (R - roomLPStateR)
+            roomLPStateL += p.roomLPCoef * (L - roomLPStateL)
+            roomLPStateR += p.roomLPCoef * (R - roomLPStateR)
             roomBufL[roomIdx] = roomLPStateL
             roomBufR[roomIdx] = roomLPStateR
-            var wl: Float = 0, wr: Float = 0
-            for tap in p.earlyL {
-                let idx = (roomIdx - tap.offset) & roomMask
-                wl += (tap.cross ? roomBufR[idx] : roomBufL[idx]) * tap.gain
+            // Non-escaping local funcs: no closure context is allocated.
+            func tapL(_ t: EarlyTap) -> Float {
+                let idx = (roomIdx - t.offset) & roomMask
+                return (t.cross ? roomBufR[idx] : roomBufL[idx]) * t.gain
             }
-            for tap in p.earlyR {
-                let idx = (roomIdx - tap.offset) & roomMask
-                wr += (tap.cross ? roomBufL[idx] : roomBufR[idx]) * tap.gain
+            func tapR(_ t: EarlyTap) -> Float {
+                let idx = (roomIdx - t.offset) & roomMask
+                return (t.cross ? roomBufL[idx] : roomBufR[idx]) * t.gain
             }
+            let wl = tapL(p.earlyL.0) + tapL(p.earlyL.1)
+                   + tapL(p.earlyL.2) + tapL(p.earlyL.3)
+            let wr = tapR(p.earlyR.0) + tapR(p.earlyR.1)
+                   + tapR(p.earlyR.2) + tapR(p.earlyR.3)
             roomIdx = (roomIdx + 1) & roomMask
 
             // Diffuse tail: damped feedback combs fed by the early field.
@@ -616,7 +644,7 @@ final class StageProcessor {
             // it from pumping.
             if p.night > 0 {
                 let lvl = (abs(L) + abs(R)) * 0.5
-                let coef = Double(lvl) > nightEnv ? nightAtk : nightRel
+                let coef = Double(lvl) > nightEnv ? p.nightAtk : p.nightRel
                 nightEnv += Double(coef) * (Double(lvl) - nightEnv)
                 let levelDb = 20 * log10(Float(max(nightEnv, 1e-5)))
                 // Gate: inter-track noise and silence get no ride up.

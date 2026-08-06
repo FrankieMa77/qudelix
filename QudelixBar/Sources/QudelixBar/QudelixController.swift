@@ -592,6 +592,19 @@ final class QudelixController: ObservableObject {
         return false
     }
 
+    /// Gate for writes that carry the EQ group byte (band edits, pre-gain,
+    /// preset slots). While a device-reported group change sits in the rate
+    /// limiter's deferral window, `eqGroup` still names the group the device
+    /// just left — an edit sent then would silently modify the wrong curve.
+    private var canWriteEq: Bool {
+        guard canWrite else { return false }
+        guard pendingGroup == nil else {
+            DebugLog.shared.log("EQ write dropped: group switch in progress")
+            return false
+        }
+        return true
+    }
+
     func setVolume(_ db: Double) {
         guard canWrite, db.isFinite else { return }
         let clamped = max(volumeMax - 60, min(volumeMax, db))
@@ -609,7 +622,7 @@ final class QudelixController: ObservableObject {
     }
 
     func setEqEnabled(_ on: Bool) {
-        guard canWrite else { return }
+        guard canWriteEq else { return }
         eqEnabled = on
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
     }
@@ -654,7 +667,7 @@ final class QudelixController: ObservableObject {
     }
 
     func loadPreset(_ index: Int) {
-        guard canWrite, (0..<Self.presetCount).contains(index) else { return }
+        guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
         activePreset = index
         assembler.reset()
         transportSend(.loadEqPreset, [UInt8(index)])
@@ -668,7 +681,7 @@ final class QudelixController: ObservableObject {
 
     /// Reset every band to flat (0 dB, default frequencies) and clear pre-gain.
     func flatten() {
-        guard canWrite else { return }
+        guard canWriteEq else { return }
         setPreGain(0)
         let defaults = eqGroup.defaultFreqs
         for i in 0..<bandCount {
@@ -678,12 +691,12 @@ final class QudelixController: ObservableObject {
     }
 
     func savePreset(_ index: Int) {
-        guard canWrite, (0..<Self.presetCount).contains(index) else { return }
+        guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
         transportSend(.saveEqPreset, [UInt8(index)])
     }
 
     func setPreGain(_ db: Double) {
-        guard canWrite, db.isFinite else { return }
+        guard canWriteEq, db.isFinite else { return }
         let clamped = max(-12, min(12, db))
         preGain = clamped
         sendEqParam(.setEqPreGain, band: 0, scaled: Int((clamped * QxScale.gain).rounded()))
@@ -693,7 +706,7 @@ final class QudelixController: ObservableObject {
     /// produce anything, and out-of-range reports are what knock this hardware
     /// off the USB bus.
     func updateBand(_ index: Int, _ value: QxEqBandValue) {
-        guard canWrite, bands.indices.contains(index), index < bandCount else { return }
+        guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
         var v = value
         v.freq = max(20, min(20000, v.freq))
         v.gain = v.gain.isFinite ? max(-12, min(12, v.gain)) : 0
@@ -713,7 +726,7 @@ final class QudelixController: ObservableObject {
     /// band, then any unused bands bypassed so leftovers from the previous
     /// preset can't linger.
     func apply(_ file: ParametricEQFile) {
-        guard canWrite else {
+        guard canWriteEq else {
             lastImportSummary = "Not applied — this device isn't supported."
             return
         }
