@@ -161,8 +161,12 @@ final class QualityAnalyzer {
 
         // The device Nyquist clips what is observable: content can never
         // extend past it, so "reaches the top" at a 44.1/48 device rate is
-        // still only "lossless-like", never "hi-res".
+        // still only "lossless-like", never "hi-res". And an edge BELOW any
+        // plausible codec cutoff isn't a codec at all — it's dark material
+        // (a quiet piano passage rolls off by 10 kHz on its own), which is
+        // honestly unjudgeable, not lossy.
         switch edgeKHz {
+        case ..<14.5: return .noTreble
         case ..<18.5: return .lossy(cutoffKHz: edgeKHz)
         case ..<20.8: return .lossyHigh(cutoffKHz: edgeKHz)
         case ..<22.5: return .losslessLike(cutoffKHz: edgeKHz)
