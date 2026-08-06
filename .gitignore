@@ -76,11 +76,7 @@ Qudelix.app/
 # Generated while making the icon
 AppIcon.iconset/
 
-# Reverse-engineered protocol notes — local reference only, never published
-docs/FINDINGS.md
-docs/PROTOCOL_STATUS.md
-
-# Runtime logs — these contain device packet traces from whoever ran the app
+# Runtime logs
 *.log
 qudelix-debug.log
 
@@ -94,12 +90,6 @@ qudelix-debug.log
 .vscode/
 xcuserdata/
 *.xcuserstate
-
-# Personal drafts and notes — never publish these
-reddit-post.md
-*-draft.md
-/drafts/
-/notes/
 
 # Anything local and unshared
 /private/
