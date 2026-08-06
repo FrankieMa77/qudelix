@@ -21,13 +21,17 @@ final class QualityAnalyzer {
         case lossyHigh(cutoffKHz: Double)     // 256–320 kbps territory
         case losslessLike(cutoffKHz: Double)  // extends to the 44.1/48 edge
         case hiRes(cutoffKHz: Double)         // content beyond 22.5 kHz
+        /// A GRADUAL roll-off in codec territory: the master's own spectrum,
+        /// not a codec cliff — warm acoustic material does this losslessly,
+        /// and a lossy cut of the same master would look identical. No vote.
+        case natural(cutoffKHz: Double)
 
         /// The lossy/lossless binary used for rate switching. nil = no vote.
         var isLosslessClass: Bool? {
             switch self {
             case .lossy, .lossyHigh: return false
             case .losslessLike, .hiRes: return true
-            case .tooQuiet, .noTreble: return nil
+            case .tooQuiet, .noTreble, .natural: return nil
             }
         }
 
@@ -43,6 +47,7 @@ final class QualityAnalyzer {
             case .lossyHigh: return 3
             case .losslessLike: return 4
             case .hiRes: return 5
+            case .natural: return 6
             }
         }
     }
@@ -159,18 +164,43 @@ final class QualityAnalyzer {
         guard edgeBin > 0 else { return .noTreble }
         let edgeKHz = Double(edgeBin) * binHz / 1000
 
+        // Sharpness at the edge: mean level just below it vs just above it.
+        // A codec cutoff is a cliff into digital silence; a master's own
+        // roll-off keeps decaying gradually. Only measurable when there is
+        // spectrum left above the edge to look at.
+        var sharp = true
+        var dropDb: Float = 99
+        let aboveLo = edgeBin + Int(300 / binHz) + 1
+        let aboveHi = edgeBin + Int(1500 / binHz)
+        if aboveHi <= searchTop, aboveHi > aboveLo {
+            let belowLo = max(bin(1000), edgeBin - Int(1500 / binHz))
+            let belowHi = max(belowLo + 1, edgeBin - Int(300 / binHz))
+            var below: Float = 0
+            for i in belowLo...belowHi { below += averagedDb[i] }
+            below /= Float(belowHi - belowLo + 1)
+            var above: Float = 0
+            for i in aboveLo...aboveHi { above += averagedDb[i] }
+            above /= Float(aboveHi - aboveLo + 1)
+            dropDb = below - above
+            // Codec cliffs land in digital silence — 40+ dB down within
+            // this window. The steepest natural masters measure under ~30.
+            sharp = dropDb > 32
+        }
+        lastDebug += String(format: " edge=%.1fk drop=%.0f dB", edgeKHz, dropDb)
+
         // The device Nyquist clips what is observable: content can never
         // extend past it, so "reaches the top" at a 44.1/48 device rate is
         // still only "lossless-like", never "hi-res". And an edge BELOW any
         // plausible codec cutoff isn't a codec at all — it's dark material
         // (a quiet piano passage rolls off by 10 kHz on its own), which is
         // honestly unjudgeable, not lossy.
-        switch edgeKHz {
-        case ..<14.5: return .noTreble
-        case ..<18.5: return .lossy(cutoffKHz: edgeKHz)
-        case ..<20.8: return .lossyHigh(cutoffKHz: edgeKHz)
-        case ..<22.5: return .losslessLike(cutoffKHz: edgeKHz)
-        default: return .hiRes(cutoffKHz: edgeKHz)
+        if edgeKHz >= 22.5 { return .hiRes(cutoffKHz: edgeKHz) }
+        if edgeKHz >= 20.8 { return .losslessLike(cutoffKHz: edgeKHz) }
+        if edgeKHz < 14.5 { return .noTreble }
+        if sharp {
+            return edgeKHz < 18.5 ? .lossy(cutoffKHz: edgeKHz)
+                                  : .lossyHigh(cutoffKHz: edgeKHz)
         }
+        return .natural(cutoffKHz: edgeKHz)
     }
 }

@@ -143,6 +143,8 @@ struct LevelView: View {
             return String(format: "consistent with lossless (%.1f kHz)", khz)
         case .hiRes(let khz):
             return String(format: "hi-res content (%.1f kHz)", khz)
+        case .natural(let khz):
+            return String(format: "rolls off naturally (%.1f kHz) — can't judge", khz)
         }
     }
 
