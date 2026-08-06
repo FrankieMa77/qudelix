@@ -81,6 +81,10 @@ struct LevelView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            SignalPathView()
         }
     }
 
