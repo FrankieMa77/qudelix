@@ -105,7 +105,7 @@ enum QxNotifyMask {
 }
 
 /// App-side filter type enum (what Set/RspEq commands carry on the legacy 5K).
-enum QxFilter: UInt8, CaseIterable, Identifiable {
+enum QxFilter: UInt8, CaseIterable, Identifiable, Codable {
     case bypass = 0
     case lpf    = 1
     case hpf    = 2
@@ -333,7 +333,7 @@ struct QxUserEqPreset {
     }
 }
 
-struct QxEqBandValue: Equatable {
+struct QxEqBandValue: Equatable, Codable {
     var filter: QxFilter = .peak
     var freq: Int = 1000
     var gain: Double = 0

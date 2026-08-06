@@ -136,7 +136,7 @@ struct ImportView: View {
             defer { applying = nil }
             do {
                 let file = try await AutoEqIndex.fetchPreset(entry)
-                controller.apply(file)
+                controller.apply(file, named: entry.title)
                 controller.lastImportSummary = "\(entry.title): "
                     + (controller.lastImportSummary ?? "applied")
             } catch {

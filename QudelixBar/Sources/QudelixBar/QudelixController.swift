@@ -109,6 +109,83 @@ final class QudelixController: ObservableObject {
     /// low battery.
     private let batteryAlerts = BatteryAlerts()
 
+    // MARK: - EQ persistence
+
+    /// The last EQ this app saw or applied, kept on disk. Two jobs: EQ
+    /// writes land in the device's RAM and are lost on a hard restart (a
+    /// USB-mode change, a battery death) unless persisted, and the flash
+    /// save below can still be missed. On connect, a device reporting a
+    /// different curve than last seen gets the last one back.
+    private var eqSnapshot = EqSnapshotFile.load()
+    private var snapshotWork: DispatchWorkItem?
+    private var saveAllWork: DispatchWorkItem?
+    /// One restore decision per connection, taken at the first preset
+    /// read-back — later read-backs are the result of user actions.
+    private var restoreDecided = false
+    /// Whether this connection has read the device's EQ at least once.
+    private var presetRead = false
+    /// The name attached to the current curve (import file, AutoEq entry).
+    private var eqSourceName: String?
+
+    /// Call after any EQ mutation reaches the device. Debounced twice:
+    /// a quick app-side snapshot, and a slower ask for the device to
+    /// persist its settings to flash (the official app only does that
+    /// before firmware updates, so a restart otherwise reverts the EQ).
+    private func eqEdited() {
+        snapshotWork?.cancel()
+        let snap = DispatchWorkItem { [weak self] in self?.snapshotNow() }
+        snapshotWork = snap
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: snap)
+
+        saveAllWork?.cancel()
+        let persist = DispatchWorkItem { [weak self] in
+            guard let self, self.canWrite else { return }
+            DebugLog.shared.log("asking the device to persist settings")
+            self.transportSend(.saveAll)
+        }
+        saveAllWork = persist
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: persist)
+    }
+
+    /// A read-back changed the curve (device truth) — snapshot it, but a
+    /// read is not an edit: no flash save.
+    private func eqObserved() {
+        snapshotWork?.cancel()
+        let snap = DispatchWorkItem { [weak self] in self?.snapshotNow() }
+        snapshotWork = snap
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: snap)
+    }
+
+    private func snapshotNow() {
+        let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: bands,
+                              preGain: preGain, enabled: eqEnabled,
+                              name: eqSourceName)
+        guard snap != eqSnapshot else { return }
+        eqSnapshot = snap
+        EqSnapshotFile.save(snap)
+    }
+
+    /// First preset read-back of a connection: if the device came back with
+    /// a different curve than this app last saw — a hard restart reverted
+    /// its RAM state, or a reset wiped it — put the last one back.
+    private func restoreIfNeeded() {
+        // Both must hold before the once-per-connection decision is taken:
+        // the read-back can beat the handshake's compatibility verdict, and
+        // deciding while writes are still gated would silently skip the
+        // restore for the whole connection.
+        guard !restoreDecided, presetRead, compatibility.canWrite else { return }
+        restoreDecided = true
+        guard let snap = eqSnapshot, snap.groupRaw == eqGroup.rawValue,
+              snap.bands.count == bandCount,
+              !snap.matches(bands: bands, preGain: preGain) else { return }
+        DebugLog.shared.log("device EQ differs from last seen — restoring")
+        setPreGain(snap.preGain)
+        for (i, band) in snap.bands.enumerated() { updateBand(i, band) }
+        if eqEnabled != snap.enabled { setEqEnabled(snap.enabled) }
+        lastImportSummary = "Restored your last EQ"
+            + (snap.name.map { ": \($0)" } ?? "")
+    }
+
     private var assembler = QxPresetAssembler()
     private var state = QxDeviceState()
     private var requestedNames = false
@@ -213,6 +290,8 @@ final class QudelixController: ObservableObject {
         requestedNames = false
         pendingGroup = nil
         pendingEqMode = nil
+        restoreDecided = false
+        presetRead = false
         batteryAlerts.connectionReset()
         state = QxDeviceState()
 
@@ -434,6 +513,9 @@ final class QudelixController: ObservableObject {
 
     private func applyState() {
         evaluateCompatibility()
+        // The other half of the restore race: compatibility may arrive after
+        // the preset read-back. No-op once decided.
+        if compatibility.canWrite { restoreIfNeeded() }
         // Consume eq_mode like the other user-changeable fields below:
         // `state` is cumulative, and re-running setEqGroup on every packet
         // would let any stale notification resolve a mode switch that is
@@ -527,6 +609,9 @@ final class QudelixController: ObservableObject {
             v.q = v.q.isFinite ? max(0.1, min(10, v.q)) : 1.0
             return v
         }
+        presetRead = true
+        restoreIfNeeded()
+        eqObserved()
     }
 
     #if DEBUG
@@ -663,6 +748,7 @@ final class QudelixController: ObservableObject {
         eqEnabled = on
         eqEnableEditUntil = Date().addingTimeInterval(1.5)
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
+        eqEdited()
     }
 
     /// What the last setEqMode click asked for, while the device has not yet
@@ -706,6 +792,7 @@ final class QudelixController: ObservableObject {
 
     func loadPreset(_ index: Int) {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
+        eqSourceName = presetLabel(index)
         activePreset = index
         assembler.reset()
         transportSend(.loadEqPreset, [UInt8(index)])
@@ -720,6 +807,7 @@ final class QudelixController: ObservableObject {
     /// Reset every band to flat (0 dB, default frequencies) and clear pre-gain.
     func flatten() {
         guard canWriteEq else { return }
+        eqSourceName = nil
         setPreGain(0)
         let defaults = eqGroup.defaultFreqs
         for i in 0..<bandCount {
@@ -738,6 +826,7 @@ final class QudelixController: ObservableObject {
         let clamped = max(-12, min(12, db))
         preGain = clamped
         sendEqParam(.setEqPreGain, band: 0, scaled: Int((clamped * QxScale.gain).rounded()))
+        eqEdited()
     }
 
     /// Every value written to the device is clamped here — a text field can
@@ -756,6 +845,7 @@ final class QudelixController: ObservableObject {
             + QxPacket.int16BE(Int((v.gain * QxScale.gain).rounded()))
             + QxPacket.int16BE(Int((v.q * QxScale.q).rounded()))
         transportSendCoalesced(.setEqBandParam, payload, key: "band\(index)")
+        eqEdited()
     }
 
     // MARK: - Preset import / export
@@ -763,11 +853,12 @@ final class QudelixController: ObservableObject {
     /// Push a parsed parametric-EQ file to the device: pre-gain, then every
     /// band, then any unused bands bypassed so leftovers from the previous
     /// preset can't linger.
-    func apply(_ file: ParametricEQFile) {
+    func apply(_ file: ParametricEQFile, named name: String? = nil) {
         guard canWriteEq else {
             lastImportSummary = "Not applied — this device isn't supported."
             return
         }
+        eqSourceName = name
         if !eqEnabled { setEqEnabled(true) }
         transportSend(.setEqType, [eqGroup.rawValue, 1])   // 1 = PEQ
         setPreGain(max(-12, min(12, file.preamp)))
@@ -820,7 +911,7 @@ final class QudelixController: ObservableObject {
                 lastImportSummary = "No filters found in \(url.lastPathComponent)"
                 return
             }
-            apply(parsed)
+            apply(parsed, named: url.deletingPathExtension().lastPathComponent)
         } catch {
             lastImportSummary = "Could not read file: \(error.localizedDescription)"
         }
