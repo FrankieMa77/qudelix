@@ -27,6 +27,11 @@ struct ParametricEQFile {
 
             if line.lowercased().hasPrefix("preamp:") {
                 let p = firstDouble(after: ":", in: line) ?? 0
+                // Deliberately wider than the ±12 the device accepts. This is a
+                // sanity bound on a parsed file, not a device bound: clamping
+                // to the device range here would erase the overflow, and the
+                // overflow is exactly what the caller warns the user about
+                // before `apply` clamps it for the wire.
                 out.preamp = p.isFinite ? max(-24, min(24, p)) : 0
                 continue
             }

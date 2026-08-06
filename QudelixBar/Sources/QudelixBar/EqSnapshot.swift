@@ -42,7 +42,7 @@ enum EqSnapshotFile {
         // handcrafted file controls gets the same scrub every device string
         // gets (control/bidi scalars out, length capped).
         s.name = s.name.map(QudelixController.displayName)
-        s.preGain = s.preGain.isFinite ? min(max(s.preGain, -12), 12) : 0
+        s.preGain = EQHeadroom.clamp(s.preGain)
         s.bands = s.bands.map { band in
             var b = band
             b.freq = min(max(b.freq, 20), 20000)

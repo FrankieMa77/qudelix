@@ -17,7 +17,7 @@ struct DeviceEQLimits: Equatable {
     var minFc: Double = 20
     var maxFc: Double = 20000
     /// Pre-gain range; the device takes the same ±12 dB as a band does.
-    var maxPreamp: Double = 12
+    var maxPreamp: Double = EQHeadroom.range.upperBound
 
     /// Upper bound for a *filter centre*, as distinct from the range the
     /// correction is fitted over. A peak placed above this spends one of a

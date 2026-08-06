@@ -126,8 +126,13 @@ final class ABTuner: ObservableObject {
         // One fixed pre-gain for the whole session, low enough that the loudest
         // tilt cannot clip. Fixed because a pre-gain that moved between options
         // would be a loudness cue, and loudness beats timbre every time.
-        let worstPeak = (baseline.map(\.gain).max() ?? 0) + Self.tiltCap
-        sessionPreGain = max(-12, min(baselinePreGain, -max(0, worstPeak)))
+        // The peak of the summed response, not the largest single band gain:
+        // overlapping bands add, a shelf overshoots its nominal corner, and a
+        // resonant LPF has gain of its own. Taking the largest band under-reads
+        // on exactly the curves with the least headroom to spare, which would
+        // make the promise above false when it matters most.
+        let worstPeak = EQHeadroom.peakBoost(of: baseline) + Self.tiltCap
+        sessionPreGain = EQHeadroom.clamp(min(baselinePreGain, -max(0, worstPeak)))
 
         queue = []
         for _ in 1...Self.rounds {
@@ -282,8 +287,8 @@ final class ABTuner: ObservableObject {
     func keepResult(_ c: QudelixController) {
         // Leave the curve applied, but hand pre-gain back to the user's value if
         // the result does not actually need the extra headroom.
-        let peak = resultBands.map(\.gain).max() ?? 0
-        c.setPreGain(max(-12, min(baselinePreGain, -max(0, peak))))
+        let peak = EQHeadroom.peakBoost(of: resultBands)
+        c.setPreGain(EQHeadroom.clamp(min(baselinePreGain, -max(0, peak))))
         phase = .idle
     }
 
