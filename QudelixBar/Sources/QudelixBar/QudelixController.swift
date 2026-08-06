@@ -99,6 +99,11 @@ final class QudelixController: ObservableObject {
         }
     }
 
+    /// Outlives connections deliberately: its once-per-episode latches must
+    /// survive a Bluetooth blip, or every reconnect re-announces the same
+    /// low battery.
+    private let batteryAlerts = BatteryAlerts()
+
     private var assembler = QxPresetAssembler()
     private var state = QxDeviceState()
     private var requestedNames = false
@@ -422,6 +427,7 @@ final class QudelixController: ObservableObject {
         if let fw = state.fwVersion { firmwareVersion = fw }
         if let b = state.batteryPercent { batteryPercent = b }
         charging = state.charging
+        batteryAlerts.update(batteryPercent: batteryPercent, charging: charging)
         if let sr = state.sampleRateLabel { sampleRate = sr }
         if let src = state.inputSourceLabel { inputSource = src }
         if let m = state.usbMute { muted = m }

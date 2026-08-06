@@ -158,12 +158,16 @@ struct DeviceHeader: View {
             if let batt = controller.batteryPercent {
                 HStack(spacing: 3) {
                     Image(systemName: controller.charging ? "battery.100.bolt" : batteryIcon(batt))
-                        .foregroundStyle(controller.charging ? .green
-                                         : (batt <= 20 ? .orange : .secondary))
-                    Text("\(batt)%").font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(batteryColor(batt))
+                    Text("\(batt)%")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(!controller.charging
+                                         && batt <= BatteryAlerts.veryLowThreshold
+                                         ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
                 }
                 .padding(.horizontal, 7).padding(.vertical, 3)
                 .background(.quaternary.opacity(0.5), in: Capsule())
+                .help(batteryHelp(batt))
             }
 
             Button { controller.refresh() } label: {
@@ -218,6 +222,15 @@ struct DeviceHeader: View {
         if let fw = controller.firmwareVersion { parts.append("FW \(fw)") }
         if let sr = controller.sampleRate, controller.inputSource != "None" { parts.append(sr) }
         if let src = controller.inputSource, src != "None" { parts.append(src) } else { parts.append("idle") }
+        if let b = controller.batteryPercent {
+            if controller.charging {
+                parts.append("charging")
+            } else if b <= BatteryAlerts.veryLowThreshold {
+                parts.append("battery very low")
+            } else if b <= BatteryAlerts.lowThreshold {
+                parts.append("battery low")
+            }
+        }
         return parts.joined(separator: " · ")
     }
     private func batteryIcon(_ p: Int) -> String {
@@ -228,6 +241,20 @@ struct DeviceHeader: View {
         case 10..<30: return "battery.25"
         default: return "battery.0"
         }
+    }
+    private func batteryColor(_ p: Int) -> Color {
+        if controller.charging { return .green }
+        if p <= BatteryAlerts.veryLowThreshold { return .red }
+        if p <= BatteryAlerts.lowThreshold { return .orange }
+        return .secondary
+    }
+    private func batteryHelp(_ p: Int) -> String {
+        if controller.charging { return "Charging — \(p)%" }
+        if p <= BatteryAlerts.veryLowThreshold {
+            return "Battery very low — the 5K will shut down soon"
+        }
+        if p <= BatteryAlerts.lowThreshold { return "Battery low" }
+        return "Battery \(p)%"
     }
 }
 

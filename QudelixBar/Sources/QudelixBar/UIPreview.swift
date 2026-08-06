@@ -120,7 +120,18 @@ enum UIPreview {
          ("level", make(.level), levelMock()),
          ("disconnected", disconnected(), stageMock(running: true)),
          ("unsupported", unsupported(), stageMock()),
-         ("b20", twentyBand(), stageMock())]
+         ("b20", twentyBand(), stageMock()),
+         ("lowbatt", lowBattery(), stageMock())]
+    }
+
+    /// Header treatment at a very low battery: red glyph, warning in the
+    /// status line.
+    @MainActor
+    private static func lowBattery() -> QudelixController {
+        let c = make(.equalizer)
+        c.batteryPercent = 8
+        c.charging = false
+        return c
     }
 
     /// Stage pane state: the Movie preset active on the built-in speakers,

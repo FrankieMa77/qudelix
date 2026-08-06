@@ -22,14 +22,31 @@ struct QudelixBarApp: App {
                 .environmentObject(controller)
                 .environmentObject(stageState)
         } label: {
-            Image(systemName: menuIcon)
-                .onAppear {
-                    if !started {
-                        started = true
-                        controller.start()
-                        stageState.start()
+            // The menu bar renders template-style (no colour), so battery
+            // state is shown with shapes and text: a bolt while charging,
+            // the battery glyph plus the percentage once it runs low.
+            HStack(spacing: 3) {
+                Image(systemName: menuIcon)
+                if case .connected = controller.connection,
+                   let batt = controller.batteryPercent {
+                    if controller.charging {
+                        Image(systemName: "bolt.fill")
+                    } else if batt <= BatteryAlerts.veryLowThreshold {
+                        Image(systemName: "battery.0")
+                        Text("\(batt)%")
+                    } else if batt <= BatteryAlerts.lowThreshold {
+                        Image(systemName: "battery.25")
+                        Text("\(batt)%")
                     }
                 }
+            }
+            .onAppear {
+                if !started {
+                    started = true
+                    controller.start()
+                    stageState.start()
+                }
+            }
         }
         .menuBarExtraStyle(.window)
     }
