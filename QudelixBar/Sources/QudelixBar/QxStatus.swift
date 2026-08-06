@@ -15,6 +15,9 @@ struct QxDeviceState {
     /// count. 20-band differs only in EQ group (2 = b20), band count (20), the
     /// default frequency table, and the preset read-back layout.
     var eqMode: Int?
+    /// `dd.usb_fs_mode`: which sample rates the USB descriptor offers the
+    /// host — 0…3 pin a single rate (44.1/48/88.2/96), 4 offers all.
+    var usbFsMode: Int?
     var batteryPercent: Int?
     var batteryMilliVolts: Int?
     var charging = false
@@ -147,6 +150,8 @@ enum QxStatusParser {
             var r = QxBitReader(Array(d[off..<off + 12]))
             r.skip(36)
             state.eqMode = r.read(1)
+            let fs = r.read(3)
+            state.usbFsMode = fs <= 4 ? fs : nil
             off += 12
         }
         if mask & QxConfigMask.vol != 0 {

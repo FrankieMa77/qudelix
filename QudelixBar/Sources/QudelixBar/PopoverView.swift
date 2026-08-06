@@ -321,6 +321,7 @@ struct VolumeControl: View {
 /// playback bit-perfect. Hidden when the 5K's audio isn't on USB.
 struct UsbAudioRow: View {
     @EnvironmentObject var stageState: StageState
+    @EnvironmentObject var controller: QudelixController
 
     var body: some View {
         if let device = stageState.qudelixOutput {
@@ -347,6 +348,46 @@ struct UsbAudioRow: View {
                     Text("\(bits)-bit")
                         .font(.system(size: 9).monospacedDigit())
                         .foregroundStyle(.tertiary)
+                }
+                // The picker above can only choose among rates the 5K's USB
+                // descriptor OFFERS; the device can pin itself to a single
+                // one. This menu changes the offering itself.
+                if let fsMode = controller.usbFsMode {
+                    Menu {
+                        Section("Rates the 5K offers over USB — changing "
+                                + "restarts its USB connection") {
+                            ForEach(0..<QudelixController.usbFsModeLabels.count,
+                                    id: \.self) { idx in
+                                Button {
+                                    controller.setUsbFsMode(idx)
+                                } label: {
+                                    if idx == fsMode {
+                                        Label(QudelixController.usbFsModeLabels[idx],
+                                              systemImage: "checkmark")
+                                    } else {
+                                        Text(QudelixController.usbFsModeLabels[idx])
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: fsMode == 4
+                              ? "slider.horizontal.2.square"
+                              : "exclamationmark.lock")
+                            .font(.system(size: 10))
+                            .foregroundStyle(fsMode == 4
+                                             ? AnyShapeStyle(.secondary)
+                                             : AnyShapeStyle(.orange))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help(fsMode == 4
+                          ? "The 5K offers all rates over USB."
+                          : "The 5K is pinned to \(QudelixController.usbFsModeLabels[fsMode]) "
+                            + "over USB — macOS can't offer the others until the "
+                            + "device does. Change it here (its USB connection "
+                            + "restarts for a moment).")
                 }
             }
             .onAppear { stageState.watcher.refreshNow() }

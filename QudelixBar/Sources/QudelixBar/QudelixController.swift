@@ -54,6 +54,11 @@ final class QudelixController: ObservableObject {
     var volumeRange: ClosedRange<Double> { (volumeMax - 60)...volumeMax }
 
     // EQ
+    /// Which rates the 5K's USB descriptor offers the host (dd.usb_fs_mode):
+    /// 0…3 pin one rate (44.1/48/88.2/96 kHz), 4 offers all. nil until the
+    /// device reports it.
+    @Published var usbFsMode: Int?
+
     @Published var eqEnabled = true
     @Published var preGain: Double = 0
     @Published var bands: [QxEqBandValue] = QxEq.defaultFreqs.map {
@@ -203,6 +208,7 @@ final class QudelixController: ObservableObject {
         muted = false
         activePreset = nil
         presetNames = [:]
+        usbFsMode = nil
         lastImportSummary = nil
         requestedNames = false
         pendingGroup = nil
@@ -443,6 +449,7 @@ final class QudelixController: ObservableObject {
         if let sr = state.sampleRateLabel { sampleRate = sr }
         if let src = state.inputSourceLabel { inputSource = src }
         if let m = state.usbMute { muted = m }
+        if let fs = state.usbFsMode { usbFsMode = fs }
         // EQ group config only applies when it describes the group we're
         // targeting: in 20-band mode the block carries the b20 group, and
         // reading the 10-band group's preset index / name mask against it
@@ -624,6 +631,20 @@ final class QudelixController: ObservableObject {
         guard canWrite else { return }
         muted = on
         transportSend(.setVolume, [QxVolumeParam.mute.rawValue, 0, on ? 1 : 0])
+    }
+
+    /// Names for the five usb_fs_mode values, in wire order.
+    static let usbFsModeLabels = ["44.1 kHz only", "48 kHz only", "88.2 kHz only",
+                                  "96 kHz only", "All rates"]
+
+    /// Change which rates the USB descriptor offers. The device restarts its
+    /// USB connection to re-enumerate — audio drops for a couple of seconds
+    /// and this app reconnects on its own.
+    func setUsbFsMode(_ idx: Int) {
+        guard canWrite, (0...4).contains(idx), idx != usbFsMode else { return }
+        DebugLog.shared.log("requesting USB FS mode → \(Self.usbFsModeLabels[idx])")
+        usbFsMode = idx
+        transportSend(.setUsbFsMode, [UInt8(idx)])
     }
 
     /// Reports of the enable flag are ignored for this long after a local
