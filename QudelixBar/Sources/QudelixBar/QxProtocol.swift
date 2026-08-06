@@ -68,6 +68,41 @@ enum QxVolumeParam: UInt8 {
     case mute     = 128
 }
 
+/// Fixed dB ranges the 5K accepts for the absolute volume settings.
+enum QxVolumeRange {
+    /// Per-channel output trim. Attenuation only — the trims exist to pull one
+    /// channel down against the other, never to push one past the ceiling.
+    static let trim: ClosedRange<Double> = -24...0
+    /// The device's own volume ceiling. The top of the range is only reachable
+    /// in 2 Vrms output mode; in 1 Vrms mode the hardware caps at 0 dB anyway.
+    static let limit: ClosedRange<Double> = -60...6
+}
+
+extension QxVolumeParam {
+    /// The fixed range this sub-parameter accepts, in dB, or nil when it has
+    /// no fixed range.
+    ///
+    /// The master level (`sink`, and `call` during a call) deliberately has
+    /// none: its ceiling is the volume limit combined with the DAC's
+    /// output-power mode and is only known at runtime, and its floor is 60 dB
+    /// below that ceiling. Those are clamped against the live window instead.
+    /// `source` likewise depends on which input is active.
+    var dbRange: ClosedRange<Double>? {
+        switch self {
+        case .sysTrimL, .sysTrimR: return QxVolumeRange.trim
+        case .sysLimit: return QxVolumeRange.limit
+        case .sink, .call, .source, .tone, .mute: return nil
+        }
+    }
+
+    /// Clamp a dB value into this sub-parameter's range. Non-finite input is
+    /// not clampable and is rejected by the callers, not folded to a boundary.
+    func clamp(_ db: Double) -> Double {
+        guard let r = dbRange else { return db }
+        return min(max(db, r.lowerBound), r.upperBound)
+    }
+}
+
 /// ReqInitData payload: [status_hi, status_lo, At.Req] — the firmware
 /// requires this exact 3-byte payload (a bare request crashes its USB stack).
 enum QxInit {
@@ -253,6 +288,20 @@ enum QxPacket {
         let u = UInt16(bitPattern: Int16(clamping: v))
         return [UInt8(u >> 8), UInt8(u & 0xFF)]
     }
+
+    /// SetVolume payload for a dB-valued sub-parameter: `[param, int16 BE dB×60]`.
+    ///
+    /// Returns nil for non-finite input. There is no byte pattern that means
+    /// NaN here, and converting one to an integer traps outright, so it is
+    /// refused rather than turned into some arbitrary in-range value. Finite
+    /// values are clamped to the sub-parameter's range *before* scaling, so a
+    /// slider or a text field can never put an out-of-range setting on the
+    /// wire — this hardware stops answering when it dislikes a report.
+    static func volumePayload(_ param: QxVolumeParam, db: Double) -> [UInt8]? {
+        guard db.isFinite else { return nil }
+        let scaled = Int((param.clamp(db) * QxScale.volume).rounded())
+        return [param.rawValue] + int16BE(scaled)
+    }
 }
 
 // MARK: - Bitstream reader (RspEqPreset payload is a packed LSB-first bitstream)
@@ -286,6 +335,12 @@ struct QxBitReader {
 /// Decoded user-EQ preset (88-byte v3 bitstream, nCh=1, 10 bands).
 struct QxUserEqPreset {
     var preGain: Double = 0
+    /// Crossfeed level stored with this preset, in the device's own 6-bit
+    /// field (0…63, 0 = off). Read only: the device does its crossfeed in
+    /// hardware and keeps one setting per preset, but the step size and the
+    /// shape of the write command are not established here, so nothing sends
+    /// this back — it is decoded so the value can be shown, not changed.
+    var crossfeedLevel: Int = 0
     var bands: [QxEqBandValue] = []
 
     /// Layout (`fromArray_v3`, verbatim from the firmware's own parser):
@@ -301,8 +356,9 @@ struct QxUserEqPreset {
     /// buffer is 128 bytes rather than 88.
     static func decode(_ buf: [UInt8], group: QxEqGroup = .user) -> QxUserEqPreset {
         var r = QxBitReader(buf)
-        r.skip(1 + 14 + 11 + 6)
         var preset = QxUserEqPreset()
+        r.skip(1 + 14 + 11)                 // type, impedance, sensitivity
+        preset.crossfeedLevel = r.read(6)   // crossfeed is stored per preset
         preset.preGain = Double(QxBitReader.signExtend(r.read(16), bits: 16)) / QxScale.gain
         r.skip(16)  // ch1 pre-gain
 

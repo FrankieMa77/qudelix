@@ -53,6 +53,34 @@ final class QudelixController: ObservableObject {
     @Published var muted = false
     var volumeRange: ClosedRange<Double> { (volumeMax - 60)...volumeMax }
 
+    /// Per-channel output trim, applied by the device on top of the master
+    /// level. Attenuation only (−24…0 dB); equal values on both channels is
+    /// the same as no trim at all, so the pair is really a balance control.
+    @Published var trimLeftDb: Double = 0
+    @Published var trimRightDb: Double = 0
+
+    /// The device's own volume ceiling. This is enforced in the hardware, not
+    /// in this app: it is what `volumeMax` is derived from, together with the
+    /// DAC's output-power mode. Defaults to 0 dB — the 1 Vrms cap — until the
+    /// device reports its real setting, which the handshake asks for.
+    @Published var volumeLimitDb: Double = 0
+
+    /// DAC reconstruction filter the device is running (index into
+    /// `QxStatusParser.dacFilters`). Read only — see `dacFilterLabel`.
+    @Published var dacFilterType: Int?
+
+    /// Crossfeed level stored in the preset the device is currently running,
+    /// in its own 0…63 steps, or nil if no preset has been read. Read only.
+    @Published var crossfeedLevel: Int?
+
+    /// The filter's display name, or nil when the device hasn't reported one
+    /// (or reported an index this build has no name for).
+    var dacFilterLabel: String? {
+        guard let i = dacFilterType,
+              QxStatusParser.dacFilters.indices.contains(i) else { return nil }
+        return QxStatusParser.dacFilters[i]
+    }
+
     // EQ
     /// Which rates the 5K's USB descriptor offers the host (dd.usb_fs_mode):
     /// 0…3 pin one rate (44.1/48/88.2/96 kHz), 4 offers all. nil until the
@@ -325,6 +353,12 @@ final class QudelixController: ObservableObject {
         // an unidentified device is assumed to be.
         volumeDb = -30
         volumeMax = 0
+        trimLeftDb = 0
+        trimRightDb = 0
+        volumeLimitDb = 0
+        volumeFieldEditUntil = .distantPast
+        dacFilterType = nil
+        crossfeedLevel = nil
         eqGroup = .user
         assembler.group = .user
         assembler.reset()
@@ -564,8 +598,23 @@ final class QudelixController: ObservableObject {
             eqEnabled = en
         }
         if let idx = state.eqPresetIdx, eqCfgApplies { setActivePreset(idx) }
-        volumeMax = state.dacOutPwr2Vrms ? min(state.volumeLimitDb ?? 6, 6)
-                                         : min(state.volumeLimitDb ?? 0, 0)
+        if let f = state.dacFilterType, f != dacFilterType { dacFilterType = f }
+        // Trim and limit ride in the same volume block as the level, so a
+        // device push can carry the values from *before* a local edit — one
+        // round trip behind, the same echo the EQ enable flag guards against.
+        // The user's edit wins for the echo window; after it the device rules.
+        if Date() >= volumeFieldEditUntil {
+            if let l = state.trimLeftDb { trimLeftDb = l }
+            if let r = state.trimRightDb { trimRightDb = r }
+            if let lim = state.volumeLimitDb { volumeLimitDb = lim }
+        } else {
+            // volumeMax is recomputed from `state` on every pass, so a local
+            // limit has to be written back there too or the ceiling — and
+            // with it the whole slider range — flaps for a round trip. The
+            // trims need no equivalent: they are consumed below.
+            state.volumeLimitDb = volumeLimitDb
+        }
+        recomputeVolumeMax()
         // After volumeMax, so the slider's value always sits inside its range —
         // the device reports level and limit independently and can disagree.
         if let v = state.volumeDb {
@@ -583,6 +632,8 @@ final class QudelixController: ObservableObject {
         state.usbMute = nil
         state.eqEnabled = nil
         state.eqPresetIdx = nil
+        state.trimLeftDb = nil
+        state.trimRightDb = nil
 
         let compat: String
         switch compatibility {
@@ -648,6 +699,9 @@ final class QudelixController: ObservableObject {
         // and what `updateBand` would write back, so the displayed and exported
         // curve is one we could actually reproduce.
         preGain = min(max(p.preGain, -12), 12)
+        // Crossfeed is part of the preset the device just handed back, so it
+        // is only known once a preset decodes cleanly.
+        crossfeedLevel = p.crossfeedLevel
         bands = p.bands.map { band in
             var v = band
             v.freq = max(20, min(20000, v.freq))
@@ -729,6 +783,8 @@ final class QudelixController: ObservableObject {
         // slot for this group.
         activePreset = nil
         eqSourceName = nil
+        // Crossfeed is stored per preset, so it belongs to the group we left.
+        crossfeedLevel = nil
         transportSend(.reqEqPreset, [group.requestMask])
         transportSend(.reqDevConfig, [0xC0])   // sys2 | eq → this group's cfg + name mask
     }
@@ -768,6 +824,57 @@ final class QudelixController: ObservableObject {
         guard canWrite else { return }
         muted = on
         transportSend(.setVolume, [QxVolumeParam.mute.rawValue, 0, on ? 1 : 0])
+    }
+
+    /// How long a locally-edited volume-block field ignores device reports.
+    /// Same reasoning as the EQ enable flag's window: the device answers a
+    /// write by broadcasting the block, and that broadcast can still carry
+    /// the pre-change value.
+    private static let volumeEchoWindow: TimeInterval = 1.5
+    private var volumeFieldEditUntil = Date.distantPast
+
+    /// Ranges for the UI, so the sliders and the wire agree on the bounds.
+    var trimRange: ClosedRange<Double> { QxVolumeRange.trim }
+    var volumeLimitRange: ClosedRange<Double> { QxVolumeRange.limit }
+
+    /// Trim one channel down against the other. Attenuation only, so the pair
+    /// behaves as a balance control that can never raise the output.
+    func setTrimLeft(_ db: Double) { setTrim(.sysTrimL, db) }
+    func setTrimRight(_ db: Double) { setTrim(.sysTrimR, db) }
+
+    private func setTrim(_ param: QxVolumeParam, _ db: Double) {
+        // volumePayload refuses non-finite input, which is also the only input
+        // that has no sane clamp — so the guard covers both.
+        guard canWrite, let payload = QxPacket.volumePayload(param, db: db) else { return }
+        let clamped = param.clamp(db)
+        if param == .sysTrimL { trimLeftDb = clamped } else { trimRightDb = clamped }
+        volumeFieldEditUntil = Date().addingTimeInterval(Self.volumeEchoWindow)
+        transportSendCoalesced(.setVolume, payload, key: "trim\(param.rawValue)")
+    }
+
+    /// Set the device's own volume ceiling. The hardware enforces it, so this
+    /// is a real limit rather than a UI one — and lowering it below the
+    /// current level pulls the whole slider range down immediately, without
+    /// waiting for the device to report back.
+    func setVolumeLimit(_ db: Double) {
+        guard canWrite,
+              let payload = QxPacket.volumePayload(.sysLimit, db: db) else { return }
+        let clamped = QxVolumeParam.sysLimit.clamp(db)
+        volumeLimitDb = clamped
+        state.volumeLimitDb = clamped
+        volumeFieldEditUntil = Date().addingTimeInterval(Self.volumeEchoWindow)
+        recomputeVolumeMax()
+        transportSendCoalesced(.setVolume, payload, key: "volumeLimit")
+    }
+
+    /// The ceiling is the lower of the device's volume limit and its hardware
+    /// cap (+6 dB in 2 Vrms output mode, 0 dB in 1 Vrms), and the slider's
+    /// 60 dB window hangs off it.
+    private func recomputeVolumeMax() {
+        volumeMax = state.dacOutPwr2Vrms ? min(state.volumeLimitDb ?? 6, 6)
+                                         : min(state.volumeLimitDb ?? 0, 0)
+        // A lowered limit can leave the displayed level above the new ceiling.
+        volumeDb = min(max(volumeDb, volumeRange.lowerBound), volumeRange.upperBound)
     }
 
     /// Names for the usb_fs_mode values, in wire order — which is
