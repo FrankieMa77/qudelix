@@ -145,6 +145,16 @@ struct ImportView: View {
         }
     }
 
+    /// A menu bar app is normally NOT the active application while its
+    /// popover is open — clicking a status-item popover doesn't activate the
+    /// app. A modal panel presented by an inactive app comes up without
+    /// focus and its file list ignores the first round of clicks; dismissing
+    /// it activates the app, which is why the second attempt always worked.
+    /// Activate first, so the FIRST panel is usable.
+    private func activateForPanel() {
+        NSApp.activate()
+    }
+
     private func openFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.plainText, .text]
@@ -152,6 +162,7 @@ struct ImportView: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.message = "Choose a parametric EQ file (AutoEq / Equalizer APO format)"
+        activateForPanel()
         if panel.runModal() == .OK, let url = panel.url {
             controller.importFile(at: url)
         }
@@ -161,7 +172,8 @@ struct ImportView: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = "QudelixEQ.txt"
-        panel.message = "Save the current 10-band EQ"
+        panel.message = "Save the current EQ"
+        activateForPanel()
         if panel.runModal() == .OK, let url = panel.url {
             try? controller.exportText().write(to: url, atomically: true, encoding: .utf8)
         }
