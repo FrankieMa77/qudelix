@@ -36,6 +36,13 @@ struct PopoverView: View {
         }
     }
 
+    /// Height of everything between the header and the footer, fixed so the
+    /// window doesn't resize when switching panes — the jumping was the
+    /// annoyance, not any one size. Sized to fit the tallest pane, the
+    /// 10-band EQ table; every other pane top-aligns into the same space,
+    /// and Stage/Level scroll internally if they ever exceed it.
+    private static let contentHeight: CGFloat = 558
+
     var body: some View {
         VStack(spacing: 0) {
             DeviceHeader()
@@ -44,6 +51,8 @@ struct PopoverView: View {
 
             if case .unsupported(let title, let detail) = controller.compatibility, connected {
                 UnsupportedDeviceView(title: title, detail: detail)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Self.contentHeight)
             } else if connected {
                 // No outer ScrollView on purpose: the panes that can grow
                 // (presets, search results, diagnostics) scroll internally, so
@@ -69,33 +78,42 @@ struct PopoverView: View {
                     case .presets: PresetsView()
                     case .importing: ImportView()
                     case .tune: TuneView()
-                    case .stage: StageView()
-                    case .level: LevelView()
+                    // Stage and Level can outgrow the fixed pane area (the
+                    // geometry disclosure, a long history), so they scroll
+                    // inside it rather than resizing the window.
+                    case .stage: ScrollView { StageView() }
+                    case .level: ScrollView { LevelView() }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .padding(14)
+                .frame(height: Self.contentHeight)
             } else {
-                DisconnectedView()
-                // Stage and Level act on the Mac's own audio, so they stay
-                // reachable with the 5K away — an enabled stage must never
-                // need the device present to be switched off.
-                Divider()
-                VStack(spacing: 14) {
-                    Picker("", selection: $pane) {
-                        ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
-                            Label(p.rawValue, systemImage: p.icon).tag(p)
+                VStack(spacing: 0) {
+                    DisconnectedView()
+                    // Stage and Level act on the Mac's own audio, so they stay
+                    // reachable with the 5K away — an enabled stage must never
+                    // need the device present to be switched off.
+                    Divider()
+                    VStack(spacing: 14) {
+                        Picker("", selection: $pane) {
+                            ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
+                                Label(p.rawValue, systemImage: p.icon).tag(p)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        if pane == .level {
+                            ScrollView { LevelView() }
+                        } else {
+                            ScrollView { StageView() }
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    if pane == .level {
-                        LevelView()
-                    } else {
-                        StageView()
-                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(14)
                 }
-                .padding(14)
+                .frame(height: Self.contentHeight)
                 .onAppear { if pane.needsDevice { pane = .stage } }
             }
 
