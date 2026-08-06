@@ -343,7 +343,10 @@ final class QudelixController: ObservableObject {
             guard group == eqGroup.rawValue || data[0] == 129 else { return }
             switch data[0] {
             case 129: if data.count >= 3 { setActivePreset(Int(data[2])) }  // eqPresetIdx
-            case 130: if data.count >= 3 { eqEnabled = data[2] != 0 }       // eqEnable
+            case 130:                                                        // eqEnable
+                if data.count >= 3, Date() >= eqEnableEditUntil {
+                    eqEnabled = data[2] != 0
+                }
             default: break
             }
         } else {
@@ -445,7 +448,9 @@ final class QudelixController: ObservableObject {
         // reading the 10-band group's preset index / name mask against it
         // highlights the wrong slot and fetches the wrong names.
         let eqCfgApplies = state.eqCfgGroup == Int(eqGroup.rawValue)
-        if let en = state.eqEnabled, eqCfgApplies { eqEnabled = en }
+        if let en = state.eqEnabled, eqCfgApplies, Date() >= eqEnableEditUntil {
+            eqEnabled = en
+        }
         if let idx = state.eqPresetIdx, eqCfgApplies { setActivePreset(idx) }
         volumeMax = state.dacOutPwr2Vrms ? min(state.volumeLimitDb ?? 6, 6)
                                          : min(state.volumeLimitDb ?? 0, 0)
@@ -621,9 +626,17 @@ final class QudelixController: ObservableObject {
         transportSend(.setVolume, [QxVolumeParam.mute.rawValue, 0, on ? 1 : 0])
     }
 
+    /// Reports of the enable flag are ignored for this long after a local
+    /// toggle. The device answers a toggle by broadcasting its config, and
+    /// that broadcast can carry the PRE-change enable bit — one round trip
+    /// behind — which snapped the switch straight back off. The user's click
+    /// wins for the echo window; the next unsolicited report rules again.
+    private var eqEnableEditUntil = Date.distantPast
+
     func setEqEnabled(_ on: Bool) {
         guard canWriteEq else { return }
         eqEnabled = on
+        eqEnableEditUntil = Date().addingTimeInterval(1.5)
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
     }
 
