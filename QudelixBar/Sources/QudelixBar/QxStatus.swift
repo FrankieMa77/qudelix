@@ -16,7 +16,9 @@ struct QxDeviceState {
     /// default frequency table, and the preset read-back layout.
     var eqMode: Int?
     /// `dd.usb_fs_mode`: which sample rates the USB descriptor offers the
-    /// host — 0…3 pin a single rate (44.1/48/88.2/96), 4 offers all.
+    /// host. DESCENDING, verified against real re-enumeration: 0…3 pin a
+    /// single rate (96/88.2/48/44.1), 4 offers all four, 5/6 are the
+    /// mic-enabled 48/44.1 modes.
     var usbFsMode: Int?
     var batteryPercent: Int?
     var batteryMilliVolts: Int?
@@ -151,7 +153,7 @@ enum QxStatusParser {
             r.skip(36)
             state.eqMode = r.read(1)
             let fs = r.read(3)
-            state.usbFsMode = fs <= 4 ? fs : nil
+            state.usbFsMode = fs <= 6 ? fs : nil
             off += 12
         }
         if mask & QxConfigMask.vol != 0 {

@@ -403,9 +403,17 @@ struct UsbAudioRow: View {
     }
 
     /// Compact form of the pinned modes for the menu label ("96 only").
+    /// Wire order — descending rates, then the mic modes.
     private static func shortFsLabel(_ idx: Int) -> String {
-        let rates = ["44.1", "48", "88.2", "96"]
-        return idx < rates.count ? "\(rates[idx]) only" : "?"
+        switch idx {
+        case 0: return "96 only"
+        case 1: return "88.2 only"
+        case 2: return "48 only"
+        case 3: return "44.1 only"
+        case 5: return "48 + mic"
+        case 6: return "44.1 + mic"
+        default: return "?"
+        }
     }
 }
 

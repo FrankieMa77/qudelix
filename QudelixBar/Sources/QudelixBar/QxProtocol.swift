@@ -23,7 +23,7 @@ enum QxCmd: UInt16 {
     case setVolume        = 0x0200  // [subParam, int16BE dB*60] (sink=1) / [subParam, ch, value] variants
     case setCharger       = 0x0201
     case setLedMode       = 0x0202
-    case setUsbFsMode     = 0x0209  // [idx]: 0=44.1, 1=48, 2=88.2, 3=96, 4=all; device re-enumerates USB
+    case setUsbFsMode     = 0x0209  // [idx], DESCENDING: 0=96, 1=88.2, 2=48, 3=44.1, 4=all, 5=48+mic, 6=44.1+mic; device re-enumerates USB
     case setBatteryCare   = 0x0213
     case setUsbDacMode    = 0x0217
     case setDacFilter     = 0x0501

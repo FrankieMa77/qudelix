@@ -633,15 +633,19 @@ final class QudelixController: ObservableObject {
         transportSend(.setVolume, [QxVolumeParam.mute.rawValue, 0, on ? 1 : 0])
     }
 
-    /// Names for the five usb_fs_mode values, in wire order.
-    static let usbFsModeLabels = ["44.1 kHz only", "48 kHz only", "88.2 kHz only",
-                                  "96 kHz only", "All rates"]
+    /// Names for the usb_fs_mode values, in wire order — which is
+    /// DESCENDING for the pinned rates. Verified live: sending 3 pins the
+    /// device to 44.1 kHz (it re-enumerates and renames itself
+    /// "…USB DAC 44.1KHz"), not to 96 as an ascending reading would say.
+    static let usbFsModeLabels = ["96 kHz only", "88.2 kHz only", "48 kHz only",
+                                  "44.1 kHz only", "All rates",
+                                  "48 kHz + mic", "44.1 kHz + mic"]
 
     /// Change which rates the USB descriptor offers. The device restarts its
     /// USB connection to re-enumerate — audio drops for a couple of seconds
     /// and this app reconnects on its own.
     func setUsbFsMode(_ idx: Int) {
-        guard canWrite, (0...4).contains(idx), idx != usbFsMode else { return }
+        guard canWrite, (0...6).contains(idx), idx != usbFsMode else { return }
         DebugLog.shared.log("requesting USB FS mode → \(Self.usbFsModeLabels[idx])")
         usbFsMode = idx
         transportSend(.setUsbFsMode, [UInt8(idx)])
