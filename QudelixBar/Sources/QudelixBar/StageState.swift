@@ -44,6 +44,22 @@ final class StageState: ObservableObject {
     var outputName: String? { watcher.defaultOutput?.name }
     var outputUID: String? { watcher.defaultOutput?.uid }
 
+    /// The 5K as a Core Audio OUTPUT device (its USB audio side), whichever
+    /// output is currently the default. nil when audio isn't on USB.
+    var qudelixOutput: AudioOutput? {
+        watcher.devices.first { $0.name.localizedCaseInsensitiveContains("qudelix") }
+    }
+
+    /// Set the rate macOS runs a device at — what Audio MIDI Setup does.
+    /// If the stage engine is on that device, its rate listener restarts it
+    /// at the new rate; the delayed refresh picks up the HAL's async apply.
+    func setNominalRate(_ rate: Double, for device: AudioOutput) {
+        AudioOutputs.setNominalRate(device.id, rate)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.watcher.refreshNow()
+        }
+    }
+
     init() {
         // Views observe this object alone; the engine's status line and the
         // watcher's device names publish through it.

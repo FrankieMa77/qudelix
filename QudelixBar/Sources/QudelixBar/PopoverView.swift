@@ -39,9 +39,10 @@ struct PopoverView: View {
     /// Height of everything between the header and the footer, fixed so the
     /// window doesn't resize when switching panes — the jumping was the
     /// annoyance, not any one size. Sized to fit the tallest pane, the
-    /// 10-band EQ table; every other pane top-aligns into the same space,
-    /// and Stage/Level scroll internally if they ever exceed it.
-    private static let contentHeight: CGFloat = 558
+    /// 10-band EQ table, plus the USB-audio row; every other pane top-aligns
+    /// into the same space, and Stage/Level scroll internally if they ever
+    /// exceed it.
+    private static let contentHeight: CGFloat = 592
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,6 +65,8 @@ struct PopoverView: View {
                         .frame(height: 104)
 
                     VolumeControl()
+
+                    UsbAudioRow()
 
                     Picker("", selection: $pane) {
                         ForEach(Pane.allCases) { p in
@@ -307,6 +310,57 @@ struct VolumeControl: View {
         }
         .padding(.horizontal, 11).padding(.vertical, 8)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - USB audio rate
+
+/// The rate macOS runs the 5K's USB audio at. One fixed rate at a time —
+/// macOS resamples everything else to it and never switches automatically —
+/// so matching the library (music is usually 44.1 kHz) is what makes
+/// playback bit-perfect. Hidden when the 5K's audio isn't on USB.
+struct UsbAudioRow: View {
+    @EnvironmentObject var stageState: StageState
+
+    var body: some View {
+        if let device = stageState.qudelixOutput {
+            let available = AudioOutputs.availableNominalRates(device.id)
+            let rates = available.isEmpty ? [44100, 48000, 88200, 96000] : available
+            HStack(spacing: 8) {
+                Text("USB audio")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { device.sampleRate },
+                    set: { stageState.setNominalRate($0, for: device) })) {
+                    ForEach(rates, id: \.self) { r in
+                        Text(Self.kHz(r)).tag(r)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.mini)
+                .labelsHidden()
+                Text("kHz")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                if let bits = AudioOutputs.outputBitDepth(device.id) {
+                    Text("\(bits)-bit")
+                        .font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .onAppear { stageState.watcher.refreshNow() }
+            .help("The rate macOS runs the Qudelix at — the same setting as "
+                  + "Audio MIDI Setup. macOS resamples anything at a different "
+                  + "rate and never switches this automatically, so match your "
+                  + "library: most music is 44.1 kHz, most video 48 kHz. "
+                  + "While Soundstage is on, audio is processed on the Mac and "
+                  + "resampling happens regardless.")
+        }
+    }
+
+    private static func kHz(_ rate: Double) -> String {
+        String(format: "%g", rate / 1000)
     }
 }
 

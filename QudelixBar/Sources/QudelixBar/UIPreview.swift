@@ -145,7 +145,9 @@ enum UIPreview {
                      currentDb: running ? -21 : nil)
         s.watcher.previewSetDevices(
             [AudioOutput(id: 1, uid: "mock-speakers",
-                         name: "MacBook Pro Speakers", sampleRate: 48000)],
+                         name: "MacBook Pro Speakers", sampleRate: 48000),
+             AudioOutput(id: 2, uid: "mock-qudelix",
+                         name: "Qudelix-5K USB DAC", sampleRate: 96000)],
             defaultUID: "mock-speakers")
         if running {
             s.engine.previewSetRunning(true, status: "Stage active → MacBook Pro Speakers @ 48 kHz")

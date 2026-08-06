@@ -38,6 +38,59 @@ enum AudioOutputs {
         nominalRate(id)
     }
 
+    /// The discrete sample rates the device offers. Ranges with distinct
+    /// min/max (rare for USB audio) contribute their endpoints.
+    static func availableNominalRates(_ id: AudioDeviceID) -> [Double] {
+        var addr = address(kAudioDevicePropertyAvailableNominalSampleRates)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var ranges = [AudioValueRange](repeating: AudioValueRange(),
+                                       count: Int(size) / MemoryLayout<AudioValueRange>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &ranges) == noErr
+        else { return [] }
+        var rates: [Double] = []
+        for r in ranges {
+            rates.append(r.mMinimum)
+            if r.mMaximum != r.mMinimum { rates.append(r.mMaximum) }
+        }
+        return Array(Set(rates)).sorted()
+    }
+
+    /// Ask the device to run at `rate` — the same thing Audio MIDI Setup
+    /// does. The change is applied asynchronously by the HAL.
+    @discardableResult
+    static func setNominalRate(_ id: AudioDeviceID, _ rate: Double) -> Bool {
+        var rate = rate
+        var addr = address(kAudioDevicePropertyNominalSampleRate)
+        return AudioObjectSetPropertyData(id, &addr, 0, nil,
+                                          UInt32(MemoryLayout<Float64>.size),
+                                          &rate) == noErr
+    }
+
+    /// Bit depth of the device's first output stream's physical format —
+    /// what actually travels over the wire, not the Float32 client side.
+    static func outputBitDepth(_ id: AudioDeviceID) -> Int? {
+        var addr = address(kAudioDevicePropertyStreams,
+                           scope: kAudioObjectPropertyScopeOutput)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
+              size > 0 else { return nil }
+        var streams = [AudioStreamID](repeating: 0,
+                                      count: Int(size) / MemoryLayout<AudioStreamID>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &streams) == noErr,
+              let stream = streams.first else { return nil }
+        var fmtAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioStreamPropertyPhysicalFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var asbd = AudioStreamBasicDescription()
+        var fmtSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(stream, &fmtAddr, 0, nil, &fmtSize, &asbd) == noErr,
+              asbd.mBitsPerChannel > 0 else { return nil }
+        return Int(asbd.mBitsPerChannel)
+    }
+
     /// The Core Audio process object for a pid, needed to exclude a process
     /// from a tap.
     static func processObject(for pid: pid_t) -> AudioObjectID? {
@@ -176,13 +229,21 @@ final class OutputWatcher: ObservableObject {
     }
 
     #if DEBUG
+    /// Mock state must survive later refresh calls (a row's onAppear may
+    /// ask for fresh rates), or the render harness would show the build
+    /// machine's real devices.
+    private var previewFrozen = false
     func previewSetDevices(_ list: [AudioOutput], defaultUID: String?) {
+        previewFrozen = true
         devices = list
         defaultOutput = list.first { $0.uid == defaultUID } ?? list.first
     }
     #endif
 
     private func refresh() {
+        #if DEBUG
+        guard !previewFrozen else { return }
+        #endif
         let fresh = AudioOutputs.outputDevices()
         if fresh != devices { devices = fresh }
         let defaultID = AudioOutputs.defaultOutputID()

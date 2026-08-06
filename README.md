@@ -33,6 +33,9 @@ right.
 
 - **Live device status** — battery, charging, firmware, sample rate, input source
 - **Volume** control with mute
+- **USB sample rate** — switch the rate macOS runs the 5K at (44.1/48/88.2/96)
+  without a trip to Audio MIDI Setup; macOS resamples anything that doesn't
+  match and never switches this itself, so set it to match what you play
 - **10-band parametric EQ** editor: filter type, frequency, gain, Q, plus pre-gain
 - **20-band mode** — switch between 10 and 20 bands from the EQ pane; the app
   also follows a switch made anywhere else
