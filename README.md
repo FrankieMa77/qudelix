@@ -40,19 +40,33 @@ right.
 - **10-band parametric EQ** editor: filter type, frequency, gain, Q, plus pre-gain
 - **20-band mode** — switch between 10 and 20 bands from the EQ pane; the app
   also follows a switch made anywhere else
-- **Live response curve** showing the combined filter shape
-- **20 preset slots**, loaded and saved by name
+- **Live response curve** showing the combined filter shape, and — after an
+  import the device could not take exactly — the requested shape behind it, so
+  you can see where the two part company
+- **Auto pre-gain** — works out how much the boosted bands need pulling back
+  and offers the number, rather than moving it for you
+- **Per-band mute** for an instant A/B of one band; the gain is kept
+- **20 preset slots**. Whatever names the device already holds are shown;
+  naming a slot from here isn't supported yet
+- **Profiles** — pair an output device with a preset and be offered the switch
+  when that output becomes active
 - **Preset import** from a file, or from the
-  [AutoEq](https://github.com/jaakkopasanen/AutoEq) database (6,000+ headphones)
+  [AutoEq](https://github.com/jaakkopasanen/AutoEq) database (6,000+ headphones),
+  fitted live to a target curve of your choosing with bass and tilt adjustment
+- **Device settings** — channel trim, volume limit and the DAC reconstruction
+  filter, all stored on the 5K itself
 - **Export** your EQ in the standard parametric format
 - **Tune** — find the EQ you actually prefer, by ear (see below)
 - **Stage** — a soundstage for headphones: width, crossfeed, dialogue lift and
   room, applied on the Mac (see below)
-- **Level** — live output level and a 14-day listening history
+- **Level** — live output level, a 14-day listening history, and a signal path
+  inspector showing what is altering the audio and what is passing it through
 - **Stream quality detection** — measures whether what's playing looks lossy
   or lossless (any player: it doesn't ask apps, it analyzes the audio), and
   can auto-match the USB rate: lossless → 44.1 kHz bit-perfect, lossy → your
-  chosen rate. Both parts can be switched off
+  chosen rate. Both parts can be switched off. When it has measured a cutoff,
+  an import can also be told to stop correcting there, rather than spending
+  filters and headroom on frequencies the source has already discarded
 - **Diagnostics panel** logging every packet exchanged with the device
 
 Works over **USB or Bluetooth**. USB is used whenever the 5K is plugged in;
@@ -330,6 +344,17 @@ Read the source before running them.
 
 - Only the user (headphone) EQ group is exposed, not the speaker group.
 - Preset slots show generic names unless you have named them on the device.
+  Naming a slot from this app is not supported: the device's own naming
+  command is understood well enough to read names but not to write them
+  safely, and a wrong guess there can damage the stored preset.
+- Crossfeed is shown but cannot be changed here — it lives inside the preset
+  the device stores, and writing it means rewriting that preset.
+- A muted band comes back after an app restart as a bypassed band rather than
+  a muted one. The gain is safe on the device and the row reads "Off"; the
+  unmute button is what's missing.
+- Profiles match the *output device*, not your headphones. Two pairs sharing
+  one adapter look like the same output — and some cheap adapters report an
+  identical identity to every other unit of their model.
 - Only firmware 3.x is supported; see the table above for what happens on
   anything else.
 - No auto-update mechanism yet.
