@@ -171,7 +171,7 @@ final class QudelixController: ObservableObject {
     var previewPane: PopoverView.Pane?
     /// Set only by UIPreview: seeds the AutoEq list so it renders offline.
     var previewAutoEq: (entries: [AutoEqEntry], query: String)?
-    static let presetCount = 20
+    static let presetCount = QxEq.presetCount
 
     /// EQ group the device is currently using — driven by `dd.eq_mode`.
     /// 10-band user EQ by default; 20-band (b20) when the device is in that mode.
@@ -592,11 +592,14 @@ final class QudelixController: ObservableObject {
         let idx = Int(data[1])
         guard (0..<Self.presetCount).contains(idx) else { return }
         let end = min(Int(data[2]), data.count)
-        guard end > 3 else { return }
+        // An empty field is a real answer, not a non-answer: it is what a
+        // cleared slot reports, and until this app could write names there was
+        // nothing that could produce one, so it used to be ignored.
+        guard end > 3 else { presetNames[idx] = nil; return }
         let nameBytes = data[3..<end].prefix { $0 != 0 }
         guard let raw = String(bytes: nameBytes, encoding: .utf8) else { return }
         let name = Self.displayName(raw)
-        if !name.isEmpty { presetNames[idx] = name }
+        presetNames[idx] = name.isEmpty ? nil : name
     }
 
     /// Longest preset name the popover will show. The device's own field is
@@ -1135,6 +1138,34 @@ final class QudelixController: ObservableObject {
     func savePreset(_ index: Int) {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
         transportSend(.saveEqPreset, [UInt8(index)])
+    }
+
+    /// Name a preset slot on the device.
+    ///
+    /// The name is scrubbed the same way names arriving *from* the device are,
+    /// before it is sent: this app is not the only thing that will read it
+    /// back, and a control or direction-override scalar written into a slot
+    /// would misrender wherever it is shown. An empty name clears the slot.
+    ///
+    /// The local value is set optimistically so the row does not flicker, then
+    /// the slot is read back — the device's answer is what finally stands.
+    func setPresetName(_ index: Int, _ name: String) {
+        guard canWriteEq,
+              let payload = QxPacket.presetNamePayload(
+                  group: eqGroup, index: index,
+                  name: Self.displayName(name)) else { return }
+
+        let stored = QxPacket.truncatingUTF8(Self.displayName(name),
+                                             to: QxPacket.maxPresetNameBytes)
+        if stored.isEmpty { presetNames[index] = nil } else { presetNames[index] = stored }
+
+        transportSend(.setEqPresetName, payload)
+        // Confirm rather than assume. A name is the one device string this app
+        // writes, and the slot is worth re-reading to see what actually landed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, self.canWriteEq else { return }
+            self.transportSend(.reqEqPresetName, [self.eqGroup.rawValue, UInt8(index)])
+        }
     }
 
     func setPreGain(_ db: Double) {

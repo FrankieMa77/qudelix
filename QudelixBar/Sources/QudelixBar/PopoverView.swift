@@ -748,6 +748,11 @@ struct BandRow: View {
 
 struct PresetsView: View {
     @EnvironmentObject var controller: QudelixController
+    /// Which slot is being renamed, and the text so far. Held here rather than
+    /// per row so only one row can be in edit mode at a time.
+    @State private var renaming: Int?
+    @State private var draftName = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -769,6 +774,11 @@ struct PresetsView: View {
         }
     }
 
+    private func commitRename(_ i: Int) {
+        controller.setPresetName(i, draftName)
+        renaming = nil
+    }
+
     private func presetRow(_ i: Int) -> some View {
         let isActive = controller.activePreset == i
         let named = controller.presetNames[i] != nil
@@ -777,25 +787,50 @@ struct PresetsView: View {
                 .font(.system(size: 9).monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: 16, alignment: .trailing)
-            Text(controller.presetLabel(i))
-                .font(.system(size: 11, weight: isActive ? .semibold : .regular))
-                .foregroundStyle(named ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer()
-            if isActive {
-                Text("active").font(.system(size: 9)).foregroundStyle(Color.accentColor)
-            }
-            Button("Load") { controller.loadPreset(i) }
+            if renaming == i {
+                TextField("", text: $draftName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .controlSize(.small)
+                    .focused($nameFocused)
+                    .onSubmit { commitRename(i) }
+                Button("Save") { commitRename(i) }
+                    .controlSize(.mini)
+                    .font(.system(size: 10))
+                Button("Cancel") { renaming = nil }
+                    .controlSize(.mini)
+                    .font(.system(size: 10))
+            } else {
+                Text(controller.presetLabel(i))
+                    .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(named ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+                if isActive {
+                    Text("active").font(.system(size: 9)).foregroundStyle(Color.accentColor)
+                }
+                Button {
+                    draftName = controller.presetNames[i] ?? ""
+                    renaming = i
+                    nameFocused = true
+                } label: {
+                    Image(systemName: "pencil").font(.system(size: 9))
+                }
                 .controlSize(.mini)
-                .font(.system(size: 10))
-            Button {
-                controller.savePreset(i)
-            } label: {
-                Image(systemName: "square.and.arrow.down").font(.system(size: 9))
+                .disabled(!controller.canWriteNow)
+                .help("Rename this slot on the device. Clear the text to remove the name.")
+                Button("Load") { controller.loadPreset(i) }
+                    .controlSize(.mini)
+                    .font(.system(size: 10))
+                Button {
+                    controller.savePreset(i)
+                } label: {
+                    Image(systemName: "square.and.arrow.down").font(.system(size: 9))
+                }
+                .controlSize(.mini)
+                .help("Overwrite this slot with the current EQ")
             }
-            .controlSize(.mini)
-            .help("Overwrite this slot with the current EQ")
         }
         .padding(.horizontal, 7).padding(.vertical, 4)
         .background(isActive ? AnyShapeStyle(Color.accentColor.opacity(0.12))

@@ -64,14 +64,11 @@ enum QxCmd: UInt16 {
     case setEqFreq        = 0x0707  // sendEqParam, Hz
     case saveEqPreset     = 0x0708  // [presetIndex]
     case loadEqPreset     = 0x0709  // [presetIndex]
-    // Declared, never sent: the read side gives the name field's contents
-    // (UTF-8, NUL-terminated, 32 bytes) but says nothing about the shape of
-    // the payload that writes it — whether a length or end-offset byte sits
-    // ahead of the text, and whether the field is padded to its full width.
-    // Those alternatives differ by one byte at the front of thirty bytes of
-    // user-controlled data, and a name written at the wrong offset lands in
-    // whatever the firmware keeps next to the slot. Nothing here may send
-    // this until the shape is confirmed against hardware.
+    // [group, presetIndex, endOffset, utf8…] where endOffset is 3 + the byte
+    // count of the text — the same offset the response reports, pointing one
+    // past the last name byte. Confirmed against hardware, including the
+    // failure that identifies it: sending the text with no offset byte makes
+    // the device consume the first character as the offset and store the rest.
     case setEqPresetName  = 0x070A
     case reqEqPresetName  = 0x070B  // [group, presetIndex]
     case rspEqPresetName  = 0x070C  // [group, presetIndex, endOffset, utf8…]
@@ -289,6 +286,8 @@ enum QxEq {
     // preset struct; the per-group mask is QxEqGroup.writeChannelMask.
     /// Largest band count across groups — sizing only; use the group's own.
     static let maxBandCount = 20
+    /// Preset slots the device stores per group.
+    static let presetCount = 20
     static let bandCount = 10
     static let defaultFreqs = QxEqGroup.user.defaultFreqs
 }
@@ -348,6 +347,41 @@ enum QxPacket {
     /// `QxStatusParser.dacFilters`, rather than clamping: there is no boundary
     /// index that means "closest valid filter", only entries that name a real
     /// one and a lot of numbers that name nothing the device defines.
+    /// Payload that writes a preset slot's name, or nil when it cannot be
+    /// expressed safely.
+    ///
+    /// The text is capped at `maxPresetNameBytes` and cut on a character
+    /// boundary, never mid-scalar: the field is a byte range, so a name of
+    /// CJK or emoji runs out of room far sooner than it looks, and half a
+    /// scalar would be stored as a byte sequence that is not text.
+    static func presetNamePayload(group: QxEqGroup, index: Int, name: String) -> [UInt8]? {
+        guard (0..<QxEq.presetCount).contains(index) else { return nil }
+        let text = truncatingUTF8(name, to: maxPresetNameBytes)
+        let bytes = Array(text.utf8)
+        // endOffset has to stay inside the field the device reports.
+        guard 3 + bytes.count <= 3 + maxPresetNameBytes else { return nil }
+        return [group.rawValue, UInt8(index), UInt8(3 + bytes.count)] + bytes
+    }
+
+    /// The device reports the name field ending at offset 32, so 29 bytes sit
+    /// between the three header bytes and that end. Staying at exactly what
+    /// the device itself reports means the write cannot run past the field.
+    static let maxPresetNameBytes = 29
+
+    /// Longest prefix of `s` whose UTF-8 encoding fits in `max` bytes, cut
+    /// between characters.
+    static func truncatingUTF8(_ s: String, to max: Int) -> String {
+        if s.utf8.count <= max { return s }
+        var out = "", used = 0
+        for ch in s {
+            let n = String(ch).utf8.count
+            if used + n > max { break }
+            out.append(ch)
+            used += n
+        }
+        return out
+    }
+
     static func dacFilterPayload(_ index: Int) -> [UInt8]? {
         guard QxStatusParser.dacFilters.indices.contains(index) else { return nil }
         return [UInt8(index)]
