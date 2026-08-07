@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -409,6 +410,12 @@ struct EQCurveView: View {
     /// and read back when converting a press into a frequency and a gain.
     @State private var viewSize: CGSize = .zero
 
+    /// The band the pointer is over, so the grab target is visible before the
+    /// press rather than discovered by grabbing the wrong one. Kept separate
+    /// from `highlighted`, which the band table drives — a hover is a
+    /// different thing from an edit in progress and should not look like one.
+    @State private var hovering: Int?
+
     /// How far from a marker a press still counts, in points. The 20-band
     /// layout puts markers about 20pt apart in a 400pt window, so this is
     /// deliberately larger than the dot: the nearest one wins rather than
@@ -586,6 +593,17 @@ struct EQCurveView: View {
 
             ctx.stroke(curve, with: .color(.accentColor), lineWidth: 1.8)
 
+            // The band the pointer is over: a ring, not a bigger dot, so it
+            // reads as "this is what you'd grab" rather than as a state the
+            // band is in.
+            if let h = hovering, dragging == nil, bands.indices.contains(h),
+               bands[h].filter != .bypass {
+                let hx = CGFloat(EQCurve.fraction(of: Double(bands[h].freq))) * size.width
+                let ring = Path(ellipseIn: CGRect(x: hx - 7, y: y(bands[h].gain) - 7,
+                                                  width: 14, height: 14))
+                ctx.stroke(ring, with: .color(.accentColor.opacity(0.45)), lineWidth: 1)
+            }
+
             // Band markers.
             for (i, band) in bands.enumerated() where band.filter != .bypass {
                 let dotX = CGFloat(EQCurve.fraction(of: Double(band.freq))) * size.width
@@ -607,7 +625,17 @@ struct EQCurveView: View {
             }
         }
         .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            guard onBandChanged != nil else { return }
+            switch phase {
+            case .active(let point): hovering = nearestBand(to: point, range: plot.range)
+            case .ended: hovering = nil
+            }
+        }
         .gesture(onBandChanged == nil ? nil : dragGesture(range: plot.range))
+        .help(onBandChanged == nil ? "" : "Drag a point to shape the curve: up and "
+              + "down for gain, sideways for frequency. Hold Option and drag up or "
+              + "down for Q.")
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topLeading) {
             Text("±\(Int(plot.range)) dB")
@@ -638,6 +666,23 @@ struct EQCurveView: View {
                 }
                 guard let i = dragging, bands.indices.contains(i) else { return }
                 var band = bands[i]
+
+                // Option turns the vertical axis into Q. Read from the live
+                // modifier state rather than captured at the press, so the key
+                // can be taken up or released mid-drag and the gesture follows
+                // — pressing it first, before there is anything to hold, is not
+                // how anyone reaches for a modifier.
+                if NSEvent.modifierFlags.contains(.option) {
+                    // Q is logarithmic to the ear and to the maths: a linear
+                    // pixel-to-Q map spends most of the travel between 8 and 10
+                    // and makes the wide end unreachable.
+                    let usableQ = max(viewSize.height - 12, 1)
+                    let t = Double(1 - min(max(value.location.y / usableQ, 0), 1))
+                    let q = pow(10, log10(0.1) + t * (log10(10.0) - log10(0.1)))
+                    band.q = (min(max(q, 0.1), 10) * 100).rounded() / 100
+                    guard band != bands[i] else { return }
+                    return onBandChanged?(i, band) ?? ()
+                }
 
                 // Vertical: gain, clamped to what the device accepts rather
                 // than to the drawn axis — the axis grows to fit a ghost and
