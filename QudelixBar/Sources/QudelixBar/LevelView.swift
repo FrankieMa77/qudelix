@@ -51,6 +51,30 @@ struct LevelView: View {
 
             Divider()
 
+            // The inspector used to sit below a week of history, which on a
+            // real install put it past the fold of a scrolling pane — the
+            // same "nobody can find it" mistake this app has already made
+            // twice. It moves up here, right after the two things people
+            // actually open this pane for, so reaching it never depends on
+            // how much history has piled up below.
+            SignalPathView()
+
+            Divider()
+
+            exposureSection
+        }
+    }
+
+    // MARK: - Listening history
+
+    /// Today's totals plus the trailing week, in that priority order: today
+    /// is the number someone glances at daily, the week behind it is context
+    /// they reach for occasionally. It collapses by default — the row list
+    /// below it is the one thing in this pane that grows without bound, and
+    /// its label says exactly what's folded away rather than leaving a bare
+    /// chevron to guess at.
+    private var exposureSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
             if let today = stageState.exposureDays.first(where: { $0.day == StageState.dayKey() }),
                today.audibleSeconds > 0 {
                 todayView(today)
@@ -66,13 +90,17 @@ struct LevelView: View {
             let history = Array(stageState.exposureDays.filter { $0.day != todayKey }
                 .suffix(7)).reversed()
             if !history.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Previous days")
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(history), id: \.day) { day in
+                            historyRow(day)
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    Text("Previous \(history.count) day\(history.count == 1 ? "" : "s")")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
-                    ForEach(Array(history), id: \.day) { day in
-                        historyRow(day)
-                    }
                 }
             }
 
@@ -81,10 +109,6 @@ struct LevelView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            Divider()
-
-            SignalPathView()
         }
     }
 

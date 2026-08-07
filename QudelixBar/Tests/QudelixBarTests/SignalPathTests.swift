@@ -68,6 +68,21 @@ final class SignalPathTests: XCTestCase {
         XCTAssertTrue(row.state.contains("custom"))
     }
 
+    func testEqWithMutedBandsDoesNotOverstateActiveBandCount() {
+        let row = row("eq", .init(deviceConnected: true, eqEnabled: true,
+                                  bandCount: 10, mutedBandCount: 3, activePresetName: "Harman"))
+        XCTAssertTrue(row.state.contains("7 of 10 bands"))
+        XCTAssertTrue(row.state.contains("3 muted"))
+        XCTAssertFalse(row.state.contains("10-band"))
+    }
+
+    func testEqWithNoMutedBandsKeepsThePlainBandCountPhrasing() {
+        let row = row("eq", .init(deviceConnected: true, eqEnabled: true,
+                                  bandCount: 10, mutedBandCount: 0))
+        XCTAssertTrue(row.state.contains("10-band"))
+        XCTAssertFalse(row.state.contains("muted"))
+    }
+
     // MARK: - No device connected
 
     func testNoDeviceConnectedGatesEqAndOutputRowsOnly() {

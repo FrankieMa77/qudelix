@@ -69,6 +69,11 @@ enum SignalPath {
         // Row 4: Qudelix EQ (runs on the device, not the Mac)
         var eqEnabled = true
         var bandCount = 10
+        /// How many of `bandCount` slots are individually muted right now —
+        /// bypassed by this app rather than by the preset itself. A muted
+        /// band contributes nothing to the curve, so "N-band" alone would
+        /// overstate what's actually shaping the sound.
+        var mutedBandCount = 0
         /// nil = no preset slot is active (the device's own "custom" state).
         var activePresetName: String?
         var preGain: Double = 0
@@ -201,7 +206,13 @@ enum SignalPath {
             return Row(id: "eq", name: name, state: "off", indicator: .passthrough)
         }
         let preset = cap(i.activePresetName).map { "\u{201C}\($0)\u{201D}" } ?? "custom"
-        let state = "on — \(i.bandCount)-band, \(preset), pre-gain "
+        // A muted band is bypassed on the device, same as an empty preset
+        // slot — "N-band" alone would claim more shaping than is happening.
+        let active = max(i.bandCount - i.mutedBandCount, 0)
+        let bands = i.mutedBandCount > 0
+            ? "\(active) of \(i.bandCount) bands (\(i.mutedBandCount) muted)"
+            : "\(i.bandCount)-band"
+        let state = "on — \(bands), \(preset), pre-gain "
             + String(format: "%+.1f dB", i.preGain)
         return Row(id: "eq", name: name, state: state, indicator: .altering)
     }
@@ -292,6 +303,7 @@ struct SignalPathView: View {
             stage: stageState.stage,
             eqEnabled: controller.eqEnabled,
             bandCount: controller.bandCount,
+            mutedBandCount: controller.mutedBands.count,
             activePresetName: controller.activePreset.map(controller.presetLabel),
             preGain: controller.preGain,
             link: controller.link,
