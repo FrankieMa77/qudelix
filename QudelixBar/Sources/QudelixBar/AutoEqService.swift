@@ -122,6 +122,11 @@ struct CorrectionResult {
     /// Things the user should know but that don't invalidate the result —
     /// notably anything the device will change on the way in.
     var warnings: [String] = []
+    /// Predicted mean preference rating for what is left after this device's
+    /// filters have done what they can. nil whenever it cannot be computed
+    /// honestly: an in-ear measurement, a curve that does not span the model's
+    /// band, or a response that arrived without one.
+    var preference: PreferenceScore.Reading?
 }
 
 /// Failures worth showing a user, phrased so they can be dropped straight into
@@ -284,11 +289,18 @@ struct EqualizeRequest: Encodable, Equatable {
 /// Which frequency response the server should return alongside the filters.
 ///
 /// Sending this is not optional. Omitting `response` — or asking for no fields
-/// — makes the server fault on its own missing `fr_f_step` and answer 500. The
-/// curve isn't used here, so ask for the coarsest one that keeps it happy.
+/// — makes the server fault on its own missing `fr_f_step` and answer 500.
+///
+/// The error curve is asked for so the fit can be scored against the published
+/// preference model, which needs samples no more than 1/6 octave apart; 1/12
+/// leaves margin without being extravagant. Measured against the live service,
+/// this takes a response from roughly 3 KB to 8 KB — the cost of the feature,
+/// paid on every fit rather than only when a score is shown, because the
+/// alternative is a second round trip for the same curve.
 struct ResponseRequirements: Encodable, Equatable {
-    var frFStep: Double = 1.2
-    var frFields: [String] = ["frequency"]
+    /// 2^(1/12): one twelfth of an octave per sample.
+    var frFStep: Double = 1.059463
+    var frFields: [String] = ["frequency", "error"]
     var base64fp16 = false
 
     enum CodingKeys: String, CodingKey {
@@ -367,8 +379,20 @@ struct FilterSpec: Encodable, Equatable {
 
 struct EqualizeResponse: Decodable {
     var parametricEq: PEQResult
+    /// The measured deviation from the target, before any correction. Optional
+    /// because a response without it is still a perfectly good filter set —
+    /// only the score is lost.
+    var fr: FrequencyResponse?
 
-    enum CodingKeys: String, CodingKey { case parametricEq = "parametric_eq" }
+    enum CodingKeys: String, CodingKey {
+        case parametricEq = "parametric_eq"
+        case fr
+    }
+}
+
+struct FrequencyResponse: Decodable {
+    var frequency: [Double]?
+    var error: [Double]?
 }
 
 struct PEQResult: Decodable {
@@ -672,7 +696,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     /// already speaks, and report anything the device would have to change.
     nonisolated static func correction(from data: Data,
                            limits: DeviceEQLimits) throws -> (file: ParametricEQFile,
-                                                              warnings: [String]) {
+                                                              warnings: [String],
+                                                              preference: PreferenceScore.Reading?) {
         let decoded: EqualizeResponse
         do {
             decoded = try JSONDecoder().decode(EqualizeResponse.self, from: data)
@@ -725,7 +750,31 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         if file.bands.count > limits.bandCount {
             warnings.append("\(file.bands.count - limits.bandCount) filter(s) beyond the \(limits.bandCount)-band mode were dropped")
         }
-        return (file, warnings)
+        return (file, warnings, residualScore(decoded, file: file, limits: limits))
+    }
+
+    /// What the preference model makes of the curve this device will actually
+    /// produce, rather than of the ideal correction.
+    ///
+    /// The interesting number is the error that survives. The server's `error`
+    /// is the headphone against the target before anything is done; adding the
+    /// response of the filters the device will really run leaves what a
+    /// listener would still be hearing, and that is what gets scored. Only the
+    /// bands that fit are used, since the rest never reach the device.
+    ///
+    /// The pre-gain is deliberately left out. It shifts the whole curve, and
+    /// both of the model's predictors ignore a constant offset, so including
+    /// it could only introduce a difference the model does not see.
+    nonisolated static func residualScore(_ decoded: EqualizeResponse,
+                                          file: ParametricEQFile,
+                                          limits: DeviceEQLimits) -> PreferenceScore.Reading? {
+        guard let freqs = decoded.fr?.frequency, let error = decoded.fr?.error,
+              freqs.count == error.count, !freqs.isEmpty else { return nil }
+        let applied = Array(file.bands.prefix(limits.bandCount))
+        let correction = EQCurve.response(bands: applied, preGain: 0, at: freqs)
+        guard correction.count == error.count else { return nil }
+        let residual = zip(error, correction).map(+)
+        return PreferenceScore.reading(frequencies: freqs, errorDb: residual)
     }
 
     // MARK: Equalize
@@ -744,7 +793,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
 
     func equalize(model: String, source: String, rig: String?, target: String,
                   limits: DeviceEQLimits,
-                  options: CorrectionOptions) async throws -> (ParametricEQFile, [String]) {
+                  options: CorrectionOptions) async throws
+        -> (ParametricEQFile, [String], PreferenceScore.Reading?) {
         let body = Self.requestBody(model: model, source: source, rig: rig, target: target,
                                     limits: limits, options: options)
         guard let url = URL(string: Self.base + "/equalize") else {
@@ -761,10 +811,10 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         } catch {
             throw Self.mapped(error)
         }
-        let (file, warnings) = try Self.correction(from: data, limits: limits)
+        let (file, warnings, preference) = try Self.correction(from: data, limits: limits)
         lastGood[Self.cacheKey(model: model, source: source, rig: rig, target: target,
                                limits: limits, options: options)] = file
-        return (file, warnings)
+        return (file, warnings, preference)
     }
 
     nonisolated private static func cacheKey(model: String, source: String, rig: String?,
@@ -818,11 +868,16 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             + personalized.map { " · \($0)" }.joined()
             + (ceiling.map { " · fitted up to \(CorrectionOptions.describeCeiling($0))" } ?? "")
         do {
-            let (file, warnings) = try await equalize(model: candidate.title,
-                                                      source: candidate.source,
-                                                      rig: candidate.rig, target: chosen,
-                                                      limits: limits, options: resolved)
-            return CorrectionResult(file: file, provenance: provenance, warnings: warnings)
+            let (file, warnings, preference) = try await equalize(
+                model: candidate.title, source: candidate.source,
+                rig: candidate.rig, target: chosen,
+                limits: limits, options: resolved)
+            // The model is fitted on around-ear and on-ear headphones only.
+            // An in-ear measurement gets no score rather than the wrong one.
+            return CorrectionResult(
+                file: file, provenance: provenance, warnings: warnings,
+                preference: PreferenceScore.appliesTo(form: candidate.form)
+                    ? preference : nil)
         } catch {
             let key = Self.cacheKey(model: candidate.title, source: candidate.source,
                                     rig: candidate.rig, target: chosen,

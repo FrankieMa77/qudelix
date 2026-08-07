@@ -487,7 +487,7 @@ final class AutoEqServiceTests: XCTestCase {
 
     func testFixtureMapsToParametricEQFile() throws {
         let limits = DeviceEQLimits.qudelix(bandCount: 10)
-        let (file, warnings) = try AutoEqService.correction(from: fixture(filterCount: 10),
+        let (file, warnings, _) = try AutoEqService.correction(from: fixture(filterCount: 10),
                                                             limits: limits)
         XCTAssertEqual(file.bands.count, 10)
         XCTAssertEqual(file.bands.first?.filter, .lowShelf)
@@ -503,7 +503,7 @@ final class AutoEqServiceTests: XCTestCase {
     }
 
     func testTwentyFilterFixtureMapsToTwentyBands() throws {
-        let (file, warnings) = try AutoEqService.correction(from: fixture(filterCount: 20),
+        let (file, warnings, _) = try AutoEqService.correction(from: fixture(filterCount: 20),
                                                             limits: .qudelix(bandCount: 20))
         XCTAssertEqual(file.bands.count, 20)
         XCTAssertTrue(warnings.isEmpty, "\(warnings)")
@@ -532,7 +532,7 @@ final class AutoEqServiceTests: XCTestCase {
     }
 
     func testPreampBeyondTheDeviceIsSaidOutLoud() throws {
-        let (file, warnings) = try AutoEqService.correction(from: fixture(filterCount: 10,
+        let (file, warnings, _) = try AutoEqService.correction(from: fixture(filterCount: 10,
                                                                          preamp: -14.4),
                                                             limits: .qudelix(bandCount: 10))
         XCTAssertEqual(file.preamp, -14.4, accuracy: 0.001, "the honest value survives")
@@ -548,7 +548,7 @@ final class AutoEqServiceTests: XCTestCase {
           {"type":"PEAKING","fc":1000,"q":1.0,"gain":2.0},
           {"type":"BAND_PASS","fc":2000,"q":1.0,"gain":2.0}]}}
         """.data(using: .utf8)!
-        let (file, warnings) = try AutoEqService.correction(from: data,
+        let (file, warnings, _) = try AutoEqService.correction(from: data,
                                                             limits: .qudelix(bandCount: 10))
         XCTAssertEqual(file.bands.count, 1)
         XCTAssertTrue(warnings.contains { $0.contains("unrecognised") }, "\(warnings)")
@@ -561,7 +561,7 @@ final class AutoEqServiceTests: XCTestCase {
           {"type":"PEAKING","fc":1e20,"q":1.0,"gain":2.0},
           {"type":"PEAKING","fc":1000,"q":1.0,"gain":2.0}]}}
         """.data(using: .utf8)!
-        let (file, warnings) = try AutoEqService.correction(from: data,
+        let (file, warnings, _) = try AutoEqService.correction(from: data,
                                                             limits: .qudelix(bandCount: 10))
         XCTAssertEqual(file.bands.count, 1)
         XCTAssertEqual(file.bands.first?.freq, 1000)

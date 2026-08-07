@@ -27,6 +27,10 @@ struct ImportView: View {
     /// playing at this moment, not a preference. Remembering it across launches
     /// would silently apply one evening's stream to next month's corrections.
     @State private var limitToSourceCutoff = false
+    /// The predicted rating for the correction just applied, if the model
+    /// applies to it at all. Cleared whenever the correction is replaced, so
+    /// it can never sit under a curve it was not computed from.
+    @State private var lastPreference: PreferenceScore.Reading?
 
     /// Which correction source the results list is showing.
     private enum Mode { case optimized, published }
@@ -119,6 +123,7 @@ struct ImportView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let p = lastPreference { preferenceRow(p) }
         }
         .padding(.top, 6)
     }
@@ -401,6 +406,7 @@ struct ImportView: View {
                 if let applied = controller.lastImportSummary { parts.append(applied) }
                 parts.append(contentsOf: result.warnings)
                 controller.lastImportSummary = parts.joined(separator: " · ")
+                lastPreference = result.preference
             } catch {
                 controller.lastImportSummary = AutoEqService.describe(error)
             }
@@ -417,7 +423,43 @@ struct ImportView: View {
         NSApp.activate()
     }
 
+    /// The predicted rating, framed as what it is.
+    ///
+    /// Three things this must not do, all of which would be easy: call it a
+    /// percentage, print a precision the model's ±7-point residual cannot
+    /// support, or let a small gap between two corrections read as a verdict.
+    /// It is the average of a listening panel, and the same research found
+    /// about a third of listeners want measurably more or less bass than the
+    /// target — so for any one person it is a starting point, not a score.
+    private func preferenceRow(_ reading: PreferenceScore.Reading) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text("Predicted \(Int(reading.score.rounded())) — how a listening panel "
+                 + "rated headphones this close to the target, on average.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("From a study of 31 over-ear models and 130 listeners. It predicts "
+                 + "the group average to within about ±7, and roughly a third of "
+                 + "listeners prefer more or less bass than the target — so it is "
+                 + "not a measure of how this will sound to you.")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // The model's slope is dB per natural-log unit of frequency. Printing
+        // that number as dB/octave would be wrong by a factor of ln 2, so it is
+        // converted rather than relabelled: over one octave the curve rises by
+        // slope × ln 2.
+        .help(String(format: "Deviation from the target after this device's filters, "
+                     + "over 50 Hz to 10 kHz: %.2f dB spread, %.2f dB per octave of tilt.",
+                     reading.standardDeviation,
+                     reading.absoluteSlope * log(2.0)))
+    }
+
     private func pasteText() {
+        // A correction arriving by any other route replaces the curve, so a
+        // score computed for the previous one must not linger beneath it.
+        lastPreference = nil
         guard let text = NSPasteboard.general.string(forType: .string),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             controller.lastImportSummary = "There is no text on the clipboard."
@@ -435,6 +477,7 @@ struct ImportView: View {
         panel.message = "Choose a parametric EQ file (AutoEq / Equalizer APO format)"
         activateForPanel()
         if panel.runModal() == .OK, let url = panel.url {
+            lastPreference = nil
             controller.importFile(at: url)
         }
     }

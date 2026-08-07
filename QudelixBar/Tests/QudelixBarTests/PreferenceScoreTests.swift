@@ -223,3 +223,82 @@ final class PreferenceScoreTests: XCTestCase {
         }
     }
 }
+
+/// Scoring the residual: what is left after *this device's* filters, which is
+/// the number worth showing. A perfect correction is not the interesting case
+/// — a ten-band fit that cannot follow every wrinkle is.
+final class ResidualScoreTests: XCTestCase {
+
+    private let freqs: [Double] = (0..<120).map { 20 * pow(2.0, Double($0) / 12) }
+
+    private func response(_ decoded: [Double]) -> EqualizeResponse {
+        EqualizeResponse(
+            parametricEq: PEQResult(fs: 48000, filters: [], preamp: 0),
+            fr: FrequencyResponse(frequency: freqs, error: decoded))
+    }
+
+    /// A curve already on target scores the model's intercept, and a device
+    /// that corrects nothing leaves it there.
+    func testAnAlreadyFlatErrorScoresTheIntercept() {
+        let r = AutoEqService.residualScore(response(freqs.map { _ in 0 }),
+                                            file: ParametricEQFile(),
+                                            limits: .qudelix(bandCount: 10))
+        XCTAssertEqual(r?.score ?? 0, 114.49, accuracy: 0.01)
+    }
+
+    /// The device's own filters are added to the measured error, so a
+    /// correction that cancels a bump must score better than no correction.
+    func testCorrectingABumpScoresBetterThanLeavingIt() {
+        let bump = freqs.map { f in 6 * exp(-pow(log(f / 3000), 2) / 0.02) }
+        let uncorrected = AutoEqService.residualScore(response(bump),
+                                                      file: ParametricEQFile(),
+                                                      limits: .qudelix(bandCount: 10))
+        var fixed = ParametricEQFile()
+        fixed.bands = [QxEqBandValue(filter: .peak, freq: 3000, gain: -6, q: 4)]
+        let corrected = AutoEqService.residualScore(response(bump), file: fixed,
+                                                    limits: .qudelix(bandCount: 10))
+        XCTAssertNotNil(corrected)
+        XCTAssertGreaterThan(corrected!.score, uncorrected!.score + 1,
+                             "cancelling the bump has to move the score")
+        XCTAssertLessThan(corrected!.standardDeviation, uncorrected!.standardDeviation)
+    }
+
+    /// Bands the mode cannot hold never reach the device, so they must not be
+    /// credited in the score either.
+    func testBandsBeyondTheModeAreNotCredited() {
+        let bump = freqs.map { f in 6 * exp(-pow(log(f / 3000), 2) / 0.02) }
+        var file = ParametricEQFile()
+        file.bands = Array(repeating: QxEqBandValue(filter: .peak, freq: 100, gain: 0, q: 1),
+                           count: 10)
+            + [QxEqBandValue(filter: .peak, freq: 3000, gain: -6, q: 4)]
+        let scored = AutoEqService.residualScore(response(bump), file: file,
+                                                 limits: .qudelix(bandCount: 10))
+        let none = AutoEqService.residualScore(response(bump), file: ParametricEQFile(),
+                                               limits: .qudelix(bandCount: 10))
+        XCTAssertEqual(scored?.score ?? 0, none?.score ?? -1, accuracy: 0.01,
+                       "the 11th band is dropped by a 10-band device and must not count")
+    }
+
+    /// A response with no curve is still a good filter set; only the score is
+    /// lost, and it must be lost rather than invented.
+    func testAResponseWithoutACurveScoresNothing() {
+        let bare = EqualizeResponse(
+            parametricEq: PEQResult(fs: 48000, filters: [], preamp: 0), fr: nil)
+        XCTAssertNil(AutoEqService.residualScore(bare, file: ParametricEQFile(),
+                                                 limits: .qudelix(bandCount: 10)))
+        let mismatched = EqualizeResponse(
+            parametricEq: PEQResult(fs: 48000, filters: [], preamp: 0),
+            fr: FrequencyResponse(frequency: freqs, error: [0, 0]))
+        XCTAssertNil(AutoEqService.residualScore(mismatched, file: ParametricEQFile(),
+                                                 limits: .qudelix(bandCount: 10)))
+    }
+
+    /// The model is fitted on over-ear headphones. Anything else gets no score
+    /// rather than the wrong one.
+    func testTheModelIsRefusedForInEarAndEarbud() {
+        XCTAssertTrue(PreferenceScore.appliesTo(form: "over-ear"))
+        for form in ["in-ear", "earbud", nil, "on-ear", ""] {
+            XCTAssertFalse(PreferenceScore.appliesTo(form: form), "form \(form ?? "nil")")
+        }
+    }
+}
