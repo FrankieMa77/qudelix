@@ -77,6 +77,12 @@ struct QudelixBarApp: App {
                               controller.activePreset != nil else { return false }
                         return profileRules?.editingNow != true
                     }
+                    // Which EQ group a rule was bound in matters: the device
+                    // keeps separate preset banks per group, so slot 3 in
+                    // 10-band mode and slot 3 in 20-band are unrelated curves.
+                    // Without this the rules cannot tell, and the group-aware
+                    // logic in them is inert.
+                    profileRules.currentEqGroupRaw = controller.eqGroup.rawValue
                     profileRules.start()
                     quitDelegate.onTerminate = { [weak stageState, weak controller] in
                         // A stale EQ snapshot doesn't just lose the last
@@ -89,6 +95,11 @@ struct QudelixBarApp: App {
             }
             .onChange(of: trayTooltip, initial: true) { _, tip in
                 Self.setTrayTooltip(tip)
+            }
+            // The device can change mode from its own buttons or another app,
+            // so this follows the group rather than being set once.
+            .onChange(of: controller.eqGroup) { _, group in
+                profileRules.currentEqGroupRaw = group.rawValue
             }
         }
         .menuBarExtraStyle(.window)

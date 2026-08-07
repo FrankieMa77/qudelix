@@ -66,17 +66,21 @@ right.
 - **Stream quality detection** — measures whether what's playing looks lossy
   or lossless (any player: it doesn't ask apps, it analyzes the audio), and
   can auto-match the USB rate: lossless → 44.1 kHz bit-perfect, lossy → your
-  chosen rate. Both parts can be switched off. When it has measured a cutoff,
+  chosen rate. It is on by default, and listening is how it works: see
+  [The audio tap](#the-audio-tap). Both parts can be switched off. When it has
+  measured a cutoff,
   an import can also be told to stop correcting there, rather than spending
   filters and headroom on frequencies the source has already discarded
 - **Diagnostics panel** logging every packet exchanged with the device
 
 Works over **USB or Bluetooth**. USB is used whenever the 5K is plugged in;
 otherwise the app controls the device over Bluetooth LE. Either way it only
-speaks to the 5K's control interface and never touches the audio path, so
-playback is unaffected. The one exception is opt-in: while the **Stage** is
-switched on, the Mac's audio is processed on its way to the output device
-(the 5K's own EQ still runs on the device, untouched).
+speaks to the 5K's control interface, so playback is unaffected. One feature
+does alter the audio, and only while you switch it on: with the **Stage**
+running, the Mac's audio is processed on its way to the output device (the
+5K's own EQ still runs on the device, untouched). Two others listen to the
+audio without altering it, and one of those is on by default — all three are
+described under [The audio tap](#the-audio-tap).
 
 ## Install
 
@@ -298,8 +302,35 @@ It is evidence, not proof, and the wording says which:
   and casts no vote on the rate.
 - Quiet or dark passages carry no treble to judge at all, and say so.
 
-Switch it off entirely with the toggle if you'd rather not have the app
-listening; with it and the Stage both off, nothing touches your audio.
+**Detect stream quality** is on by default, and it is one of the three
+switches that keep a system audio tap open. Untick it and the detector stops;
+what that leaves running is set out below.
+
+## The audio tap
+
+Three things in this app work on the Mac's own audio rather than on the 5K:
+the Stage, the listening-level meter, and stream-quality detection. All three
+are fed by one mechanism — a macOS process tap, created **global**, which
+captures the output of every process on the machine except this app (excluded
+so it cannot hear itself). It needs macOS 14.2 or later, and macOS asks once
+for the System Audio Recording permission.
+
+**Stream-quality detection is on by default, so the tap is created at launch**
+unless you turn it off. That is also when the permission is asked for — at
+first launch, rather than the first time you open the Stage. The audio is
+analysed a block at a time in memory and written nowhere; what survives a
+block is a verdict and a cutoff frequency.
+
+Three switches decide whether a tap exists at all:
+
+| Switch | Where | Default | Effect |
+|---|---|---|---|
+| **Stage** | Stage tab | off | processes the audio on its way out |
+| **Track listening levels** | Level tab | off | listens only |
+| **Detect stream quality** | Level tab | **on** | listens only |
+
+With all three off, the whole engine is torn down, tap included, and the app
+goes back to being a pure remote control for the 5K.
 
 ## Build from source
 
@@ -325,19 +356,39 @@ no third-party dependencies.
   downloads nothing.
 - No telemetry, analytics, or crash reporting, and nothing is ever uploaded.
 - The Stage and Level features process audio in memory and write none of it
-  anywhere, ever. What is persisted — per-device stage settings and the daily
-  listening totals — lives in
-  `~/Library/Application Support/QudelixBar/stage.json`, alongside a small
-  `diag.txt` engine heartbeat for bug reports. Both are local files, readable
-  only by your user account. Like the packet log, `diag.txt` records the
-  names of your audio output devices, so give it the same glance before
-  attaching it to a bug report.
-- One local file is written, `~/Library/Logs/QudelixBar.log`, holding device
-  packet traces. It is never transmitted. Since it records raw packet hex it
-  includes the 5K's own Bluetooth address and any preset names stored on it, so
-  it is worth a glance before attaching it to a bug report.
-- Bluetooth scanning never records the names of other devices nearby, only a
-  count of how many were ignored.
+  anywhere, ever. What they open, when, and how to close it is set out under
+  [The audio tap](#the-audio-tap).
+- Everything the app keeps is a local file, readable only by your user
+  account, and never transmitted. Four of them live in
+  `~/Library/Application Support/QudelixBar/`:
+
+  | File | What is in it |
+  |---|---|
+  | `stage.json` | Soundstage settings per output device, the 14-day listening totals, and the Level and quality toggles |
+  | `profiles.json` | Your output-device-to-preset pairings |
+  | `last-eq.json` | The last EQ curve seen on the device, one per EQ group, what produced it, and which device it came from |
+  | `diag.txt` | The last 200 lines of an engine heartbeat, for bug reports |
+
+  If one of the three JSON files ever fails to load, it is not overwritten:
+  the app copies it aside as `<name>.recovered`, carries on with defaults, and
+  leaves the copy for you.
+- Outside that folder, `~/Library/Logs/QudelixBar.log` holds device packet
+  traces, and rolls over to `QudelixBar.log.1` at 2 MB — so there are normally
+  two of it. Since it records raw packet hex it includes the 5K's own Bluetooth
+  address and any preset names stored on it. Separately, macOS keeps the app's
+  preferences in `~/Library/Preferences/com.qudelixbar.app.plist`; the only
+  thing the app puts there is which Bluetooth peripheral it has adopted, as the
+  per-Mac identifier CoreBluetooth issues rather than the device's address.
+- Several of those identify hardware, and are worth a glance before you attach
+  one to a bug report. The packet log and `diag.txt` carry the names of your
+  audio output devices. `stage.json` and `profiles.json` go further: they are
+  keyed by CoreAudio device UIDs, and a UID is generally built from a Bluetooth
+  device's MAC address or a USB DAC's serial number.
+- Bluetooth scanning never records the names of nearby devices, only a count of
+  how many were ignored. USB enumeration is narrower but not silent: the 5K's
+  Bluetooth chip vendor is a common one, so the app can meet another device
+  that shares the vendor ID and exposes a vendor-defined HID interface, and the
+  log names that device in the line where it declines to talk to it.
 - Only EQ, volume, and preset settings are written to the device — the same
   things the official app writes. Firmware is never touched.
 

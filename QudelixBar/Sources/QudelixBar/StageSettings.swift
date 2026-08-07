@@ -163,8 +163,8 @@ enum StageStateFile {
         case let mode? where mode & S_IFMT == S_IFDIR:
             // Created without a mode until now, so it came out 0755 under the
             // umask: a world-readable wrapper around files deliberately kept
-            // 0600. Bring an inherited one in line, and only then — chmod on
-            // every save would be a syscall spent saying nothing.
+            // 0600. Bring an inherited one in line — but only when it is out
+            // of line, since this runs on the way to every save.
             if mode & 0o777 != 0o700 {
                 try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
             }

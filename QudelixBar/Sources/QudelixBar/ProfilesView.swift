@@ -152,9 +152,23 @@ struct ProfilesView: View {
                     .font(.system(size: 11))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(controller.presetLabel(rule.presetIndex))
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                // `presetLabel` reads the *current* group's name table, so a
+                // rule bound in the other mode would be labelled with a name
+                // belonging to a slot it has nothing to do with. Only name it
+                // when the rule and the device agree on the group.
+                switch rule.standing(inGroup: profileRules.currentEqGroupRaw) {
+                case .matches, .unmarked:
+                    Text(controller.presetLabel(rule.presetIndex))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                case .wrongGroup:
+                    Text("Slot \(rule.presetIndex + 1), saved in "
+                         + "\(rule.eqGroupRaw == 2 ? "20" : "10")-band mode — "
+                         + "not used while the device is in the other one")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             Toggle("Auto", isOn: Binding(

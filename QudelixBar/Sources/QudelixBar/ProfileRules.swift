@@ -326,7 +326,7 @@ final class ProfileRules: ObservableObject {
             // goes somewhere the user can find it.
             suggestion = nil
             DebugLog.shared.log(
-                "profile for \(DebugLog.sanitized(rule.outputName)) was set in "
+                "profile for \(rule.outputName) was set in "
                 + "\(groupLabel(rule.eqGroupRaw)) mode; the device is in "
                 + "\(groupLabel(currentEqGroupRaw)) mode — leaving the EQ alone")
             return
