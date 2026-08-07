@@ -148,6 +148,12 @@ enum AudioOutputs {
         var size = UInt32(MemoryLayout<Float64>.size)
         guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate) == noErr
         else { return 48000 }
+        // A driver supplies this, and a virtual one can supply anything. It is
+        // validated here rather than where it is used: the same number reaches
+        // the DSP designer, which converts it to an Int, and the spectrum
+        // analyzer, which counts cells up to it — an infinity traps the first
+        // and never terminates the second.
+        guard rate.isFinite, (8000...768_000).contains(rate) else { return 48000 }
         return rate
     }
 

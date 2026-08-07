@@ -316,16 +316,42 @@ final class ToneTester: ObservableObject {
     }
 
     /// Write the derived curve to the device, keeping each band's existing shape.
+    ///
+    /// Matched to each band's own centre frequency, not to its position. The
+    /// test measures at a fixed set of frequencies, and writing those results
+    /// down the band list by index only lines up when the device happens to
+    /// have the same layout: in 20-band mode it put the 16 kHz result on the
+    /// 710 Hz band and never touched anything above 1 kHz. Gains between the
+    /// measured points are interpolated on log frequency, which is how the
+    /// ear spaces them and how the test chose them.
     func applySuggestion(_ c: QudelixController) {
         // No point writing a correction the device will not apply.
         c.setEqEnabled(true)
-        for (i, hz) in QxEq.defaultFreqs.enumerated() where i < c.bandCount {
-            guard let s = suggestion.first(where: { $0.hz == hz }) else { continue }
-            var band = i < c.bands.count ? c.bands[i]
-                : QxEqBandValue(filter: .peak, freq: hz, gain: 0, q: 1.0)
-            band.gain = min(max(s.gain, -12), 12)
-            c.updateBand(i, band)
+        c.beginUndoStep("hearing correction")
+        let points = suggestion.map { (hz: Double($0.hz), gain: $0.gain) }
+            .sorted { $0.hz < $1.hz }
+        guard !points.isEmpty else { phase = .idle; return }
+        for i in 0..<min(c.bandCount, c.bands.count) {
+            var band = c.bands[i]
+            band.gain = min(max(Self.gain(at: Double(band.freq), from: points), -12), 12)
+            c.updateBand(i, band, recordUndo: false)
         }
         phase = .idle
+    }
+
+    /// The measured correction at an arbitrary frequency. Outside the measured
+    /// range the nearest result holds rather than falling to zero — the test
+    /// simply did not look there, which is not the same as finding nothing.
+    static func gain(at hz: Double, from points: [(hz: Double, gain: Double)]) -> Double {
+        guard let first = points.first, let last = points.last else { return 0 }
+        if hz <= first.hz { return first.gain }
+        if hz >= last.hz { return last.gain }
+        for i in 1..<points.count where hz <= points[i].hz {
+            let lo = points[i - 1], hi = points[i]
+            guard hi.hz > lo.hz else { return hi.gain }
+            let t = (log10(hz) - log10(lo.hz)) / (log10(hi.hz) - log10(lo.hz))
+            return lo.gain + t * (hi.gain - lo.gain)
+        }
+        return last.gain
     }
 }

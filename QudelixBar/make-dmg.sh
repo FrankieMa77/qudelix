@@ -4,9 +4,28 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="1.2.0"
+# Read from the app build rather than kept in step by hand. These two drifted
+# — this said 1.2.0 while the app said 1.3.0 — and because the DMG name and its
+# checksum sidecar are derived from it, a release run would have rebuilt the
+# published 1.2.0 artifact from newer sources and rewritten its .sha256 to
+# match. For an ad-hoc-signed download the published checksum is the only thing
+# that distinguishes a genuine release from a substituted one, so silently
+# reissuing different bytes under a shipped version is the worst outcome this
+# script has available.
+VERSION="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' build-app.sh | head -1)"
+if [[ -z "$VERSION" ]]; then
+  echo "could not read VERSION from build-app.sh" >&2
+  exit 1
+fi
 VOLNAME="Qudelix"
 DMG="../Qudelix-${VERSION}.dmg"
+
+# Refuse to stand on a release that already exists. Bump the version instead.
+if [[ -e "$DMG" ]]; then
+  echo "$DMG already exists — refusing to overwrite a published artifact." >&2
+  echo "Bump VERSION in build-app.sh, or remove it deliberately first." >&2
+  exit 1
+fi
 
 ./build-app.sh --universal
 

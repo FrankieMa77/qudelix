@@ -424,6 +424,23 @@ struct EQCurveView: View {
     /// absolute map cannot express.
     @State private var dragOrigin: QxEqBandValue?
 
+    /// Where the current leg of the drag started, and under which modifiers.
+    ///
+    /// Movement is measured from here rather than from the gesture's own start
+    /// point so that taking up Shift or Option re-anchors instead of rescaling
+    /// everything already dragged. Without this, reaching +6 dB and *then*
+    /// pressing Shift to refine it snapped the band to 1.6 dB — the advertised
+    /// workflow destroyed the value it was meant to refine.
+    @State private var dragAnchor: CGPoint?
+    @State private var dragModifiers: NSEvent.ModifierFlags = []
+
+    /// The axis in force when the drag began.
+    ///
+    /// The drawn range grows with the curve, and the gain map is scaled by it,
+    /// so an axis that stepped from 9 to 12 dB mid-gesture moved the band about
+    /// 2 dB without the pointer moving. Held fixed for the gesture.
+    @State private var dragRange: Double?
+
     /// How much a drag is slowed while Shift is held. The graph is 104 points
     /// tall for as much as ±18 dB, so a quarter-speed mode is the difference
     /// between setting 3 dB and setting roughly 3 dB.
@@ -676,19 +693,32 @@ struct EQCurveView: View {
                     else { return }
                     dragging = hit
                     dragOrigin = bands[hit]
+                    dragAnchor = value.startLocation
+                    dragModifiers = NSEvent.modifierFlags
+                        .intersection([.shift, .option])
+                    dragRange = range
                     onDragBand?(hit)
                 }
-                guard let i = dragging, bands.indices.contains(i),
-                      let origin = dragOrigin else { return }
+                guard let i = dragging, bands.indices.contains(i) else { return }
                 var band = bands[i]
 
                 // Modifiers are read live, not captured at the press: nobody
                 // reaches for one before there is something to hold, so both
                 // must be possible to take up and release mid-drag.
-                let mods = NSEvent.modifierFlags
+                let mods = NSEvent.modifierFlags.intersection([.shift, .option])
+                if mods != dragModifiers {
+                    // Re-anchor: from here on, movement is measured against the
+                    // value the band holds now, under the new modifiers.
+                    dragModifiers = mods
+                    dragAnchor = value.location
+                    dragOrigin = bands[i]
+                }
+                let origin = dragOrigin ?? bands[i]
+                let anchor = dragAnchor ?? value.startLocation
+                let range = dragRange ?? range
                 let scale = mods.contains(.shift) ? Self.fineDragScale : 1
-                let dx = (value.location.x - value.startLocation.x) * scale
-                let dy = (value.location.y - value.startLocation.y) * scale
+                let dx = (value.location.x - anchor.x) * scale
+                let dy = (value.location.y - anchor.y) * scale
 
                 // Option turns the vertical axis into Q. Read from the live
                 // modifier state rather than captured at the press, so the key
@@ -720,7 +750,11 @@ struct EQCurveView: View {
                 // typed edit in the table can leave the array unsorted, and an
                 // index-based clamp would then teleport the dot being dragged.
                 let startFx = EQCurve.fraction(of: Double(origin.freq))
-                let fx = min(max(startFx + Double(dx / viewSize.width), 0), 1)
+                // Floored like the vertical axis above. A zero width makes
+                // this 0/0, and NaN passes straight through `min`/`max` when it
+                // is the first argument — every comparison against it is false
+                // — reaching `Int()`, which traps.
+                let fx = min(max(startFx + Double(dx / max(viewSize.width, 1)), 0), 1)
                 band.freq = Self.clampedFrequency(EQCurve.frequency(atFraction: fx),
                                                   forBand: i, in: bands)
 
@@ -730,6 +764,9 @@ struct EQCurveView: View {
             .onEnded { _ in
                 dragging = nil
                 dragOrigin = nil
+                dragAnchor = nil
+                dragRange = nil
+                dragModifiers = []
                 onDragBand?(nil)
             }
     }
@@ -743,18 +780,25 @@ struct EQCurveView: View {
     nonisolated static func clampedFrequency(_ wanted: Double, forBand i: Int,
                                              in bands: [QxEqBandValue]) -> Int {
         guard bands.indices.contains(i) else { return 1000 }
-        var freq = wanted
         let current = Double(bands[i].freq)
         let others = bands.enumerated()
             .filter { $0.offset != i && $0.element.filter != .bypass }
             .map { Double($0.element.freq) }
+        var lower = 20.0, upper = 20000.0
         if let below = others.filter({ $0 < current }).max() {
-            freq = max(freq, below * minNeighbourRatio)
+            lower = max(lower, below * minNeighbourRatio)
         }
         if let above = others.filter({ $0 > current }).min() {
-            freq = min(freq, above / minNeighbourRatio)
+            upper = min(upper, above / minNeighbourRatio)
         }
-        return Int(min(max(freq.rounded(), 20), 20000))
+        // Neighbours closer together than twice the gap leave no room between
+        // them, and applying the two clamps in sequence let the upper one
+        // overwrite the lower — throwing the node *past* the neighbour it was
+        // being kept above, which is the reordering this function exists to
+        // prevent. With nowhere legal to go, the band stays where it is.
+        guard lower <= upper else { return bands[i].freq }
+        guard wanted.isFinite else { return bands[i].freq }
+        return Int(min(max(wanted.rounded(), lower), upper))
     }
 
     /// The band whose marker is nearest the press, or nil if none is close

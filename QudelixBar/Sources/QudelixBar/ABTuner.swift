@@ -136,6 +136,8 @@ final class ABTuner: ObservableObject {
     func start(_ c: QudelixController) {
         guard Self.blocker(c) == nil else { return }
 
+        // One step for the whole session, taken before anything moves.
+        c.beginUndoStep("by-ear tuning")
         baseline = c.bands
         baselinePreGain = c.preGain
         values = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, 0.0) })
@@ -369,7 +371,17 @@ final class ABTuner: ObservableObject {
         return out
     }
 
+    /// Write a trial curve.
+    ///
+    /// Neither persisted to the device's flash nor recorded as undo steps. A
+    /// trial is a question, not a decision: committing twenty of them burns
+    /// flash and leaves the last one surviving a power cycle, and recording
+    /// each band of each trial buried the pre-session curve under two hundred
+    /// entries in a forty-deep history. The session takes one step, opened by
+    /// `start`, and Keep or Discard is what the user actually undoes.
     private func apply(_ bands: [QxEqBandValue], to c: QudelixController) {
-        for (i, b) in bands.enumerated() where i < c.bandCount { c.updateBand(i, b) }
+        for (i, b) in bands.enumerated() where i < c.bandCount {
+            c.updateBand(i, b, persistToFlash: false, recordUndo: false)
+        }
     }
 }

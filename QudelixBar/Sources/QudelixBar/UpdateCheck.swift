@@ -48,7 +48,11 @@ struct AppVersion: Comparable, CustomStringConvertible {
 /// out about a release a few days sooner.
 enum UpdateCheck {
     enum Result: Equatable {
-        case upToDate(AppVersion)
+        /// Carries the newest *released* version, which is not always the one
+        /// running: a build ahead of the tags would otherwise announce its own
+        /// version as the latest release, which is a claim about the release
+        /// list rather than about itself.
+        case upToDate(latest: AppVersion, running: AppVersion)
         case available(AppVersion)
         /// Something answered, but not with a version this app can read. Said
         /// plainly rather than reported as "up to date", which would be a
@@ -74,16 +78,21 @@ enum UpdateCheck {
             let data = try await PinnedHTTP.fetch(request, limit: maxBytes)
             guard let tag = try? JSONDecoder().decode(LatestRelease.self, from: data).tag_name,
                   let latest = AppVersion(tag) else { return .unreadable }
-            return latest > running ? .available(latest) : .upToDate(running)
+            return latest > running ? .available(latest)
+                                   : .upToDate(latest: latest, running: running)
         } catch {
-            return .failed(AutoEqService.describe(error))
+            return .failed(AutoEqService.describe(
+                AutoEqService.mapped(error, host: "api.github.com")))
         }
     }
 
     /// One line of user-facing text for a result.
     static func summary(_ result: Result) -> String {
         switch result {
-        case .upToDate(let v): return "\(v) is the latest release."
+        case .upToDate(let latest, let running):
+            return running > latest
+                ? "\(running) is newer than the latest release (\(latest))."
+                : "\(latest) is the latest release."
         case .available(let v): return "\(v) is available."
         case .unreadable: return "Couldn't read the latest version."
         case .failed(let why): return why

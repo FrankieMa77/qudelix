@@ -300,7 +300,9 @@ struct EqualizeRequest: Encodable, Equatable {
 struct ResponseRequirements: Encodable, Equatable {
     /// 2^(1/12): one twelfth of an octave per sample.
     var frFStep: Double = 1.059463
-    var frFields: [String] = ["frequency", "error"]
+    /// The smoothed error is what gets scored; the raw one is asked for only
+    /// as a fallback for a response that omits the smoothed field.
+    var frFields: [String] = ["frequency", "error_smoothed", "error"]
     var base64fp16 = false
 
     enum CodingKeys: String, CodingKey {
@@ -393,6 +395,12 @@ struct EqualizeResponse: Decodable {
 struct FrequencyResponse: Decodable {
     var frequency: [Double]?
     var error: [Double]?
+    var errorSmoothed: [Double]?
+
+    enum CodingKeys: String, CodingKey {
+        case frequency, error
+        case errorSmoothed = "error_smoothed"
+    }
 }
 
 struct PEQResult: Decodable {
@@ -768,7 +776,17 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     nonisolated static func residualScore(_ decoded: EqualizeResponse,
                                           file: ParametricEQFile,
                                           limits: DeviceEQLimits) -> PreferenceScore.Reading? {
-        guard let freqs = decoded.fr?.frequency, let error = decoded.fr?.error,
+        // The smoothed curve, not the raw one.
+        //
+        // The model's spread predictor is an unweighted standard deviation, so
+        // every wrinkle of the measurement rig lands in it directly — scoring
+        // the raw error made the number partly a measure of who took the
+        // measurement. Worse than the offset, it reordered corrections:
+        // measured against the live service, one headphone scored 95.1 raw
+        // against another's 105.3, and 110.4 against 107.2 smoothed. Two
+        // people comparing the same pair would have been told opposite things.
+        guard let freqs = decoded.fr?.frequency,
+              let error = decoded.fr?.errorSmoothed ?? decoded.fr?.error,
               freqs.count == error.count, !freqs.isEmpty else { return nil }
         let applied = Array(file.bands.prefix(limits.bandCount))
         let correction = EQCurve.response(bands: applied, preGain: 0, at: freqs)

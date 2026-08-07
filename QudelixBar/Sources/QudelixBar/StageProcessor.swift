@@ -493,7 +493,10 @@ final class StageProcessor {
             let chans = Int(buf.mNumberChannels)
             let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
             let data = raw.assumingMemoryBound(to: Float.self)
-            for c in 0..<chans where inRefs.count < Self.maxChannels {
+            // Bounded, not filtered. `for … where` still walks the whole
+            // range, so a buffer reporting an absurd channel count would spin
+            // billions of iterations on the realtime thread.
+            for c in 0..<min(chans, max(0, Self.maxChannels - inRefs.count)) {
                 inRefs.append((ptr: data + c, stride: chans, frames: frames))
             }
         }

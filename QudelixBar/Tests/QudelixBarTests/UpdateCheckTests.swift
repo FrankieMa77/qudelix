@@ -58,8 +58,20 @@ final class UpdateCheckTests: XCTestCase {
     }
 
     func testTheCurrentVersionIsReportedAsLatest() {
-        XCTAssertEqual(UpdateCheck.summary(.upToDate(AppVersion("1.3.0")!)),
-                       "1.3.0 is the latest release.")
+        XCTAssertEqual(
+            UpdateCheck.summary(.upToDate(latest: AppVersion("1.3.0")!,
+                                          running: AppVersion("1.3.0")!)),
+            "1.3.0 is the latest release.")
+    }
+
+    /// A build ahead of the tags must not announce its own version as the
+    /// latest release — that is a claim about the release list, and it is
+    /// false for every pre-release build.
+    func testABuildAheadOfTheTagsDoesNotClaimToBeTheLatestRelease() {
+        let text = UpdateCheck.summary(.upToDate(latest: AppVersion("1.2.0")!,
+                                                 running: AppVersion("1.3.0")!))
+        XCTAssertFalse(text.contains("1.3.0 is the latest release"))
+        XCTAssertTrue(text.contains("1.2.0"), "it must name the actual latest release")
     }
 
     /// An answer that could not be read is said plainly. Reporting it as "up

@@ -242,10 +242,22 @@ final class QudelixController: ObservableObject {
     /// One reversible EQ state. Only what this app can put back: the curve, the
     /// pre-gain and which bands are muted. Not the preset slot — undoing a
     /// slot load restores the curve, which is what the user is looking at.
-    struct EqEdit: Equatable {
+    /// Not `Equatable`: the dedup below compares the fields that decide
+    /// whether anything changed, and a parsed correction file has no
+    /// meaningful equality of its own.
+    struct EqEdit {
         var bands: [QxEqBandValue]
         var preGain: Double
         var mutedBands: [Int: QxFilter]
+        /// What the curve was understood to be at the time. Restored with it:
+        /// undoing an import that left a requested-curve overlay behind would
+        /// otherwise keep drawing "the device could not hold this" over a curve
+        /// the device was never asked to hold, and leave a slot able to be
+        /// named after a correction that is no longer loaded.
+        var sourceName: String?
+        var requested: ParametricEQFile?
+        var sourceCurve: [QxEqBandValue]?
+        var sourcePreGain: Double?
         /// What this step would undo, shown on the button.
         var label: String
     }
@@ -268,7 +280,9 @@ final class QudelixController: ObservableObject {
     var redoLabel: String? { redoStack.last?.label }
 
     private var currentEqEdit: EqEdit {
-        EqEdit(bands: bands, preGain: preGain, mutedBands: mutedBands, label: "")
+        EqEdit(bands: bands, preGain: preGain, mutedBands: mutedBands,
+               sourceName: eqSourceName, requested: requestedCorrection,
+               sourceCurve: sourceCurve, sourcePreGain: sourcePreGain, label: "")
     }
 
     /// Record the state *before* a change, coalescing a continuous gesture into
@@ -299,6 +313,9 @@ final class QudelixController: ObservableObject {
         redoStack.removeAll()
     }
 
+    /// Open one undo step covering everything a caller is about to write.
+    func beginUndoStep(_ label: String) { checkpoint(label, discrete: true) }
+
     func undoEqEdit() { step(from: &undoStack, to: &redoStack) }
     func redoEqEdit() { step(from: &redoStack, to: &undoStack) }
 
@@ -311,10 +328,14 @@ final class QudelixController: ObservableObject {
 
         suppressUndo = true
         defer { suppressUndo = false; lastEditLabel = ""; lastEditAt = .distantPast }
+        eqSourceName = entry.sourceName
+        requestedCorrection = entry.requested
+        sourceCurve = entry.sourceCurve
+        sourcePreGain = entry.sourcePreGain
         // Mutes first: restoring a band's shape and then muting it again would
         // write the band twice and leave the mute map disagreeing with it.
         mutedBands = entry.mutedBands
-        setPreGain(entry.preGain)
+        setPreGain(entry.preGain, persistToFlash: false)
         for (i, band) in entry.bands.enumerated() where i < bandCount {
             guard bands.indices.contains(i), bands[i] != band else { continue }
             updateBand(i, band, persistToFlash: false)
@@ -350,6 +371,9 @@ final class QudelixController: ObservableObject {
     /// a single latch, deciding for the group we happened to start on left
     /// the group the device is actually in unrepaired for the whole session.
     private var restoreDecidedGroups: Set<UInt8> = []
+    /// Whether the two pre-gain channels have already been evened up on this
+    /// connection. One attempt per link; see `applyPreset`.
+    private var preGainRepaired = false
     /// Whether this connection has read the device's EQ at least once.
     private var presetRead = false
     /// Whether this connection has seen the device report its eq_mode.
@@ -581,6 +605,7 @@ final class QudelixController: ObservableObject {
         saveAllWork?.cancel()
         undoStack.removeAll()
         redoStack.removeAll()
+        preGainRepaired = false
         compatibility = .checking
         receivingReports = false
         firmwareVersion = nil
@@ -1012,13 +1037,18 @@ final class QudelixController: ObservableObject {
         // show it — one number is all there is room for. Correct it rather than
         // report it: the value the user set is channel 0, so channel 1 is
         // simply wrong, and rewriting pre-gain sends both from now on.
-        if abs(p.preGain - p.preGainCh1) > 0.06 {
+        if abs(p.preGain - p.preGainCh1) > 0.06, canWriteEq, !preGainRepaired {
+            // Once per connection. Every completed preset read-back used to
+            // retrigger this, and a single inbound frame can complete one — so
+            // a device that kept reporting a mismatch, whether broken or
+            // hostile, drove an unbounded pair of writes back at itself. One
+            // attempt is all a repair is worth: if it did not take, sending it
+            // again on the next report will not help either.
+            preGainRepaired = true
             DebugLog.shared.log(String(
                 format: "pre-gain channels disagree (%.1f / %.1f dB) — evening them up",
                 p.preGain, p.preGainCh1))
-            if canWriteEq {
-                sendPreGain(Int((preGain * QxScale.gain).rounded()))
-            }
+            sendPreGain(Int((preGain * QxScale.gain).rounded()))
         }
         // Crossfeed is part of the preset the device just handed back, so it
         // is only known once a preset decodes cleanly.
@@ -1441,13 +1471,13 @@ final class QudelixController: ObservableObject {
         }
     }
 
-    func setPreGain(_ db: Double) {
+    func setPreGain(_ db: Double, persistToFlash: Bool = true) {
         guard canWriteEq, db.isFinite else { return }
         checkpoint("pre-gain")
         let clamped = EQHeadroom.clamp(db)
         preGain = clamped
         sendPreGain(Int((clamped * QxScale.gain).rounded()))
-        eqEdited()
+        eqEdited(persistToFlash: persistToFlash)
     }
 
     /// How much headroom the curve on screen needs, and the pre-gain that
@@ -1475,9 +1505,14 @@ final class QudelixController: ObservableObject {
     /// off the USB bus. `bandParamPayload` refuses whatever the clamp couldn't
     /// rescue, and the local value is only adopted once a packet exists for
     /// it: a rejected edit changes nothing on either side.
-    func updateBand(_ index: Int, _ value: QxEqBandValue, persistToFlash: Bool = true) {
+    /// `recordUndo: false` writes without adding a step. For a caller that is
+    /// making many writes it does not want walked back one at a time — an A/B
+    /// trial curve, twenty times a session — which should instead take a single
+    /// step of its own with `beginUndoStep`.
+    func updateBand(_ index: Int, _ value: QxEqBandValue,
+                    persistToFlash: Bool = true, recordUndo: Bool = true) {
         guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
-        checkpoint("band \(index + 1)")
+        if recordUndo { checkpoint("band \(index + 1)") }
         var v = value
         v.freq = max(20, min(20000, v.freq))
         v.gain = v.gain.isFinite ? max(-12, min(12, v.gain)) : 0
