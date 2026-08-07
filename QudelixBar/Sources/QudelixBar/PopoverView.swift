@@ -63,7 +63,8 @@ struct PopoverView: View {
                 VStack(spacing: 14) {
                     EQCurveView(bands: controller.bands,
                                 preGain: controller.preGain,
-                                highlighted: editingBand)
+                                highlighted: editingBand,
+                                requested: controller.requestedCorrection)
                         .frame(height: 104)
 
                     VolumeControl()

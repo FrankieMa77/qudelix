@@ -263,6 +263,110 @@ enum EQHeadroom {
     }
 }
 
+/// How far a requested correction and the one the device could take have
+/// parted company, and where.
+///
+/// An imported correction is fitted for a generic equalizer: as many bands as
+/// it likes, any gain, any Q. The 5K has ten or twenty bands, ±12 dB, Q inside
+/// 0.1…10 and a 20 Hz–20 kHz window, and the import path folds the request into
+/// that before it reaches the wire. Today the user is told a count — "N band(s)
+/// … will be clamped" — which is the one thing about the outcome that doesn't
+/// matter. A shape flattened at 40 Hz and the same shape flattened at 8 kHz
+/// produce identical sentences and completely different sound.
+///
+/// So the comparison is made on the response, not on the bands: two curves
+/// sampled on the same grid, subtracted. That catches everything a per-band
+/// check would miss — a band the device never received at all, a Q pulled in
+/// until a narrow notch became a wide dip, two clamped bands whose errors
+/// happen to cancel — and it reports the answer in the units the user is
+/// already reading off the axis.
+enum EQDivergence {
+    /// Below this, in dB, the two curves are the same curve.
+    ///
+    /// The device stores gains in tenths of a dB and hands them back through
+    /// its own fixed-point scaling, so even a request that fitted exactly comes
+    /// back a few hundredths out; the existing read-back comparison allows 0.06
+    /// for the same reason. A quarter of a dB sits well clear of that and well
+    /// under anything audible, which is the bar a second line on the chart has
+    /// to clear before it earns the ink.
+    static let tolerance: Double = 0.25
+
+    /// The gap, sample by sample, plus the two things worth drawing about it.
+    struct Reading: Equatable {
+        /// Requested minus applied, in dB, one per point of the shared grid.
+        /// Positive means the device is giving less lift than was asked for.
+        var deltas: [Double]
+        /// Grid index of the widest gap and its signed size — the one place
+        /// worth putting a number.
+        var peakIndex: Int
+        var peak: Double
+        /// Contiguous stretches wide enough to shade.
+        var spans: [ClosedRange<Int>]
+    }
+
+    /// nil whenever there is nothing to draw: grids that don't line up, a
+    /// response that isn't a number, or two curves that agree everywhere.
+    ///
+    /// Both inputs are expected to exclude pre-gain, as the drawn curve does.
+    /// A pre-gain that had to be clamped is a level change, not a shape change:
+    /// folding it in here would slide the whole ghost curve off the applied one
+    /// and report a divergence at every frequency, including the ones where the
+    /// device gave exactly what was asked.
+    static func reading(requested: [Double], applied: [Double]) -> Reading? {
+        guard requested.count == applied.count, requested.count > 1 else { return nil }
+        var deltas = [Double](repeating: 0, count: applied.count)
+        var peakIndex = 0
+        var peak = 0.0
+        for i in applied.indices {
+            let d = requested[i] - applied[i]
+            // A non-finite sample means the comparison is meaningless, and
+            // treating it as zero would be a claim that the device matched the
+            // request there. Say nothing instead.
+            guard d.isFinite else { return nil }
+            deltas[i] = d
+            if abs(d) > abs(peak) { peak = d; peakIndex = i }
+        }
+        guard abs(peak) > tolerance else { return nil }
+        return Reading(deltas: deltas, peakIndex: peakIndex, peak: peak,
+                       spans: spans(of: deltas, above: tolerance))
+    }
+
+    /// Runs of indices where the gap is worth showing, each widened by one
+    /// sample at either end.
+    ///
+    /// The widening is what stops a shaded region from starting with a visible
+    /// vertical edge: the neighbouring sample is by definition inside the
+    /// tolerance, so the patch tapers to nearly nothing there instead of
+    /// beginning at full height. Runs that overlap once widened are merged, so
+    /// a single sample dipping under the tolerance mid-divergence doesn't split
+    /// one region into two.
+    static func spans(of deltas: [Double], above threshold: Double) -> [ClosedRange<Int>] {
+        guard !deltas.isEmpty else { return [] }
+        var runs: [ClosedRange<Int>] = []
+        var start: Int?
+        for (i, d) in deltas.enumerated() {
+            if abs(d) > threshold {
+                if start == nil { start = i }
+            } else if let s = start {
+                runs.append(s...(i - 1))
+                start = nil
+            }
+        }
+        if let s = start { runs.append(s...(deltas.count - 1)) }
+
+        var merged: [ClosedRange<Int>] = []
+        for run in runs {
+            let wide = max(0, run.lowerBound - 1)...min(deltas.count - 1, run.upperBound + 1)
+            if let last = merged.last, wide.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, wide.upperBound)
+            } else {
+                merged.append(wide)
+            }
+        }
+        return merged
+    }
+}
+
 /// Draws the combined EQ response with a log frequency axis.
 ///
 /// The curve shows the filter shape *excluding* pre-gain — pre-gain is a
@@ -273,16 +377,57 @@ struct EQCurveView: View {
     let preGain: Double
     var highlighted: Int?          // band index to mark, while it's being edited
 
-    /// Symmetric dB range, grown to fit the curve so small edits stay legible.
-    private var range: Double {
-        let peak = EQCurve.response(bands: bands, preGain: 0).map(abs).max() ?? 0
-        return min(18, max(9, (peak / 3).rounded(.up) * 3 + 3))
+    /// The correction as it was asked for, before the device's band count,
+    /// gain ceiling, Q limits and frequency window reshaped it — or nil when
+    /// nothing was imported, which is the common case and draws nothing extra.
+    ///
+    /// Only the bands are read. The file's preamp is deliberately ignored; see
+    /// `EQDivergence.reading`.
+    var requested: ParametricEQFile?
+
+    /// Everything a redraw needs, worked out once.
+    ///
+    /// The axis size and the curve were previously derived from two separate
+    /// evaluations of the same response, which a second curve would have turned
+    /// into four. This view redraws on every frame of a slider drag, so the
+    /// whole plot is computed once per body evaluation and shared by the canvas
+    /// and the corner label.
+    private struct Plot {
+        var applied: [Double]
+        /// Present only when there is a request *and* the device changed it.
+        var requested: [Double]?
+        var divergence: EQDivergence.Reading?
+        /// Symmetric dB range, grown to fit the curve so small edits stay
+        /// legible.
+        var range: Double
+    }
+
+    private func plot() -> Plot {
+        let applied = EQCurve.response(bands: bands, preGain: 0)
+        let asked = requested.map { EQCurve.response(bands: $0.bands, preGain: 0) }
+        let gap = asked.flatMap { EQDivergence.reading(requested: $0, applied: applied) }
+
+        // The axis has to hold whichever curves are drawn. A request that
+        // overshoots is exactly the case this feature exists for, and an axis
+        // sized to the applied curve alone would pin the ghost flat along the
+        // top edge — turning "asked for 6 dB more here" into "asked for as much
+        // as the frame allows, somewhere". The 3 dB quantisation means most
+        // divergences don't move the axis at all, and the 18 dB ceiling caps
+        // what the live curve can ever be shrunk to.
+        var peak = applied.map(abs).max() ?? 0
+        if gap != nil, let asked { peak = max(peak, asked.map(abs).max() ?? 0) }
+
+        return Plot(applied: applied,
+                    requested: gap == nil ? nil : asked,
+                    divergence: gap,
+                    range: min(18, max(9, (peak / 3).rounded(.up) * 3 + 3)))
     }
 
     var body: some View {
+        let plot = self.plot()
         Canvas { ctx, size in
-            let range = self.range
-            let values = EQCurve.response(bands: bands, preGain: 0)
+            let range = plot.range
+            let values = plot.applied
             let midY = size.height / 2
             func y(_ db: Double) -> CGFloat {
                 midY - CGFloat(max(-range, min(range, db)) / range) * (size.height / 2 - 6)
@@ -299,24 +444,26 @@ struct EQCurveView: View {
             }
             // Vertical grid at decades.
             for f in [100.0, 1000, 10000] {
-                let x = CGFloat(EQCurve.fraction(of: f)) * size.width
+                let gridX = CGFloat(EQCurve.fraction(of: f)) * size.width
                 var line = Path()
-                line.move(to: CGPoint(x: x, y: 0))
-                line.addLine(to: CGPoint(x: x, y: size.height))
+                line.move(to: CGPoint(x: gridX, y: 0))
+                line.addLine(to: CGPoint(x: gridX, y: size.height))
                 ctx.stroke(line, with: .color(.secondary.opacity(0.14)), lineWidth: 0.5)
                 ctx.draw(Text(f >= 1000 ? "\(Int(f / 1000))k" : "\(Int(f))")
                             .font(.system(size: 8))
                             .foregroundStyle(.secondary),
-                         at: CGPoint(x: x + 11, y: size.height - 7))
+                         at: CGPoint(x: gridX + 11, y: size.height - 7))
             }
 
             guard values.count > 1 else { return }
+            func x(_ i: Int) -> CGFloat {
+                CGFloat(i) / CGFloat(values.count - 1) * size.width
+            }
 
             // The response curve, with a soft fill down to the 0 dB line.
             var curve = Path()
             for (i, db) in values.enumerated() {
-                let x = CGFloat(i) / CGFloat(values.count - 1) * size.width
-                let p = CGPoint(x: x, y: y(db))
+                let p = CGPoint(x: x(i), y: y(db))
                 i == 0 ? curve.move(to: p) : curve.addLine(to: p)
             }
 
@@ -328,14 +475,70 @@ struct EQCurveView: View {
                 Gradient(colors: [.accentColor.opacity(0.34), .accentColor.opacity(0.05)]),
                 startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
 
+            // What was asked for, where the device couldn't give it.
+            //
+            // Everything here is drawn on top of the accent fill but under the
+            // accent stroke, and in `secondary` rather than a colour of its
+            // own. The live curve is the truth about what the user is hearing;
+            // this is a note in the margin, and it has to stay legible as one
+            // without ever competing for the eye.
+            if let asked = plot.requested, let gap = plot.divergence,
+               asked.count == values.count {
+                // The shaded gap is the whole message: it says where the two
+                // disagree and, read against the dB gridlines, by how much,
+                // with no key to look up and no space spent on one.
+                for span in gap.spans {
+                    var patch = Path()
+                    patch.move(to: CGPoint(x: x(span.lowerBound), y: y(asked[span.lowerBound])))
+                    for i in span.dropFirst() {
+                        patch.addLine(to: CGPoint(x: x(i), y: y(asked[i])))
+                    }
+                    for i in span.reversed() {
+                        patch.addLine(to: CGPoint(x: x(i), y: y(values[i])))
+                    }
+                    patch.closeSubpath()
+                    ctx.fill(patch, with: .color(.secondary.opacity(0.18)))
+                }
+
+                var ghost = Path()
+                for (i, db) in asked.enumerated() {
+                    let p = CGPoint(x: x(i), y: y(db))
+                    i == 0 ? ghost.move(to: p) : ghost.addLine(to: p)
+                }
+                ctx.stroke(ghost, with: .color(.secondary.opacity(0.55)),
+                           style: StrokeStyle(lineWidth: 1, dash: [3, 2.5]))
+
+                // The worst departure gets the one number on the chart, so the
+                // size of the shortfall doesn't have to be estimated off the
+                // gridlines. Under a dB there is nothing to say that the shape
+                // hasn't already said, and the label would only be clutter.
+                if abs(gap.peak) >= 1 {
+                    let px = x(gap.peakIndex)
+                    let applied = y(values[gap.peakIndex]), wanted = y(asked[gap.peakIndex])
+                    var tick = Path()
+                    tick.move(to: CGPoint(x: px, y: applied))
+                    tick.addLine(to: CGPoint(x: px, y: wanted))
+                    ctx.stroke(tick, with: .color(.secondary.opacity(0.5)), lineWidth: 0.8)
+                    // Set the number on whichever side of the tick has room,
+                    // and halfway up the gap so it can't land on either curve.
+                    let leftOfTick = px > size.width * 0.62
+                    ctx.draw(Text(String(format: "%.1f dB", abs(gap.peak)))
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary),
+                             at: CGPoint(x: px + (leftOfTick ? -4 : 4),
+                                         y: (applied + wanted) / 2),
+                             anchor: leftOfTick ? .trailing : .leading)
+                }
+            }
+
             ctx.stroke(curve, with: .color(.accentColor), lineWidth: 1.8)
 
             // Band markers.
             for (i, band) in bands.enumerated() where band.filter != .bypass {
-                let x = CGFloat(EQCurve.fraction(of: Double(band.freq))) * size.width
+                let dotX = CGFloat(EQCurve.fraction(of: Double(band.freq))) * size.width
                 let isOn = highlighted == i
                 let r: CGFloat = isOn ? 4 : 2.5
-                let dot = Path(ellipseIn: CGRect(x: x - r, y: y(band.gain) - r,
+                let dot = Path(ellipseIn: CGRect(x: dotX - r, y: y(band.gain) - r,
                                                  width: r * 2, height: r * 2))
                 ctx.fill(dot, with: .color(isOn ? .accentColor : .accentColor.opacity(0.55)))
                 if isOn {
@@ -345,7 +548,7 @@ struct EQCurveView: View {
         }
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topLeading) {
-            Text("±\(Int(range)) dB")
+            Text("±\(Int(plot.range)) dB")
                 .font(.system(size: 8))
                 .foregroundStyle(.secondary)
                 .padding(4)

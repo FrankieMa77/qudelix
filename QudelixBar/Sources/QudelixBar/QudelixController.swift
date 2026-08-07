@@ -102,6 +102,15 @@ final class QudelixController: ObservableObject {
     @Published var activePreset: Int?
     @Published var lastImportSummary: String?
 
+    /// The correction as the file asked for it, before the device's limits were
+    /// applied to it. Kept so the curve view can show what was requested next to
+    /// what the 5K could actually hold — the import summary says how many bands
+    /// were clamped, which does not tell anyone *where* the shape changed.
+    ///
+    /// Deliberately not persisted: there is no way to dismiss the overlay, and a
+    /// ghost curve that outlived the session would become furniture rather than
+    /// an answer to a question the user just asked.
+    @Published private(set) var requestedCorrection: ParametricEQFile?
 
     /// Set only by UIPreview to force a starting pane when rendering mocks.
     var previewPane: PopoverView.Pane?
@@ -349,6 +358,7 @@ final class QudelixController: ObservableObject {
         presetRead = false
         sawEqMode = false
         eqSourceName = nil
+        requestedCorrection = nil
         batteryAlerts.connectionReset()
         state = QxDeviceState()
 
@@ -805,6 +815,7 @@ final class QudelixController: ObservableObject {
         // slot for this group.
         activePreset = nil
         eqSourceName = nil
+        requestedCorrection = nil
         // Crossfeed is stored per preset, so it belongs to the group we left.
         crossfeedLevel = nil
         transportSend(.reqEqPreset, [group.requestMask])
@@ -997,6 +1008,7 @@ final class QudelixController: ObservableObject {
     func loadPreset(_ index: Int) {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
         eqSourceName = presetLabel(index)
+        requestedCorrection = nil
         activePreset = index
         assembler.reset()
         transportSend(.loadEqPreset, [UInt8(index)])
@@ -1012,6 +1024,7 @@ final class QudelixController: ObservableObject {
     func flatten() {
         guard canWriteEq else { return }
         eqSourceName = nil
+        requestedCorrection = nil
         setPreGain(0)
         let defaults = eqGroup.defaultFreqs
         for i in 0..<bandCount {
@@ -1083,6 +1096,7 @@ final class QudelixController: ObservableObject {
             return
         }
         eqSourceName = name
+        requestedCorrection = file
         if !eqEnabled { setEqEnabled(true) }
         transportSend(.setEqType, [eqGroup.rawValue, 1])   // 1 = PEQ
         setPreGain(max(-12, min(12, file.preamp)))
