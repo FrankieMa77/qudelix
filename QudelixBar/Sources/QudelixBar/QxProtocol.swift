@@ -1,8 +1,9 @@
 import Foundation
 
 /// Qudelix 5K command protocol.
-/// Reverse-engineered from the official Chrome plugin (q5K-chrome-plugin.js)
-/// via the devicePEQ project. See docs/PROTOCOL_STATUS.md for status structs.
+///
+/// Command ids and payload layouts, verified against firmware 3.1.8 and 3.2.7.
+/// Where a command is declared but never sent, the declaration says why.
 enum QxCmd: UInt16 {
     // Handshake / info
     case reqInitData      = 0x0100

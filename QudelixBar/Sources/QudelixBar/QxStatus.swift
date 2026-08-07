@@ -1,7 +1,7 @@
 import Foundation
 
 /// Parsers for the 5K's status/config structs. All structs are LSB-first
-/// bitfields (multi-byte fields little-endian); see docs/PROTOCOL_STATUS.md.
+/// bitfields, with multi-byte fields little-endian.
 struct QxDeviceState {
     /// `kt` enum: 1 = original 5K, 2 = 5K Plus, 256 = T71, 512 = AuraVita…
     var deviceId: Int = 0
