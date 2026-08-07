@@ -42,6 +42,15 @@ struct ImportView: View {
                     Label("Import file…", systemImage: "square.and.arrow.down")
                 }
                 Button {
+                    pasteText()
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                }
+                .disabled(!controller.canWriteNow)
+                .help("Import a correction from text on the clipboard — the "
+                      + "filter list as published sites print it. Nothing on "
+                      + "the clipboard that looks like one, nothing happens.")
+                Button {
                     saveFile()
                 } label: {
                     Label("Export", systemImage: "square.and.arrow.up")
@@ -406,6 +415,15 @@ struct ImportView: View {
     /// Activate first, so the FIRST panel is usable.
     private func activateForPanel() {
         NSApp.activate()
+    }
+
+    private func pasteText() {
+        guard let text = NSPasteboard.general.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            controller.lastImportSummary = "There is no text on the clipboard."
+            return
+        }
+        controller.importText(text)
     }
 
     private func openFile() {

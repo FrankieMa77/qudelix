@@ -50,7 +50,8 @@ right.
   the 5K, so other software sees it too
 - **Profiles** — pair an output device with a preset and be offered the switch
   when that output becomes active
-- **Preset import** from a file, or from the
+- **Preset import** from a file, from the clipboard — paste the filter list
+  as published sites print it — or from the
   [AutoEq](https://github.com/jaakkopasanen/AutoEq) database (6,000+ headphones),
   fitted live to a target curve of your choosing with bass and tilt adjustment
 - **Device settings** — channel trim, volume limit and the DAC reconstruction

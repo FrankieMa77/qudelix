@@ -1594,6 +1594,28 @@ final class QudelixController: ObservableObject {
     /// reading an arbitrary user-picked file entirely into memory.
     static let maxImportBytes = 1_000_000
 
+    /// Import a correction from text rather than a file.
+    ///
+    /// Sites that publish these show the filter list on the page, and copying
+    /// it is what people already do. Drag-and-drop would be the other obvious
+    /// route and is not available here: this window belongs to a menu bar
+    /// item, and the first click in Finder to start a drag dismisses it.
+    ///
+    /// `named` is nil for pasted text on purpose — a clipboard has no name,
+    /// and inventing one would put a label on a preset slot that nothing
+    /// stands behind.
+    func importText(_ text: String, named: String? = nil) {
+        guard text.utf8.count <= Self.maxImportBytes else {
+            lastImportSummary = "That is too much text to be an EQ preset."
+            return
+        }
+        guard let parsed = ParametricEQFile.parse(text) else {
+            lastImportSummary = "No EQ filters found in what was pasted."
+            return
+        }
+        apply(parsed, named: named)
+    }
+
     func importFile(at url: URL) {
         do {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
