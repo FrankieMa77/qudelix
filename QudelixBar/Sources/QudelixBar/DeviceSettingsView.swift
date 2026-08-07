@@ -23,7 +23,7 @@ struct DeviceSettingsView: View {
                 dacFilter
             }
 
-            if controller.crossfeedLevel != nil {
+            if hasReadOnlyFacts {
                 Divider()
                 readOnlyFacts
             }
@@ -143,16 +143,44 @@ struct DeviceSettingsView: View {
 
     // MARK: - Read-only
 
-    /// Settings the device reports but this app doesn't write yet. Shown
-    /// because knowing the current value is useful on its own, and because a
-    /// wrong guess at this command is what makes the 5K stop responding — so
-    /// it stays read-only until it's verified.
+    private var hasReadOnlyFacts: Bool {
+        controller.chargeSummary != nil
+            || controller.batteryCare != nil
+            || controller.crossfeedLevel != nil
+    }
+
+    /// Settings and states the device reports but this app doesn't write.
+    /// Shown because knowing the current value is useful on its own, and
+    /// because a wrong guess at one of these commands is what makes the 5K
+    /// stop responding — so they stay read-only until they're verified.
     private var readOnlyFacts: some View {
         VStack(alignment: .leading, spacing: 3) {
+            if let summary = controller.chargeSummary {
+                fact("Power", summary)
+            }
+            if let care = controller.batteryCare {
+                fact("Battery care", care ? "On" : "Off")
+            }
+            // The device's own verdict, not a threshold this app picked. It
+            // only appears when the 5K says so, which is the whole point of
+            // showing it separately from the percentage.
+            if controller.batteryLow {
+                fact("Battery", "the 5K reports it as low")
+            }
             if let xfeed = controller.crossfeedLevel {
                 fact("Crossfeed", xfeed == 0 ? "off" : "\(xfeed)")
             }
-            Text("Set this in the official app for now.")
+            if controller.batteryCare != nil {
+                Text("Battery care stops the charge short of full. Charging "
+                     + "to 100% and staying there is what wears a lithium "
+                     + "cell, so it earns its keep on a 5K that lives on a "
+                     + "USB port.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+            }
+            Text("Set these in the official app for now.")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
         }

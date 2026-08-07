@@ -24,6 +24,27 @@ struct QxDeviceState {
     var batteryMilliVolts: Int?
     var charging = false
     var chargerConnected = false
+    /// `td.batt_low`: the device's own opinion of a low battery, rather than a
+    /// threshold this app picks off the percentage. Worth keeping separate —
+    /// the two can disagree, and when they do the device is the one that will
+    /// act on it.
+    var batteryLow: Bool?
+    /// `td.charger_state`: a 3-bit state machine the charger reports on every
+    /// power block. Carried as its raw value: the states are observably real
+    /// (the value changes when a charge cycle starts and again when it ends)
+    /// but nothing establishes what each number is called, so naming them here
+    /// would be invention.
+    var chargerState: Int?
+    /// `td.dac_state`: a 3-bit state for the output path, in the same
+    /// position of the same block. Also raw, for the same reason — though it
+    /// tracks the audio-running flag closely enough to be a second opinion on
+    /// whether the DAC is actually doing anything.
+    var dacState: Int?
+    /// `dd.charger_enable`: whether the 5K charges at all while a charger is
+    /// connected. Off means it will run the battery down on a live USB port.
+    var chargerEnabled: Bool?
+    /// `dd.batt_care`: whether the 5K stops charging short of full.
+    var batteryCare: Bool?
     var sampleRateLabel: String?
     var inputSourceLabel: String?
     /// a2dp_codec label (SBC/AAC/aptX/…/LDAC). Only meaningful over A2DP;
@@ -140,7 +161,13 @@ enum QxStatusParser {
             var r = QxBitReader(Array(d[off..<off + 8]))
             state.chargerConnected = r.read(1) == 1
             state.charging = r.read(1) == 1
-            r.skip(3 + 3 + 1)               // charger_state, dac_state, batt_low
+            // These three arrive on every power block. They used to be
+            // stepped over; reading them shifts nothing after them, which the
+            // battery percentage immediately below proves — it only lands on
+            // a sane number if all nine leading bits are accounted for.
+            state.chargerState = r.read(3)
+            state.dacState = r.read(3)
+            state.batteryLow = r.read(1) == 1
             state.batteryPercent = min(r.read(7), 100)   // 7 bits carries up to 127
             state.batteryMilliVolts = r.read(13)
             off += 8
@@ -167,11 +194,26 @@ enum QxStatusParser {
         var off = 1
 
         if mask & QxConfigMask.sys != 0 {
-            // `dd`, 12 bytes. Only eq_mode (bit 36) matters here: it selects
-            // between the 10-band user/speaker EQ and the 20-band b20 mode.
+            // `dd`, 12 bytes. Three fields are taken from it.
+            //
+            // The two battery ones live at bits 4 and 5, near the front of a
+            // run of single-bit flags. They are the *settings* — what the
+            // device has been told to do — as opposed to the power block's
+            // charging/charger_state, which is what it is doing right now.
+            // Nothing else in the config reports them: the sys2 block is
+            // buttons, LED level, preset-name mask and crossfeed, and the
+            // batt block is the history log the battery chart is drawn from.
+            //
+            // Their position is only trustworthy because eq_mode below is:
+            // the same walk that puts eq_mode at bit 36 puts these two here,
+            // and eq_mode landing wrong is immediately visible as the whole
+            // EQ layout flipping.
             guard d.count >= off + 12 else { return d.count }
             var r = QxBitReader(Array(d[off..<off + 12]))
-            r.skip(36)
+            r.skip(4)   // need_factory_reset, need_power_on, reserved, button_lock
+            state.chargerEnabled = r.read(1) == 1
+            state.batteryCare = r.read(1) == 1
+            r.skip(30)  // through the profile/codec/latency fields to eq_mode
             state.eqMode = r.read(1)
             let fs = r.read(3)
             state.usbFsMode = fs <= 6 ? fs : nil
@@ -199,6 +241,8 @@ enum QxStatusParser {
             off += 4
         }
         if mask & QxConfigMask.mic != 0 { off += 4 }
+        // Not the battery-care setting despite the name: this block is the
+        // rolling battery history the device keeps for its own chart.
         if mask & QxConfigMask.batt != 0 { off += 8 }
         if mask & QxConfigMask.sys2 != 0 { off += 32 }
         if mask & QxConfigMask.eq != 0, d.count > off {

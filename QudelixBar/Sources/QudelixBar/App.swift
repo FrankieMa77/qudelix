@@ -135,10 +135,19 @@ struct QudelixBarApp: App {
             var line = "Battery \(batt)%"
             if controller.charging {
                 line += " — charging"
-            } else if batt <= BatteryAlerts.veryLowThreshold {
-                line += " — very low"
-            } else if batt <= BatteryAlerts.lowThreshold {
-                line += " — low"
+            } else {
+                // A low battery outranks the charger state: "plugged in and
+                // not charging" is useful, but if it is also nearly flat that
+                // is the part that needs acting on, so both get said.
+                if batt <= BatteryAlerts.veryLowThreshold {
+                    line += " — very low"
+                } else if batt <= BatteryAlerts.lowThreshold {
+                    line += " — low"
+                }
+                if controller.chargerConnected {
+                    line += batt <= BatteryAlerts.lowThreshold
+                        ? " (plugged in, not charging)" : " — plugged in, not charging"
+                }
             }
             lines.append(line)
         }

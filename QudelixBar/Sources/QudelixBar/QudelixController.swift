@@ -43,6 +43,24 @@ final class QudelixController: ObservableObject {
     @Published var firmwareVersion: String?
     @Published var batteryPercent: Int?
     @Published var charging = false
+    /// A charger is physically attached. Separate from `charging`: the 5K
+    /// spends most of a permanently-plugged life connected but not charging,
+    /// and the two together are what say why.
+    @Published var chargerConnected = false
+    /// The device's own low-battery flag, as opposed to this app's opinion of
+    /// the percentage. False until a power block has been read.
+    @Published var batteryLow = false
+    /// Raw `charger_state` / `dac_state` from the power block. Published
+    /// without labels because the values have no established names — they are
+    /// here so a report can quote them, not so the UI can pretend to read them.
+    @Published var chargerState: Int?
+    @Published var dacState: Int?
+    /// Whether the 5K is allowed to charge, and whether it holds the charge
+    /// short of full. Both are settings stored on the device, both are read
+    /// only here — see `QxCmd.setCharger` / `QxCmd.setBatteryCare`. Nil until
+    /// the sys config block has been read.
+    @Published var chargerEnabled: Bool?
+    @Published var batteryCare: Bool?
     @Published var sampleRate: String?
     @Published var inputSource: String?
     @Published var receivingReports = false   // true once the active link answers
@@ -78,6 +96,24 @@ final class QudelixController: ObservableObject {
     @Published var codecLabel: String?
     /// True while the amp is in its high-gain / higher-output state.
     @Published var outputHighGain: Bool?
+
+    /// One line for what the power path is doing, or nil before any power
+    /// block has been read.
+    ///
+    /// It states only what the device reported: whether a charger is
+    /// attached, whether it is charging, and — because that one turns an
+    /// absence of charging from a guess into a certainty — whether charging
+    /// is switched off altogether. Battery care is deliberately not folded in
+    /// here: it is shown as its own fact, because "not charging" has other
+    /// causes (a full battery, a warm one) and this line must not claim to
+    /// know which.
+    var chargeSummary: String? {
+        guard chargerState != nil else { return nil }
+        if !chargerConnected { return "On battery" }
+        if charging { return "Plugged in, charging" }
+        if chargerEnabled == false { return "Plugged in — charging is switched off" }
+        return "Plugged in, not charging"
+    }
 
     /// The filter's display name, or nil when the device hasn't reported one
     /// (or reported an index this build has no name for).
@@ -363,6 +399,12 @@ final class QudelixController: ObservableObject {
         firmwareVersion = nil
         batteryPercent = nil
         charging = false
+        chargerConnected = false
+        batteryLow = false
+        chargerState = nil
+        dacState = nil
+        chargerEnabled = nil
+        batteryCare = nil
         sampleRate = nil
         inputSource = nil
         muted = false
@@ -625,7 +667,19 @@ final class QudelixController: ObservableObject {
         if let fw = state.fwVersion, fw != firmwareVersion { firmwareVersion = fw }
         if let b = state.batteryPercent, b != batteryPercent { batteryPercent = b }
         if charging != state.charging { charging = state.charging }
-        batteryAlerts.update(batteryPercent: batteryPercent, charging: charging)
+        if chargerConnected != state.chargerConnected {
+            chargerConnected = state.chargerConnected
+        }
+        // None of these are locally editable, so unlike the volume and EQ
+        // fields below they need no echo window and are not consumed: the
+        // device's latest report is always the whole truth about them.
+        if let low = state.batteryLow, low != batteryLow { batteryLow = low }
+        if let cs = state.chargerState, cs != chargerState { chargerState = cs }
+        if let ds = state.dacState, ds != dacState { dacState = ds }
+        if let ce = state.chargerEnabled, ce != chargerEnabled { chargerEnabled = ce }
+        if let bc = state.batteryCare, bc != batteryCare { batteryCare = bc }
+        batteryAlerts.update(batteryPercent: batteryPercent, charging: charging,
+                             deviceSaysLow: batteryLow ?? false)
         if let sr = state.sampleRateLabel, sr != sampleRate { sampleRate = sr }
         if let src = state.inputSourceLabel, src != inputSource { inputSource = src }
         // Only meaningful on a Bluetooth link; over USB the device keeps
@@ -700,6 +754,12 @@ final class QudelixController: ObservableObject {
         // identical log lines per packet, forever.
         let stateLine = "compat=\(compat) model=\(state.deviceId)"
             + " | fw=\(firmwareVersion ?? "?") batt=\(batteryPercent.map { "\($0)%" } ?? "?")"
+            + (batteryLow ? " LOW" : "")
+            + " chg=\(chargerConnected ? (charging ? "on" : "idle") : "off")"
+            + "/\(chargerState.map(String.init) ?? "?")"
+            + " chgEn=\(chargerEnabled.map { $0 ? "1" : "0" } ?? "?")"
+            + " care=\(batteryCare.map { $0 ? "1" : "0" } ?? "?")"
+            + " dacState=\(dacState.map(String.init) ?? "?")"
             + " vol=\(String(format: "%.1fdB", volumeDb))"
             + " max=\(String(format: "%.0f", volumeMax)) sr=\(sampleRate ?? "?") src=\(inputSource ?? "?")"
             + " eq=\(eqEnabled ? "on" : "off") preset=\(activePreset.map(String.init) ?? "?")"

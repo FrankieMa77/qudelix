@@ -22,9 +22,34 @@ enum QxCmd: UInt16 {
 
     // Device settings
     case setVolume        = 0x0200  // [subParam, int16BE dB*60] (sink=1) / [subParam, ch, value] variants
+    // Declared, never sent. The read side does now give this setting —
+    // `dd.charger_enable`, one bit in the sys config block, parsed by
+    // `QxStatusParser.parseDevConfig` — so its value domain is settled: on or
+    // off, nothing in between. What it does not give is the shape of the
+    // payload that writes it. A bare value byte is the obvious guess, and in
+    // this command set the obvious guess is not safe: SetVolume, directly
+    // above, leads with a sub-parameter selector before its value, and
+    // nothing says which of the two patterns the charger commands follow.
+    //
+    // Guessing wrong here is not like guessing a filter index wrong. These
+    // are the power path. A payload read at the wrong offset lands on
+    // whatever the next byte happens to mean, and this hardware answers a
+    // report it dislikes by dropping off the bus. The worst outcome is also
+    // the quietest one: a 5K that has silently stopped charging while it
+    // sits on a USB port all day is a 5K that is flat when it is unplugged.
+    //
+    // Reading the setting and showing it is worth having on its own, and
+    // that is what shipped instead. Nothing here may send this until the
+    // payload's shape is confirmed against hardware.
     case setCharger       = 0x0201
     case setLedMode       = 0x0202
     case setUsbFsMode     = 0x0209  // [idx], DESCENDING: 0=96, 1=88.2, 2=48, 3=44.1, 4=all, 5=48+mic, 6=44.1+mic; device re-enumerates USB
+    // Declared, never sent, for the same reason as setCharger: the read side
+    // establishes the setting (`dd.batt_care`) and its two-valued domain, and
+    // says nothing about the payload that writes it. The consequence of a
+    // wrong write is milder than the charger's — a charge ceiling that moves
+    // is not a device that goes flat — but it is the same guess, on the same
+    // subsystem, with the same absence of evidence behind it.
     case setBatteryCare   = 0x0213
     case setUsbDacMode    = 0x0217
     case setDacFilter     = 0x0501  // [idx] into QxStatusParser.dacFilters, no group byte

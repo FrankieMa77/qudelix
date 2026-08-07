@@ -292,6 +292,17 @@ struct DeviceHeader: View {
         return .secondary
     }
     private func batteryHelp(_ p: Int) -> String {
+        // With battery care on, a plugged-in 5K sitting well short of full is
+        // the normal, healthy state — so the hover has to be able to say
+        // "plugged in, not charging" rather than leave it looking broken.
+        if let summary = controller.chargeSummary, !controller.charging,
+           controller.chargerConnected {
+            var text = "\(summary) — \(p)%"
+            if controller.batteryCare == true {
+                text += "\nBattery care is on, so it stops short of full."
+            }
+            return text
+        }
         if controller.charging { return "Charging — \(p)%" }
         if p <= BatteryAlerts.veryLowThreshold {
             return "Battery very low — the 5K will shut down soon"

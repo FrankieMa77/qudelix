@@ -34,7 +34,11 @@ final class BatteryAlerts: NSObject {
     /// Feed every battery/charging update through here; cheap when nothing
     /// changed. Latches survive brief disconnects on purpose — a Bluetooth
     /// blip must not re-announce the same low battery.
-    func update(batteryPercent: Int?, charging: Bool) {
+    /// `deviceSaysLow` is the 5K's own low-battery flag. It is treated as an
+    /// additional trigger rather than a replacement for the percentage: the two
+    /// can disagree, and whichever fires first is the one worth acting on. It
+    /// cannot make the alert quieter — only earlier.
+    func update(batteryPercent: Int?, charging: Bool, deviceSaysLow: Bool = false) {
         guard let pct = batteryPercent else { return }
 
         if charging {
@@ -49,15 +53,19 @@ final class BatteryAlerts: NSObject {
         }
 
         // Re-arm above the threshold, not at it: 5 points of hysteresis.
-        if pct > Self.lowThreshold + 5 { notifiedLow = false }
+        if pct > Self.lowThreshold + 5, !deviceSaysLow { notifiedLow = false }
         if pct > Self.veryLowThreshold + 5 { notifiedVeryLow = false }
+
+        // The device's own flag counts as reaching the low threshold, whatever
+        // the percentage says.
+        let low = deviceSaysLow || pct <= Self.lowThreshold
 
         if pct <= Self.veryLowThreshold, !notifiedVeryLow {
             notifiedVeryLow = true
             notifiedLow = true
             post(title: "Qudelix 5K battery very low",
                  body: "\(pct)% left — it will shut down soon. Plug it in.")
-        } else if pct <= Self.lowThreshold, !notifiedLow {
+        } else if low, !notifiedLow {
             notifiedLow = true
             post(title: "Qudelix 5K battery low",
                  body: "\(pct)% left.")
