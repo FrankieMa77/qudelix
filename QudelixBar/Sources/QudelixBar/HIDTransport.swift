@@ -323,7 +323,10 @@ final class DebugLog: ObservableObject {
     /// ~/Library/Logs/QudelixBar.log. Resolved once in init — a `lazy var`
     /// would be touched from the main thread, the HID queue and URLSession
     /// tasks, and lazy initialization is not thread-safe.
-    private let fileURL: URL?
+    /// Where the packet log is written, for the diagnostics pane's Reveal
+    /// button. Read-only: the path is decided once in `init` and nothing else
+    /// gets to move it.
+    private(set) var fileURL: URL?
 
     /// logQueue-owned. Seeded from the existing file so rotation also applies
     /// to a log inherited from previous runs.

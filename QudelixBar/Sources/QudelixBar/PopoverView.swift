@@ -1019,8 +1019,46 @@ struct FooterBar: View {
 
 struct DiagnosticsView: View {
     @ObservedObject var log = DebugLog.shared
+    @State private var copied = false
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // What a bug report actually needs. Selecting a few hundred
+            // monospaced lines out of a scroll view by dragging is a job
+            // nobody should be asked to do to report a fault.
+            HStack(spacing: 8) {
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(log.lines.joined(separator: "\n"),
+                                                   forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                }
+                .disabled(log.lines.isEmpty)
+                .help("Copy everything shown here to the clipboard")
+
+                if let url = log.fileURL {
+                    Button("Reveal log") {
+                        NSApp.activate(ignoringOtherApps: true)
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                    .help("Show the full log file in Finder. It records the names "
+                          + "of your audio devices — worth a glance before sending it.")
+                }
+                Spacer()
+                Text("\(log.lines.count) lines")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .font(.system(size: 10))
+
+            transcript
+        }
+    }
+
+    private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
