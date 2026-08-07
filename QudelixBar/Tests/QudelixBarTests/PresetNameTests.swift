@@ -47,6 +47,44 @@ final class PresetNameTests: XCTestCase {
         XCTAssertNotNil(QxPacket.presetNamePayload(group: .user, index: 19, name: "x"))
     }
 
+    // MARK: - Naming a slot when a curve is saved into it
+
+    /// Saving an imported correction into a slot should leave the slot called
+    /// what the correction is called — otherwise the library reads "Preset 7".
+    func testASourcedCurveNamesTheSlot() {
+        XCTAssertEqual(
+            QudelixController.nameOnSave(source: "Sennheiser HD 650 · Harman", existing: nil),
+            "Sennheiser HD 650 · Harman")
+        XCTAssertEqual(
+            QudelixController.nameOnSave(source: "HD 650", existing: "Preset 7"),
+            "HD 650")
+    }
+
+    /// A hand-shaped curve has no name to offer. Clearing whatever the user
+    /// typed there, in exchange for nothing, would be worse than leaving it.
+    func testAHandShapedCurveLeavesAnExistingNameAlone() {
+        XCTAssertNil(QudelixController.nameOnSave(source: nil, existing: "Night listening"))
+        XCTAssertNil(QudelixController.nameOnSave(source: nil, existing: nil))
+        XCTAssertNil(QudelixController.nameOnSave(source: "   ", existing: "Night listening"))
+    }
+
+    /// Re-saving a slot under the name it already carries is a pointless write
+    /// to a part that stores it in flash.
+    func testNoWriteWhenTheNameWouldNotChange() {
+        XCTAssertNil(QudelixController.nameOnSave(source: "HD 650", existing: "HD 650"))
+    }
+
+    /// Whatever comes back here still goes through the payload builder, so an
+    /// over-long source name is cut there rather than refused.
+    func testALongSourceNameStillProducesAValidPayload() {
+        let long = String(repeating: "Sennheiser HD 650 ", count: 5)
+        let name = QudelixController.nameOnSave(source: long, existing: nil)
+        let payload = QxPacket.presetNamePayload(group: .b20, index: 4,
+                                                 name: try! XCTUnwrap(name))
+        XCTAssertNotNil(payload)
+        XCTAssertLessThanOrEqual(payload!.count - 3, QxPacket.maxPresetNameBytes)
+    }
+
     // MARK: - Byte budget, not character budget
 
     func testLongAsciiNameIsCutToTheFieldWidth() {

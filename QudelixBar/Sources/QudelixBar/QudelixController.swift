@@ -1348,6 +1348,29 @@ final class QudelixController: ObservableObject {
     func savePreset(_ index: Int) {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
         transportSend(.saveEqPreset, [UInt8(index)])
+        // The slot now holds this correction, so give it the correction's
+        // name. Saving into slot 7 and reading back "Preset 7" is the gap
+        // naming was built to close.
+        if let name = Self.nameOnSave(source: eqSourceName,
+                                      existing: presetNames[index]) {
+            setPresetName(index, name)
+        }
+    }
+
+    /// The name a slot should take when the current curve is saved into it, or
+    /// nil to leave whatever is there alone.
+    ///
+    /// A curve with a source — an import, an AutoEq fit — names the slot after
+    /// it, because that is now what the slot contains. A hand-shaped curve has
+    /// no name to offer, and clearing the slot's existing one would destroy
+    /// something the user typed in exchange for nothing.
+    nonisolated static func nameOnSave(source: String?, existing: String?) -> String? {
+        guard let source = source?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !source.isEmpty else { return nil }
+        // Re-saving a slot under the name it already has is a wasted write to
+        // a device that stores it in flash.
+        guard source != existing else { return nil }
+        return source
     }
 
     /// Name a preset slot on the device.
