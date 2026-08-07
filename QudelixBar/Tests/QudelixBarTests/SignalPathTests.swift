@@ -113,6 +113,25 @@ final class SignalPathTests: XCTestCase {
         XCTAssertEqual(row.indicator, .unknown)
     }
 
+    /// Detection is on out of the box, so the engine's first start happens
+    /// before anyone has granted System Audio Recording. "engine off" alone
+    /// made that denial look like a switch nobody flipped.
+    func testAFailedStartIsNamedRatherThanReadingAsAnIdleEngine() {
+        let row = row("source", .init(detectQuality: true, engineRunning: false,
+                                      engineProblem: "creating the system audio tap failed"))
+        XCTAssertTrue(row.state.contains("creating the system audio tap failed"))
+        XCTAssertFalse(row.state.contains("nothing to measure"))
+        XCTAssertEqual(row.indicator, .unknown)
+    }
+
+    /// A reason arrives only when there is one; an idle engine keeps the
+    /// plain wording rather than inventing a fault.
+    func testNoProblemMeansNoReasonIsInvented() {
+        let row = row("source", .init(detectQuality: true, engineRunning: false,
+                                      engineProblem: nil))
+        XCTAssertEqual(row.state, "engine off — nothing to measure")
+    }
+
     func testTooQuietReadsAsNothingPlaying() {
         let row = row("source", .init(detectQuality: true, engineRunning: true,
                                       qualityVerdict: .tooQuiet))
@@ -130,6 +149,24 @@ final class SignalPathTests: XCTestCase {
         XCTAssertEqual(noDevice.indicator, .unknown)
     }
 
+    /// This row describes the Mac's default output — the same chain as the
+    /// rows above and below it. With the 5K attached but the Mac playing to
+    /// its speakers, an unattributed "48 kHz" here reads as a claim about the
+    /// 5K, whose real rate the Output row states separately.
+    func testMixerRowNamesTheDeviceWhoseRateItIsReporting() {
+        let row = row("mixer", .init(mixerRateHz: 48000,
+                                     mixerDeviceName: "MacBook Pro Speakers"))
+        XCTAssertTrue(row.state.hasPrefix("MacBook Pro Speakers"))
+        XCTAssertTrue(row.state.contains("48 kHz"))
+    }
+
+    func testMixerRowWithADeviceNameLongerThanTheCapIsTruncated() {
+        let row = row("mixer", .init(mixerRateHz: 48000,
+                                     mixerDeviceName: String(repeating: "x", count: 300)))
+        XCTAssertTrue(row.state.count < 200)
+        XCTAssertTrue(row.state.contains("…"))
+    }
+
     // MARK: - The honesty line, held across every combination
 
     /// No row string produced by any of these inputs may ever claim
@@ -144,47 +181,51 @@ final class SignalPathTests: XCTestCase {
         ]
         let modes: [StageEngine.Mode?] = [nil, .monitor, .insert]
         let links: [QudelixController.Link] = [.none, .usb, .bluetooth]
+        // Both fields carry text from outside this file — the engine's own
+        // failure summaries and a driver-supplied device name.
+        let problems: [String?] = [nil, "creating the system audio tap failed",
+                                   "needs macOS 14.2 or newer"]
+        let deviceNames: [String?] = [nil, "MacBook Pro Speakers",
+                                      String(repeating: "q", count: 300)]
 
         for verdict in verdicts {
-            for detectOn in [true, false] {
-                for engineRunning in [true, false] {
-                    for mode in modes {
-                        for eqOn in [true, false] {
-                            for connected in [true, false] {
-                                for link in links {
-                                    var stage = StageSettings.music
-                                    stage.enabled = mode == .insert
-                                    let inputs = SignalPath.Inputs(
-                                        deviceConnected: connected,
-                                        detectQuality: detectOn,
-                                        engineRunning: engineRunning,
-                                        qualityVerdict: verdict,
-                                        mixerRateHz: connected ? 96000 : nil,
-                                        engineMode: mode,
-                                        stage: stage,
-                                        eqEnabled: eqOn,
-                                        bandCount: 10,
-                                        activePresetName: "Harman",
-                                        preGain: -3,
-                                        link: link,
-                                        codecLabel: "LDAC",
-                                        outputRateLabel: "96 kHz",
-                                        outputHighGain: true,
-                                        currentLevelDb: -20)
-                                    for row in SignalPath.rows(inputs) {
-                                        let lower = row.state.lowercased()
-                                        XCTAssertFalse(lower.contains("bit-perfect"),
-                                                       "row \(row.id): \(row.state)")
-                                        XCTAssertFalse(lower.contains("bit perfect"),
-                                                       "row \(row.id): \(row.state)")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        for detectOn in [true, false] {
+        for engineRunning in [true, false] {
+        for mode in modes {
+        for eqOn in [true, false] {
+        for connected in [true, false] {
+        for link in links {
+        for problem in problems {
+        for deviceName in deviceNames {
+            var stage = StageSettings.music
+            stage.enabled = mode == .insert
+            let inputs = SignalPath.Inputs(
+                deviceConnected: connected,
+                detectQuality: detectOn,
+                engineRunning: engineRunning,
+                qualityVerdict: verdict,
+                engineProblem: problem,
+                mixerRateHz: connected ? 96000 : nil,
+                mixerDeviceName: deviceName,
+                engineMode: mode,
+                stage: stage,
+                eqEnabled: eqOn,
+                bandCount: 10,
+                activePresetName: "Harman",
+                preGain: -3,
+                link: link,
+                codecLabel: "LDAC",
+                outputRateLabel: "96 kHz",
+                outputHighGain: true,
+                currentLevelDb: -20)
+            for row in SignalPath.rows(inputs) {
+                let lower = row.state.lowercased()
+                XCTAssertFalse(lower.contains("bit-perfect"),
+                               "row \(row.id): \(row.state)")
+                XCTAssertFalse(lower.contains("bit perfect"),
+                               "row \(row.id): \(row.state)")
             }
-        }
+        }}}}}}}}}
     }
 
     // MARK: - Helpers

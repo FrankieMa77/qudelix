@@ -95,17 +95,30 @@ enum PreferenceScore {
     /// response for scoring has to ask its source for a fine enough one.
     static let maxInputSpacingOctaves = 1.0 / 6.0
 
+    /// Most samples an input curve may carry.
+    ///
+    /// Everything handed in is resampled onto the 93-point grid above, so a
+    /// denser input buys the score no accuracy at all — it only buys work, and
+    /// the work happens on the thread drawing the window. A 1/12-octave curve
+    /// across the audible range is about 120 samples and a 1/48-octave one
+    /// about 480, so this admits anything a source has a reason to send and
+    /// refuses the rest outright. Refusing costs a caller its score; reading a
+    /// response with a hundred thousand points in it would cost the user the
+    /// window.
+    static let maxInputPoints = 512
+
     // MARK: - Scoring
 
     /// The reading for an error curve — headphone minus target, in dB, at
     /// ascending frequencies.
     ///
     /// nil whenever the curve cannot honestly be scored: it does not reach
-    /// both ends of the band, its samples are too far apart, its frequencies
-    /// are out of order or non-positive, or any value is not a number. There
-    /// is no partial answer worth returning, because a score computed over
-    /// part of the band is not on the same scale as one computed over all of
-    /// it and would rank against it wrongly.
+    /// both ends of the band, its samples are too far apart or there are more
+    /// of them than `maxInputPoints`, its frequencies are out of order or
+    /// non-positive, or any value is not a number. There is no partial answer
+    /// worth returning, because a score computed over part of the band is not
+    /// on the same scale as one computed over all of it and would rank against
+    /// it wrongly.
     ///
     /// The result is invariant to a constant dB offset on the whole curve, by
     /// construction: a standard deviation ignores the mean and a regression
@@ -191,7 +204,8 @@ enum PreferenceScore {
     /// interpolation that adds the least shape of its own.
     private static func resampleOntoAnalysisGrid(frequencies: [Double],
                                                  values: [Double]) -> [Double]? {
-        guard frequencies.count == values.count, frequencies.count > 1 else { return nil }
+        guard frequencies.count == values.count, frequencies.count > 1,
+              frequencies.count <= maxInputPoints else { return nil }
         guard let first = frequencies.first, let last = frequencies.last,
               first > 0, first <= bandLow, last >= bandHigh else { return nil }
 

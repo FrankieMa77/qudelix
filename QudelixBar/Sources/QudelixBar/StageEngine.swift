@@ -32,7 +32,21 @@ final class StageEngine: ObservableObject {
 
     @Published private(set) var isRunning = false
     @Published private(set) var status = "Off."
+    /// Why the last start attempt failed, or nil if nothing is wrong. The
+    /// status line has always carried the same sentence, but it also carries
+    /// "Off." and "Metering → …", so a view cannot tell a refusal from a
+    /// quiet idle by reading it. This one is set only by a failed start and
+    /// cleared by the next stop or successful start, which is what lets a
+    /// surface show the reason without inventing a problem when there is none.
+    @Published private(set) var failure: Failure?
     private(set) var mode: Mode = .insert
+
+    struct Failure: Equatable {
+        /// The full sentence, including what the user can do about it.
+        let message: String
+        /// A few words for a row with no room for the sentence.
+        let summary: String
+    }
 
     let processor = StageProcessor()
 
@@ -46,6 +60,9 @@ final class StageEngine: ObservableObject {
 
     struct EngineError: LocalizedError {
         let message: String
+        /// The short form for surfaces that have room for a few words and
+        /// not a sentence; the long one stays the actionable text.
+        let summary: String
         var errorDescription: String? { message }
     }
 
@@ -56,12 +73,18 @@ final class StageEngine: ObservableObject {
             try bringUp(device, mode: mode)
             runningDeviceUID = device.uid
             isRunning = true
+            failure = nil
             status = String(format: "%@ → %@ @ %g kHz",
                             mode == .insert ? "Stage active" : "Metering",
                             device.name,
                             (runningSampleRate ?? device.sampleRate) / 1000)
         } catch {
+            // stop() first — it clears the failure as part of tearing down,
+            // so recording this one has to come after it.
             stop()
+            let engineError = error as? EngineError
+            failure = Failure(message: error.localizedDescription,
+                              summary: engineError?.summary ?? "the engine couldn't start")
             status = error.localizedDescription
             NSLog("stage engine start failed: %@", error.localizedDescription)
             DebugLog.shared.log("stage engine start failed: \(error.localizedDescription)")
@@ -70,9 +93,10 @@ final class StageEngine: ObservableObject {
 
     #if DEBUG
     /// Fake the running state for UI rendering. Touches no audio objects.
-    func previewSetRunning(_ running: Bool, status: String) {
+    func previewSetRunning(_ running: Bool, status: String, failure: Failure? = nil) {
         isRunning = running
         self.status = status
+        self.failure = failure
     }
     #endif
 
@@ -100,6 +124,11 @@ final class StageEngine: ObservableObject {
         processor.setMuted(false)
         runningDeviceUID = nil
         runningSampleRate = nil
+        // A deliberate stop settles whatever went wrong last time: the reason
+        // is about a start that was attempted, and once nothing is asking the
+        // engine to run there is nothing left to complain about. (The failure
+        // path re-records it immediately after calling through here.)
+        failure = nil
         if isRunning {
             isRunning = false
             status = "Off."
@@ -108,7 +137,8 @@ final class StageEngine: ObservableObject {
 
     private func bringUp(_ device: AudioOutput, mode: Mode) throws {
         guard #available(macOS 14.2, *) else {
-            throw EngineError(message: "This feature needs macOS 14.2 or newer.")
+            throw EngineError(message: "This feature needs macOS 14.2 or newer.",
+                              summary: "needs macOS 14.2 or newer")
         }
 
         // Excluding ourselves is what stops our own output from feeding back
@@ -118,7 +148,8 @@ final class StageEngine: ObservableObject {
         guard let own = AudioOutputs.processObject(for: getpid()) else {
             throw EngineError(message: "Couldn't identify this app to the audio "
                 + "system, so the engine won't start (it would hear itself). "
-                + "Try again, or relaunch the app.")
+                + "Try again, or relaunch the app.",
+                summary: "can't exclude this app from the tap")
         }
 
         let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [own])
@@ -200,7 +231,8 @@ final class StageEngine: ObservableObject {
         guard err != noErr else { return }
         throw EngineError(message: "\(what) failed (\(fourCC(err))). "
             + "If this is a permission problem, allow System Audio Recording for "
-            + "Qudelix in System Settings → Privacy & Security.")
+            + "Qudelix in System Settings → Privacy & Security.",
+            summary: "\(what.lowercased()) failed")
     }
 
     private func fourCC(_ err: OSStatus) -> String {

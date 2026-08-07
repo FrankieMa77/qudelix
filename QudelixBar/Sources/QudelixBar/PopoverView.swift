@@ -55,9 +55,36 @@ struct PopoverView: View {
                 .onAppear { if let p = controller.previewPane { pane = p } }
 
             if case .unsupported(let title, let detail) = controller.compatibility, connected {
-                UnsupportedDeviceView(title: title, detail: detail)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: Self.contentHeight)
+                // The notice explains what this app will not do with *this*
+                // device — but Stage and Level run on the Mac and have nothing
+                // to do with which model is attached, so they stay reachable
+                // for the same reason the disconnected branch below keeps them:
+                // an enabled Soundstage must never need a supported device
+                // present in order to be switched off.
+                VStack(spacing: 0) {
+                    UnsupportedDeviceView(title: title, detail: detail)
+                        .frame(maxWidth: .infinity)
+                    Divider()
+                    VStack(spacing: 14) {
+                        Picker("", selection: $pane) {
+                            ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
+                                Label(p.rawValue, systemImage: p.icon).tag(p)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        if pane == .level {
+                            ScrollView { LevelView() }
+                        } else {
+                            ScrollView { StageView() }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(14)
+                }
+                .frame(height: Self.contentHeight)
+                .onAppear { if pane.needsDevice { pane = .stage } }
             } else if connected {
                 // No outer ScrollView on purpose: the panes that can grow
                 // (presets, search results, diagnostics) scroll internally, so
@@ -490,6 +517,13 @@ struct UsbAudioRow: View {
     private func autoStatus(current: Double) -> String {
         if !stageState.detectQuality { return "off — the rate stays as you set it" }
         if !stageState.autoRate { return "detecting only — switching is off (Level pane)" }
+        // "Waiting for audio" was said for every reason the engine was not
+        // running, including the common one on a fresh install: the system
+        // audio permission has not been granted, so it never started and never
+        // will until it is. Naming the real reason is the whole point of the
+        // line — this is the popover's main surface, and the pane that carries
+        // the full explanation is two clicks away.
+        if let failure = stageState.engineFailure { return failure.summary }
         guard stageState.engine.isRunning else { return "waiting for audio" }
         switch stageState.qualityVerdict {
         case nil: return "listening to what's playing…"
@@ -576,7 +610,7 @@ struct EqEditorView: View {
                         .accessibilityLabel(controller.undoLabel.map { "Undo \($0)" } ?? "Undo")
                 }
                 .controlSize(.mini)
-                .disabled(!controller.canUndo || !controller.canWriteNow)
+                .disabled(!controller.canUndo || !controller.canEditEqNow)
                 .keyboardShortcut("z", modifiers: .command)
                 .help(controller.undoLabel.map { "Undo \($0)" } ?? "Nothing to undo")
 
@@ -587,7 +621,7 @@ struct EqEditorView: View {
                         .accessibilityLabel(controller.redoLabel.map { "Redo \($0)" } ?? "Redo")
                 }
                 .controlSize(.mini)
-                .disabled(!controller.canRedo || !controller.canWriteNow)
+                .disabled(!controller.canRedo || !controller.canEditEqNow)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .help(controller.redoLabel.map { "Redo \($0)" } ?? "Nothing to redo")
                 // Reflects the device's mode and asks it to switch; the
@@ -861,6 +895,7 @@ struct PresetsView: View {
                 .help("Rename this slot on the device. Clear the text to remove the name.")
                 Button("Load") { controller.loadPreset(i) }
                     .controlSize(.mini)
+                    .disabled(!controller.canEditEqNow)
                     .font(.system(size: 10))
                 Button {
                     controller.savePreset(i)

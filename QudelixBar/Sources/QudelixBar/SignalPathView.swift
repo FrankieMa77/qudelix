@@ -55,11 +55,23 @@ enum SignalPath {
         var detectQuality = true
         var engineRunning = false
         var qualityVerdict: QualityAnalyzer.Verdict?
+        /// Few-word reason the engine isn't running, when it was asked to and
+        /// couldn't. nil when nothing is wrong — an engine that is merely
+        /// idle has no reason to give.
+        var engineProblem: String?
 
         // Row 2: macOS mixer
-        /// The device's Core Audio nominal rate, read independently of
-        /// whether the stage engine is running.
+        /// The DEFAULT OUTPUT's Core Audio nominal rate, read independently
+        /// of whether the stage engine is running. It is the default output
+        /// deliberately: this row sits between Source and This app, both of
+        /// which describe that same chain. Handing it the 5K's rate while
+        /// the Mac plays to something else made the row contradict its
+        /// neighbours without changing a word of its text.
         var mixerRateHz: Double?
+        /// The default output's name, so the row can say whose rate it is
+        /// reporting — with the 5K attached but not selected, "48 kHz" alone
+        /// reads as a claim about the 5K.
+        var mixerDeviceName: String?
 
         // Row 3: This app (Soundstage)
         /// nil = the engine isn't running at all. Set only while running.
@@ -103,6 +115,13 @@ enum SignalPath {
                       indicator: .unknown)
         }
         guard i.engineRunning else {
+            // A stopped engine has two very different causes, and "engine
+            // off" alone left the commonest one — the recording permission
+            // never granted — looking like a setting nobody switched on.
+            if let problem = cap(i.engineProblem) {
+                return Row(id: "source", name: name,
+                          state: "can't measure — \(problem)", indicator: .unknown)
+            }
             return Row(id: "source", name: name, state: "engine off — nothing to measure",
                       indicator: .unknown)
         }
@@ -144,16 +163,19 @@ enum SignalPath {
         let name = "macOS mixer"
         guard let rate = i.mixerRateHz, rate.isFinite, rate > 0 else {
             return Row(id: "mixer", name: name,
-                      state: "not the current output device — can't read its rate",
+                      state: "no output device — can't read a rate",
                       indicator: .unknown)
         }
+        // Named where we can: this row describes the Mac's default output,
+        // which is often not the 5K the rows below it describe.
+        let whose = cap(i.mixerDeviceName).map { "\($0) — " } ?? ""
         // Deliberately always .unknown: whatever the device's rate is, this
         // is exactly the point where the honesty rule bites — the tap hands
         // us audio already at this rate, so whether the source matched it
         // (or macOS resampled) is not something this app can observe.
         return Row(id: "mixer", name: name,
-                  state: String(format: "running at %g kHz — whether the source matched "
-                                + "that rate isn't observable from here", rate / 1000),
+                  state: whose + String(format: "running at %g kHz — whether the source "
+                                + "matched that rate isn't observable from here", rate / 1000),
                   indicator: .unknown)
     }
 
@@ -236,7 +258,10 @@ enum SignalPath {
         if let rate = cap(i.outputRateLabel) { parts.append(rate) }
         if let gain = i.outputHighGain { parts.append(gain ? "high gain" : "normal gain") }
         if !i.engineRunning {
-            parts.append("level not measured (metering off)")
+            // "(metering off)" named a switch, which is wrong whenever the
+            // engine was asked to run and couldn't; the Source row above
+            // carries the reason.
+            parts.append("level not measured (engine off)")
         } else if let db = i.currentLevelDb {
             parts.append(String(format: "%.0f dBFS", db))
         } else {
@@ -298,7 +323,9 @@ struct SignalPathView: View {
             detectQuality: stageState.detectQuality,
             engineRunning: stageState.engine.isRunning,
             qualityVerdict: stageState.qualityVerdict,
-            mixerRateHz: stageState.qudelixOutput?.sampleRate,
+            engineProblem: stageState.engineFailure?.summary,
+            mixerRateHz: stageState.watcher.defaultOutput?.sampleRate,
+            mixerDeviceName: stageState.outputName,
             engineMode: stageState.engine.isRunning ? stageState.engine.mode : nil,
             stage: stageState.stage,
             eqEnabled: controller.eqEnabled,

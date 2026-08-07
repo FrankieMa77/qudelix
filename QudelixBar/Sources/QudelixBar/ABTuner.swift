@@ -22,8 +22,9 @@ import SwiftUI
 ///   the result is meaningless.
 /// - Which side carries the higher setting is randomised per trial, so the
 ///   listener cannot learn the pattern.
-/// - Some trials present the same curve twice. Preferences expressed on those
-///   measure noise, and the result says so rather than pretending otherwise.
+/// - One trial per round presents the same curve twice. Naming a winner there is
+///   a preference for nothing, and the result says so rather than pretending
+///   otherwise.
 ///
 /// The tilts are applied on top of whatever curve is already loaded, so this
 /// refines the user's own setup instead of replacing it. The original is restored
@@ -51,6 +52,8 @@ final class ABTuner: ObservableObject {
     static let rounds = 4
     /// Per-band ceiling for the tilt itself, on top of the existing curve.
     static let tiltCap = 6.0
+    /// Each round is the four macros plus one identical pair.
+    static var trialsPerRound: Int { macros.count + 1 }
 
     enum Phase: Equatable { case idle, running, finished }
 
@@ -64,8 +67,10 @@ final class ABTuner: ObservableObject {
     @Published private(set) var trialsTotal = 0
     @Published private(set) var values: [String: Double] = [:]
     @Published private(set) var resultBands: [QxEqBandValue] = []
+    /// Identical pairs presented, and how many of them the listener named a
+    /// winner on instead of answering "sound the same".
     @Published private(set) var sameTrials = 0
-    @Published private(set) var samePreferred = 0
+    @Published private(set) var sameGuesses = 0
     /// Macros the listener could not hear, zeroed rather than guessed at.
     @Published private(set) var inaudible: Set<String> = []
 
@@ -142,7 +147,7 @@ final class ABTuner: ObservableObject {
         baselinePreGain = c.preGain
         values = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, 0.0) })
         steps = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, $0.range) })
-        sameTrials = 0; samePreferred = 0; trialsDone = 0; round = 1
+        sameTrials = 0; sameGuesses = 0; trialsDone = 0; round = 1
         inaudible = []
         indifferent = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, 0) })
 
@@ -153,12 +158,18 @@ final class ABTuner: ObservableObject {
                                           notAbove: baselinePreGain,
                                           plusBoost: Self.tiltCap)
 
+        // Exactly one identical pair per round, dropped at an unpredictable
+        // position inside it. Sprinkling them at a fixed probability, as this
+        // used to, left the count to chance: nearly half of sessions drew fewer
+        // than the three the check needs to tell one impatient answer from a
+        // habit, and the occasional session drew a dozen for no extra insight.
+        // Fixing the count also makes the session exactly twenty trials, which
+        // is what the intro promises.
         queue = []
         for _ in 1...Self.rounds {
-            for m in Self.macros {
-                queue.append(m.name)
-                if Int.random(in: 0..<6) == 0 { queue.append(nil) }
-            }
+            var block: [String?] = Self.macros.map { $0.name }
+            block.insert(nil, at: Int.random(in: 0...block.count))
+            queue.append(contentsOf: block)
         }
         trialsTotal = queue.count
 
@@ -189,7 +200,9 @@ final class ABTuner: ObservableObject {
     func noDifference(_ c: QudelixController) {
         guard phase == .running else { return }
         if isConsistencyCheck {
-            sameTrials += 1                      // correct answer on an identical pair
+            // The right answer on an identical pair: counted, but not held
+            // against the listener.
+            sameTrials += 1
         } else if let name = currentMacroName,
                   let m = Self.macros.first(where: { $0.name == name }) {
             let step = steps[name] ?? m.range
@@ -209,8 +222,10 @@ final class ABTuner: ObservableObject {
         let preferredHigh = (preferA == highIsA)
 
         if isConsistencyCheck {
+            // Both curves are the same one, so which side was picked carries no
+            // information — that a side was picked at all is the whole finding.
             sameTrials += 1
-            if preferredHigh { samePreferred += 1 }
+            sameGuesses += 1
         } else if let name = currentMacroName, let m = Self.macros.first(where: { $0.name == name }) {
             let step = steps[name] ?? m.range
             let centre = values[name] ?? 0
@@ -229,7 +244,7 @@ final class ABTuner: ObservableObject {
     private func nextTrial(_ c: QudelixController) {
         guard !queue.isEmpty else { finish(c); return }
         let entry = queue.removeFirst()
-        round = min(Self.rounds, trialsDone / max(1, Self.macros.count) + 1)
+        round = min(Self.rounds, trialsDone / max(1, Self.trialsPerRound) + 1)
 
         if let name = entry, let m = Self.macros.first(where: { $0.name == name }) {
             isConsistencyCheck = false
@@ -292,15 +307,52 @@ final class ABTuner: ObservableObject {
         })
     }
 
-    var maxTilt: Double {
-        // Judged on the curve actually applied, not on the degenerate parameters.
-        resultBands.isEmpty ? 0 : (resultBands.map { abs($0.gain) }.max() ?? 0)
+    /// How far the session moved the curve, in dB.
+    ///
+    /// The distance between the finished curve and the baseline, not the height
+    /// of the finished curve. Tilts are applied on top of whatever was already
+    /// loaded, so a session run over an imported correction — the normal case —
+    /// inherits several decibels that it did not put there. Reading those meant
+    /// "this session found nothing" could never be said out loud, which is
+    /// exactly the case where the listener most needs to hear it.
+    ///
+    /// Judged on the applied curve rather than the four parameters, because the
+    /// parameters are not uniquely determined and the clamps in `curve` can
+    /// swallow part of a tilt that had nowhere left to go.
+    var maxMovement: Double { Self.movement(from: baseline, to: resultBands) }
+
+    nonisolated static func movement(from baseline: [QxEqBandValue],
+                                     to result: [QxEqBandValue]) -> Double {
+        zip(baseline, result).map { abs($1.gain - $0.gain) }.max() ?? 0
     }
 
-    /// True when the listener answered identical pairs as if they differed, which
-    /// means the differences were below what they could hear.
+    /// Fewest identical pairs that can support a judgement.
+    ///
+    /// Naming a winner on an identical pair is a direct observation, not a coin
+    /// flip, so it does not need many samples to mean something — but anyone can
+    /// press the wrong button once in twenty trials, and one observation cannot
+    /// separate that slip from a habit. Three can. The session schedules four.
+    static let minChecksToJudge = 3
+
+    /// True when the listener repeatedly named a winner between two identical
+    /// curves.
+    ///
+    /// What the check is for is over-claiming: the pairs are the same curve
+    /// twice, so a preference expressed on one is a preference for nothing, and
+    /// the same readiness to answer will have shaped the real trials. "Sound the
+    /// same" is the correct answer, and a listener who gives it every time
+    /// scores zero here — this once read the count the other way round and told
+    /// precisely those listeners that their session was unreliable.
+    ///
+    /// A majority rather than a single instance, for the reason above; and
+    /// silence rather than a verdict when there are too few pairs to tell the
+    /// difference.
     var consistencyPoor: Bool {
-        sameTrials >= 2 && (samePreferred == sameTrials || samePreferred == 0)
+        Self.consistencyPoor(guesses: sameGuesses, of: sameTrials)
+    }
+
+    static func consistencyPoor(guesses: Int, of trials: Int) -> Bool {
+        trials >= minChecksToJudge && guesses * 2 > trials
     }
 
     func keepResult(_ c: QudelixController) {

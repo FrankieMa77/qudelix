@@ -212,6 +212,23 @@ final class PreferenceScoreTests: XCTestCase {
 
     /// The grid is the one part of the calculation the paper leaves open, so
     /// it is pinned here: 93 points, ascending, spanning exactly the band.
+    /// Everything is resampled onto 93 points, so a denser input buys the
+    /// score nothing and costs the caller a pass over every sample. Past the
+    /// bound it is refused rather than worked through.
+    func testAnInputDenserThanTheModelReadsIsRefused() {
+        // 20 Hz to 20 kHz either way, so spacing cannot be what refuses it.
+        func grid(_ n: Int) -> [Double] {
+            (0..<n).map { 20 * pow(1000, Double($0) / Double(n - 1)) }
+        }
+        let over = grid(PreferenceScore.maxInputPoints + 1)
+        XCTAssertNil(PreferenceScore.reading(frequencies: over, errorDb: over.map { _ in 0 }))
+
+        let atTheBound = grid(PreferenceScore.maxInputPoints)
+        XCTAssertNotNil(PreferenceScore.reading(frequencies: atTheBound,
+                                                errorDb: atTheBound.map { _ in 0 }),
+                        "the bound itself is still readable")
+    }
+
     func testAnalysisGridSpansTheBandAtTwelfthOctave() {
         let g = PreferenceScore.analysisFrequencies
         XCTAssertEqual(g.count, 93)
@@ -290,6 +307,22 @@ final class ResidualScoreTests: XCTestCase {
             parametricEq: PEQResult(fs: 48000, filters: [], preamp: 0),
             fr: FrequencyResponse(frequency: freqs, error: [0, 0]))
         XCTAssertNil(AutoEqService.residualScore(mismatched, file: ParametricEQFile(),
+                                                 limits: .qudelix(bandCount: 10)))
+    }
+
+    /// The scoring work is bounded by the analysis grid, not by whatever the
+    /// server decided to send: an over-dense response is turned away before a
+    /// single biquad is evaluated, because this all happens on the thread
+    /// drawing the window.
+    func testAnOverDenseResponseScoresNothing() {
+        let n = PreferenceScore.maxInputPoints + 1
+        let dense = (0..<n).map { 20 * pow(1000, Double($0) / Double(n - 1)) }
+        var file = ParametricEQFile()
+        file.bands = [QxEqBandValue(filter: .peak, freq: 3000, gain: -6, q: 4)]
+        let response = EqualizeResponse(
+            parametricEq: PEQResult(fs: 48000, filters: [], preamp: 0),
+            fr: FrequencyResponse(frequency: dense, error: dense.map { _ in 0 }))
+        XCTAssertNil(AutoEqService.residualScore(response, file: file,
                                                  limits: .qudelix(bandCount: 10)))
     }
 

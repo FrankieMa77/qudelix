@@ -127,12 +127,23 @@ struct PersistedStageState: Codable {
 /// O_NOFOLLOW posture the log files have had all along.
 enum SafeFile {
     static func read(_ url: URL, cap: Int) -> Data? {
+        // O_NOFOLLOW turns away a symlink, but a symlink is not the only thing
+        // that can be sitting at one of these paths. A FIFO is not a link and
+        // passes that check, and opening one blocks until somebody opens the
+        // other end — which never happens. These files are read from
+        // `StageState.init()`, on the main actor, during launch: the app would
+        // simply hang with no window and no message. O_NONBLOCK makes the open
+        // return whatever is there, and fstat then insists it is the one kind
+        // of file this could legitimately be. Regular-file reads are unaffected
+        // by the flag, so nothing else changes.
         let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return -1 }
-            return open(path, O_RDONLY | O_NOFOLLOW)
+            return open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         }
         guard fd >= 0 else { return nil }
         defer { close(fd) }
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
         var data = Data(count: cap + 1)
         let n = data.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
         guard n > 0, n <= cap else { return nil }   // oversized = not ours
@@ -141,12 +152,56 @@ enum SafeFile {
 }
 
 enum StageStateFile {
+    /// `~/Library/Application Support/QudelixBar`, which everything this app
+    /// persists lives in — and which it therefore has to be sure is really a
+    /// directory it created, at a mode matching the 0600 files inside it.
     static var directory: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask)[0]
-            .appendingPathComponent("QudelixBar", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let parent = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = parent.appendingPathComponent("QudelixBar", isDirectory: true)
+        switch lstatMode(dir) {
+        case let mode? where mode & S_IFMT == S_IFDIR:
+            // Created without a mode until now, so it came out 0755 under the
+            // umask: a world-readable wrapper around files deliberately kept
+            // 0600. Bring an inherited one in line, and only then — chmod on
+            // every save would be a syscall spent saying nothing.
+            if mode & 0o777 != 0o700 {
+                try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            }
+        case .some:
+            // The name is taken by something that is not a directory. A symlink
+            // is the case that matters: `withIntermediateDirectories: true`
+            // follows one without a word, and every state file would then be
+            // written — atomically, over whatever is there — wherever it
+            // points. Move it aside rather than delete it: its target is not
+            // ours to touch, and a link here is more likely to be an
+            // arrangement somebody made than an attack.
+            let aside = parent.appendingPathComponent(
+                "QudelixBar.displaced-\(Int(Date().timeIntervalSince1970))")
+            try? fm.moveItem(at: dir, to: aside)
+            DebugLog.shared.log("state directory path was not a directory — "
+                + "moved aside as \(aside.lastPathComponent)")
+            fallthrough
+        case nil:
+            try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            // One level only, so the leaf cannot be created *through* a link
+            // that reappeared between the check above and here — mkdir never
+            // follows its final component — and with the mode spelled out
+            // instead of left to the umask.
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+        }
         return dir
+    }
+
+    /// The file mode of the path itself, following nothing. nil when there is
+    /// nothing there.
+    private static func lstatMode(_ url: URL) -> mode_t? {
+        var st = stat()
+        return url.withUnsafeFileSystemRepresentation { path -> mode_t? in
+            guard let path, lstat(path, &st) == 0 else { return nil }
+            return st.st_mode
+        }
     }
 
     static var url: URL { directory.appendingPathComponent("stage.json") }

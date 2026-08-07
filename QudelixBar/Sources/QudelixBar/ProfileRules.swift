@@ -29,6 +29,16 @@ struct ProfileRule: Codable, Equatable, Identifiable {
     /// peripheral changed its advertised name) without breaking the rule.
     var outputName: String
     var presetIndex: Int
+    /// The EQ group this pairing was made in, as `QxEqGroup.rawValue`; nil in
+    /// a rule written before the app recorded it.
+    ///
+    /// The device keeps a separate bank of twenty presets per group, and
+    /// `LoadEqPreset` addresses whichever group is live. Slot 4 of the 10-band
+    /// user group and slot 4 of the 20-band b20 group are unrelated curves
+    /// under one number, so an index alone does not name a preset — this pair
+    /// does. Without it a rule bound in 10-band mode reached for the 20-band
+    /// slot of the same number and loaded something the user had never chosen.
+    var eqGroupRaw: UInt8?
     /// Set once the user has acted on this rule while present — either by
     /// confirming a suggested switch, or by using "bind current output",
     /// which is itself a deliberate action taken in front of the app.
@@ -40,16 +50,17 @@ struct ProfileRule: Codable, Equatable, Identifiable {
     var automatic: Bool = false
 
     init(outputUID: String, outputName: String, presetIndex: Int,
-         confirmed: Bool = false, automatic: Bool = false) {
+         eqGroupRaw: UInt8? = nil, confirmed: Bool = false, automatic: Bool = false) {
         self.outputUID = outputUID
         self.outputName = outputName
         self.presetIndex = presetIndex
+        self.eqGroupRaw = eqGroupRaw
         self.confirmed = confirmed
         self.automatic = automatic
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputUID, outputName, presetIndex, confirmed, automatic
+        case outputUID, outputName, presetIndex, eqGroupRaw, confirmed, automatic
     }
 
     /// A hand-edited file might drop a field, or get its type wrong. Only
@@ -57,14 +68,55 @@ struct ProfileRule: Codable, Equatable, Identifiable {
     /// record over — no UID means nothing to match, no index means nothing
     /// to switch to. Everything else falls back to a safe default instead of
     /// failing the whole array's decode over a missing display name.
+    ///
+    /// `eqGroupRaw` is absent from every file written before it existed, and
+    /// those files must keep loading — which is what this initializer is here
+    /// for. See `standing(inGroup:)` for what its absence is taken to mean.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         outputUID = try c.decode(String.self, forKey: .outputUID)
         presetIndex = try c.decode(Int.self, forKey: .presetIndex)
         outputName = (try? c.decode(String.self, forKey: .outputName)) ?? ""
+        eqGroupRaw = try? c.decode(UInt8.self, forKey: .eqGroupRaw)
         confirmed = (try? c.decode(Bool.self, forKey: .confirmed)) ?? false
         automatic = (try? c.decode(Bool.self, forKey: .automatic)) ?? false
     }
+
+    /// Where a rule stands against the EQ group the device is in right now.
+    enum GroupStanding {
+        /// The rule names this group — its preset index means what it says.
+        case matches
+        /// Recorded before the app kept the group, so the index could belong
+        /// to either bank and nothing on disk says which.
+        case unmarked
+        /// Recorded in a different group. The index names a slot in a bank the
+        /// device is not addressing; loading it would fetch an unrelated curve.
+        case wrongGroup
+    }
+
+    /// `group` is `QxEqGroup.rawValue`, or nil while the device's group is
+    /// unknown — in which case there is nothing to contradict the rule and it
+    /// is taken at face value, exactly as it was before this field existed.
+    ///
+    /// An unmarked rule is treated as "might be either", never as "the 10-band
+    /// group". Assuming the default would be right for most people and wrong
+    /// for precisely those who use 20-band mode — the ones this field exists
+    /// to protect — and it would be wrong silently. Unmarked is a weaker
+    /// position than matching but not a broken one: the rule is still offered,
+    /// it just isn't allowed to switch unannounced, and confirming it once
+    /// records the group and settles the question for good.
+    func standing(inGroup group: UInt8?) -> GroupStanding {
+        guard let group else { return .matches }
+        guard let eqGroupRaw else { return .unmarked }
+        return eqGroupRaw == group ? .matches : .wrongGroup
+    }
+}
+
+/// How a group id reads in a log line: what the user calls the mode, not the
+/// wire value.
+private func groupLabel(_ raw: UInt8?) -> String {
+    guard let raw, let group = QxEqGroup(rawValue: raw) else { return "unknown" }
+    return "\(group.bandCount)-band"
 }
 
 /// Loads and saves the rule list. Same defensive posture as `EqSnapshot`'s
@@ -115,6 +167,12 @@ enum ProfileRulesFile {
             // about which preset it means.
             guard seenUIDs.insert(rule.outputUID).inserted else { continue }
             rule.outputName = QudelixController.displayName(rule.outputName)
+            // A group id the device has no such group for names nothing;
+            // drop back to unmarked rather than carrying a number that can
+            // only ever fail to match.
+            if let raw = rule.eqGroupRaw, QxEqGroup(rawValue: raw) == nil {
+                rule.eqGroupRaw = nil
+            }
             // A crafted document could set automatic without confirmed —
             // the whole point of the flag is that nothing goes silent
             // unseen, so that combination is not one this file reproduces.
@@ -176,6 +234,13 @@ final class ProfileRules: ObservableObject {
     /// so it's surfaced here as one bit for `canApplyNow` to read. See the
     /// integration note in `ProfilesView.swift` for where this gets set.
     @Published var editingNow = false
+    /// The EQ group the device is in right now, as `QxEqGroup.rawValue`, or
+    /// nil while nothing is known — which is also what an app that never sets
+    /// it gets, and there the behaviour is the same as before groups were
+    /// recorded at all. Pushed in from outside for the same reason
+    /// `editingNow` is: this file deliberately has no route to the controller,
+    /// so it cannot reach past `onApplyPreset` to the device.
+    @Published var currentEqGroupRaw: UInt8?
 
     struct Suggestion: Equatable {
         var outputUID: String
@@ -251,10 +316,28 @@ final class ProfileRules: ObservableObject {
             suggestion = nil
             return
         }
+        let standing = rule.standing(inGroup: currentEqGroupRaw)
+        guard standing != .wrongGroup else {
+            // Neither switch nor offer to. The slot number belongs to the
+            // bank the device is not addressing, so loading it would pull in
+            // an unrelated curve, and a banner naming it would be reading the
+            // wrong name table to do so. The rule is not wrong — the device is
+            // simply in the other mode — so it stays as it is, and the reason
+            // goes somewhere the user can find it.
+            suggestion = nil
+            DebugLog.shared.log(
+                "profile for \(DebugLog.sanitized(rule.outputName)) was set in "
+                + "\(groupLabel(rule.eqGroupRaw)) mode; the device is in "
+                + "\(groupLabel(currentEqGroupRaw)) mode — leaving the EQ alone")
+            return
+        }
         // An automatic switch that the write path refuses falls back to
         // asking, rather than leaving the previous headphone's preset running
-        // and saying nothing.
-        if rule.automatic, rule.confirmed, canApplyNow?() == true,
+        // and saying nothing. An unmarked rule falls back the same way: its
+        // index may belong to either bank, and that is not something to
+        // resolve behind the user's back.
+        if rule.automatic, rule.confirmed, standing == .matches,
+           canApplyNow?() == true,
            onApplyPreset?(rule.presetIndex) == true {
             suggestion = nil
         } else {
@@ -292,10 +375,15 @@ final class ProfileRules: ObservableObject {
         if let idx = rules.firstIndex(where: { $0.outputUID == outputUID }) {
             rules[idx].outputName = name
             rules[idx].presetIndex = presetIndex
+            // A rebind is a fresh pairing, so the group goes with the index it
+            // was chosen alongside — including back to unmarked when the group
+            // isn't known, which is the truthful record of what happened.
+            rules[idx].eqGroupRaw = currentEqGroupRaw
             rules[idx].confirmed = true
         } else {
             rules.append(ProfileRule(outputUID: outputUID, outputName: name,
-                                     presetIndex: presetIndex, confirmed: true))
+                                     presetIndex: presetIndex,
+                                     eqGroupRaw: currentEqGroupRaw, confirmed: true))
             if rules.count > ProfileRulesFile.maxRules {
                 rules.removeFirst(rules.count - ProfileRulesFile.maxRules)
             }
@@ -332,6 +420,11 @@ final class ProfileRules: ObservableObject {
         guard onApplyPreset?(s.presetIndex) == true else { return }
         if let idx = rules.firstIndex(where: { $0.outputUID == s.outputUID }) {
             rules[idx].confirmed = true
+            // The switch just happened in this group, with the user watching,
+            // so the bank the index meant is no longer in doubt. A rule
+            // carried over from a file written before groups were recorded
+            // stops being unmarked the first time it is used.
+            if let group = currentEqGroupRaw { rules[idx].eqGroupRaw = group }
         }
         suggestion = nil
         persist()

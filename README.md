@@ -247,11 +247,13 @@ and **Theater**, plus geometry controls — Distance, Span, Center, Size — and
 
 Unlike everything else in this app, the Stage runs on the Mac, not on the 5K:
 it processes what the Mac plays on its way to the output device, using a
-system audio tap (macOS asks once for the System Audio Recording permission;
-macOS 14.2+). The 5K keeps doing its own EQ on-device, so nothing is applied
-twice. Settings are kept per output device, and the whole pipeline exists only
-while the Stage is switched on — off means off, with the app back to being a
-pure remote control.
+system audio tap (macOS 14.2 or later, and the System Audio Recording
+permission). The 5K keeps doing its own EQ on-device, so nothing is applied
+twice. Settings are kept per output device.
+
+Switching the Stage off takes the processing back out of the audio path
+immediately. It does not necessarily close the tap, because two other features
+share it — see [The audio tap](#the-audio-tap).
 
 Honesty notes, because this feature category is full of overpromising: it
 works on the stereo mix — it widens and rooms what is already there. Surround

@@ -32,6 +32,10 @@ final class StageState: ObservableObject {
     private let analyzer = QualityAnalyzer()
     private var rawVerdict: QualityAnalyzer.Verdict?
     private var rawVerdictStreak = 0
+    /// Which device the published verdict was measured on. A verdict is only
+    /// ever evidence about the stream the engine was listening to, and the
+    /// engine listens to the default output — which need not be the 5K.
+    private var verdictDeviceUID: String?
     /// When the current lossless-class vote became stable, for the
     /// switch-after-10s rule.
     private var verdictStableSince: Date?
@@ -171,6 +175,7 @@ final class StageState: ObservableObject {
         detectQuality = on
         if !on {
             qualityVerdict = nil
+            verdictDeviceUID = nil
             rawVerdict = nil
             rawVerdictStreak = 0
             verdictStableSince = nil
@@ -206,6 +211,20 @@ final class StageState: ObservableObject {
         if stage.enabled { return .insert }
         if levelTracking || detectQuality { return .monitor }
         return nil
+    }
+
+    /// Why the engine isn't running, when something asked it to run and it
+    /// couldn't — nil whenever there is nothing to report, so a surface can
+    /// render it unconditionally and stay quiet while all is well.
+    ///
+    /// The failure that matters most is the one nobody asked for: quality
+    /// detection is on out of the box, so the very first launch starts the
+    /// engine before System Audio Recording has been granted. That refusal
+    /// belongs on screen even though the Stage and Level switches are both
+    /// off — gating it on either of them is how it stayed invisible.
+    var engineFailure: StageEngine.Failure? {
+        guard !engine.isRunning, desiredMode != nil else { return nil }
+        return engine.failure
     }
 
     /// The one place that decides whether the engine should run, and on what.
@@ -388,25 +407,10 @@ final class StageState: ObservableObject {
         let db = power > 0 ? 10 * log10(power) : -120
         currentLevelDb = max(db, -80)
 
-        // Silence isn't listening; don't count it.
-        guard db > Self.silenceFloorDb else { return }
-        let key = Self.dayKey()
-        // Find, don't assume last: a timezone hop or clock rollback can make
-        // "today" a key that already exists earlier in the array, and a
-        // duplicate would split the day and break ForEach identity.
-        var idx = exposureDays.firstIndex { $0.day == key }
-        if idx == nil {
-            exposureDays.append(DayExposure(day: key, audibleSeconds: 0,
-                                            loudSeconds: 0, energySum: 0))
-            if exposureDays.count > 14 {
-                exposureDays.removeFirst(exposureDays.count - 14)
-            }
-            idx = exposureDays.count - 1
-        }
-        guard let i = idx else { return }
-        exposureDays[i].audibleSeconds += 1
-        exposureDays[i].energySum += power
-        if db > Self.loudThresholdDb { exposureDays[i].loudSeconds += 1 }
+        let updated = Self.exposureAfterTick(exposureDays, db: db, power: power,
+                                             tracking: levelTracking, today: Self.dayKey())
+        guard updated != exposureDays else { return }
+        exposureDays = updated
 
         // Once a second is too often for disk; every 30 audible seconds is
         // plenty, and the regular edit/quit paths save the rest.
@@ -415,6 +419,57 @@ final class StageState: ObservableObject {
             meterTicksSinceSave = 0
             scheduleSave()
         }
+    }
+
+    /// The pure half of one metering second: the history that should exist
+    /// after hearing `db` (linear `power`), given the history so far. Returns
+    /// the input untouched when the second doesn't count.
+    ///
+    /// The tracking switch is checked HERE and nowhere else, because the
+    /// engine's own state cannot stand in for it: quality detection runs the
+    /// same tap in monitor mode, so "the engine is up" says nothing about
+    /// whether the user asked for a record of their listening. Reading the
+    /// engine instead is what let the Level pane show a day's totals directly
+    /// under a switch that was off and a line promising nothing was recorded.
+    static func exposureAfterTick(_ days: [DayExposure], db: Double, power: Double,
+                                  tracking: Bool, today key: String) -> [DayExposure] {
+        // Silence isn't listening; don't count it.
+        guard tracking, db > silenceFloorDb else { return days }
+        var days = days
+        // Find, don't assume last: a timezone hop or clock rollback can make
+        // "today" a key that already exists earlier in the array, and a
+        // duplicate would split the day and break ForEach identity.
+        var idx = days.firstIndex { $0.day == key }
+        if idx == nil {
+            days.append(DayExposure(day: key, audibleSeconds: 0,
+                                    loudSeconds: 0, energySum: 0))
+            if days.count > 14 {
+                days.removeFirst(days.count - 14)
+            }
+            idx = days.count - 1
+        }
+        guard let i = idx else { return days }
+        days[i].audibleSeconds += 1
+        days[i].energySum += power
+        if db > loudThresholdDb { days[i].loudSeconds += 1 }
+        return days
+    }
+
+    /// Throw the recorded history away, now rather than on the save timer.
+    ///
+    /// Its own control rather than a side effect of switching tracking off:
+    /// pausing and deleting are different intentions, and history recorded
+    /// while the switch was on is the user's to keep. That cuts both ways for
+    /// anything an earlier build recorded while the switch was off — it is
+    /// still their data, and quietly deleting it on launch would be its own
+    /// kind of surprise, so the pane says plainly that nothing new is being
+    /// added and puts the delete one click away.
+    func clearExposureHistory() {
+        guard !exposureDays.isEmpty else { return }
+        exposureDays = []
+        meterTicksSinceSave = 0
+        saveWork?.cancel()
+        saveNow()
     }
 
     private static let diagQueue = DispatchQueue(label: "stage.diag", qos: .utility)
@@ -443,6 +498,7 @@ final class StageState: ObservableObject {
     /// track transitions and quiet passages flicker, listeners don't.
     private var qualityWindowsFed = 0
     private var qualityRate: Double?
+    private var qualityDeviceUID: String?
 
     private func qualityTick() {
         guard detectQuality else { return }
@@ -452,6 +508,23 @@ final class StageState: ObservableObject {
             qualityRate = engine.runningSampleRate
             analyzer.reset()
             qualityWindowsFed = 0
+        }
+        // The engine moved to another device, which is a different kind of
+        // break: the standing verdict describes a stream we have stopped
+        // listening to. A rate change leaves the verdict alone on purpose
+        // (our own switches cause most of them, and blanking it would flicker
+        // the pane), but a device change has to retire it — otherwise the
+        // speakers' verdict is still on screen, and still voting, after the
+        // Mac switches its output to the 5K.
+        if engine.runningDeviceUID != qualityDeviceUID {
+            qualityDeviceUID = engine.runningDeviceUID
+            analyzer.reset()
+            qualityWindowsFed = 0
+            qualityVerdict = nil
+            verdictDeviceUID = nil
+            rawVerdict = nil
+            rawVerdictStreak = 0
+            verdictStableSince = nil
         }
         let samples = engine.processor.drainSpectrumSamples(QualityAnalyzer.fftSize)
         guard samples.count >= QualityAnalyzer.fftSize else { return }
@@ -489,39 +562,31 @@ final class StageState: ObservableObject {
         }
         let previousClass = qualityVerdict?.isLosslessClass
         qualityVerdict = effective
+        verdictDeviceUID = engine.runningDeviceUID
         if effective.isLosslessClass != previousClass {
             verdictStableSince = effective.isLosslessClass != nil ? Date() : nil
         }
         autoSwitchIfDue()
     }
 
-    /// The lossy↔lossless rate automation. Deliberately conservative: the
-    /// verdict must have held for 10 s, switches are at least 45 s apart,
-    /// and nothing moves while the Stage is inserted (it resamples anyway,
-    /// so a switch would only add an audio blip).
+    /// The lossy↔lossless rate automation: decide, then act.
     private func autoSwitchIfDue() {
-        guard autoRate, !stage.enabled,
-              let device = qudelixOutput,
-              let verdict = qualityVerdict,
-              let lossless = verdict.isLosslessClass,
-              let stableSince = verdictStableSince,
-              Date().timeIntervalSince(stableSince) >= 10,
-              Date().timeIntervalSince(lastAutoSwitch) >= 45
-        else { return }
+        // The cheap refusals before the rate query, which is a round trip
+        // into coreaudiod; the decision below re-checks them anyway.
+        guard autoRate, !stage.enabled, let device = qudelixOutput else { return }
 
-        let available = AudioOutputs.availableNominalRates(device.id)
-        let target: Double
-        if case .hiRes = verdict, available.contains(96000) {
-            // Content proves it extends past the 44.1 family: worth 96.
-            target = 96000
-        } else if lossless {
-            // The bit-perfect path for the dominant lossless case (44.1).
-            target = 44100
-        } else {
-            // Lossy: back to whatever the user chose by hand.
-            target = manualRateHz ?? device.sampleRate
-        }
-        guard available.contains(target), device.sampleRate != target else { return }
+        let now = Date()
+        guard let target = Self.autoRateTarget(
+            verdict: qualityVerdict,
+            measuredOn: verdictDeviceUID,
+            device: device,
+            availableRates: AudioOutputs.availableNominalRates(device.id),
+            manualRateHz: manualRateHz,
+            autoRate: autoRate,
+            stageEnabled: stage.enabled,
+            secondsStable: verdictStableSince.map { now.timeIntervalSince($0) },
+            secondsSinceLastSwitch: now.timeIntervalSince(lastAutoSwitch))
+        else { return }
 
         // First automatic act with no manual baseline yet: the rate we're
         // ABOUT to leave becomes the baseline, or lossy content could never
@@ -531,12 +596,58 @@ final class StageState: ObservableObject {
             scheduleSave()
         }
 
-        lastAutoSwitch = Date()
+        lastAutoSwitch = now
         autoSetRate = target
         DebugLog.shared.log(String(format:
             "stream quality %@ — switching USB rate to %g kHz",
-            lossless ? "lossless-class" : "lossy", target / 1000))
+            qualityVerdict?.isLosslessClass == true ? "lossless-class" : "lossy",
+            target / 1000))
         setNominalRate(target, for: device)
+    }
+
+    /// The rate the 5K should be moved to, or nil for "leave it alone" — the
+    /// whole of the automation's judgement, with no clock and no CoreAudio in
+    /// it so every refusal can be tested.
+    ///
+    /// Deliberately conservative: the verdict must have held for 10 s,
+    /// switches are at least 45 s apart, and nothing moves while the Stage is
+    /// inserted (it resamples anyway, so a switch would only add an audio
+    /// blip). The strictest condition is `measuredOn`: a verdict is evidence
+    /// about the device the engine listened to, which is the Mac's default
+    /// output. Plug the 5K in while the Mac still plays to its speakers and
+    /// the audio that produced the verdict never went near the 5K — acting on
+    /// it would renegotiate one device's rate from another device's sound.
+    static func autoRateTarget(verdict: QualityAnalyzer.Verdict?,
+                               measuredOn verdictDeviceUID: String?,
+                               device: AudioOutput?,
+                               availableRates: [Double],
+                               manualRateHz: Double?,
+                               autoRate: Bool,
+                               stageEnabled: Bool,
+                               secondsStable: Double?,
+                               secondsSinceLastSwitch: Double) -> Double? {
+        guard autoRate, !stageEnabled,
+              let device,
+              let verdictDeviceUID, device.uid == verdictDeviceUID,
+              let verdict,
+              let lossless = verdict.isLosslessClass,
+              let stable = secondsStable, stable >= 10,
+              secondsSinceLastSwitch >= 45
+        else { return nil }
+
+        let target: Double
+        if case .hiRes = verdict, availableRates.contains(96000) {
+            // Content proves it extends past the 44.1 family: worth 96.
+            target = 96000
+        } else if lossless {
+            // The bit-perfect path for the dominant lossless case (44.1).
+            target = 44100
+        } else {
+            // Lossy: back to whatever the user chose by hand.
+            target = manualRateHz ?? device.sampleRate
+        }
+        guard availableRates.contains(target), device.sampleRate != target else { return nil }
+        return target
     }
 
     private static let dayFormatter: DateFormatter = {

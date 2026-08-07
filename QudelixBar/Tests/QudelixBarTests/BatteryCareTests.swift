@@ -2,8 +2,9 @@ import XCTest
 @testable import QudelixBar
 
 /// The power/charging fields: the bitfields the status parser used to step
-/// over, the two charge settings in the sys config block, and the fact that
-/// neither setting is ever written.
+/// over, the two charge settings in the sys config block, the fact that
+/// neither setting is ever written, and what the app does with the readings
+/// once it has them.
 ///
 /// The byte patterns below are the shapes this device actually puts on the
 /// wire. They are pinned here rather than described, because the whole risk
@@ -239,5 +240,124 @@ final class BatteryCareTests: XCTestCase {
         XCTAssertEqual(c.batteryCare, false)
         XCTAssertEqual(c.chargerEnabled, false)
         XCTAssertFalse(c.canWriteNow)
+    }
+
+    // MARK: - Alerts
+
+    /// `BatteryAlerts.step` is the whole decision — thresholds, latches and
+    /// the rate limit — with delivery left to the caller, so all of it can be
+    /// driven here without a notification centre (which needs a real app
+    /// bundle) and without waiting out five minutes of real time.
+    private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+
+    @MainActor
+    func testAGenuineChargeEventIsAnnouncedExactlyOnce() {
+        let alerts = BatteryAlerts()
+        XCTAssertNil(alerts.step(batteryPercent: 55, charging: false, now: t0))
+        XCTAssertEqual(alerts.step(batteryPercent: 55, charging: true, now: t0 + 1),
+                       .charging(percent: 55))
+        // Still charging, minutes later: the edge already happened.
+        XCTAssertNil(alerts.step(batteryPercent: 60, charging: true, now: t0 + 600))
+    }
+
+    @MainActor
+    func testConnectingToAnAlreadyChargingDeviceSaysNothing() {
+        let alerts = BatteryAlerts()
+        XCTAssertNil(alerts.step(batteryPercent: 55, charging: true, now: t0),
+                     "the charge did not start just because the app noticed it")
+    }
+
+    /// The defect this rate limit exists for: a device whose charging bit
+    /// alternates used to produce a charge banner and a low-battery banner
+    /// per cycle, with sound, for as long as it kept flipping.
+    @MainActor
+    func testAFlappingChargingBitCannotProduceAStreamOfBanners() {
+        let alerts = BatteryAlerts()
+        var alertsSeen: [BatteryAlerts.Alert] = []
+        // Two hundred seconds of a bit flipping once a second, at a charge
+        // level that is also sitting under the low threshold — every trigger
+        // in the class armed at once.
+        for second in 0..<200 {
+            if let alert = alerts.step(batteryPercent: 18, charging: second.isMultiple(of: 2),
+                                       now: t0 + Double(second)) {
+                alertsSeen.append(alert)
+            }
+        }
+
+        XCTAssertLessThanOrEqual(alertsSeen.count, 2,
+                                 "at most one of each kind inside one interval")
+        XCTAssertEqual(Set(alertsSeen.map(\.title)).count, alertsSeen.count,
+                       "and never the same kind twice")
+    }
+
+    /// A single dropped "charging" reading is the common shape of the flicker,
+    /// and it must not re-arm the announcement.
+    @MainActor
+    func testOneNotChargingReadingDoesNotReArmTheChargingAlert() {
+        let alerts = BatteryAlerts()
+        _ = alerts.step(batteryPercent: 40, charging: false, now: t0)
+        XCTAssertEqual(alerts.step(batteryPercent: 40, charging: true, now: t0 + 1),
+                       .charging(percent: 40))
+
+        // One stray reading, then charging again, long after the rate limit
+        // would have stopped mattering.
+        XCTAssertNil(alerts.step(batteryPercent: 41, charging: false, now: t0 + 3600))
+        XCTAssertNil(alerts.step(batteryPercent: 41, charging: true, now: t0 + 3601))
+    }
+
+    /// A real unplug does re-arm it — the hysteresis is a few readings, not a
+    /// one-way door.
+    @MainActor
+    func testAConfirmedUnplugAndReplugIsAnnouncedAgain() {
+        let alerts = BatteryAlerts()
+        _ = alerts.step(batteryPercent: 40, charging: false, now: t0)
+        XCTAssertEqual(alerts.step(batteryPercent: 40, charging: true, now: t0 + 1),
+                       .charging(percent: 40))
+
+        for i in 0..<BatteryAlerts.dischargeConfirmations {
+            _ = alerts.step(batteryPercent: 39, charging: false, now: t0 + 10 + Double(i))
+        }
+        let later = t0 + BatteryAlerts.minimumInterval + 60
+        XCTAssertEqual(alerts.step(batteryPercent: 38, charging: true, now: later),
+                       .charging(percent: 38))
+    }
+
+    @MainActor
+    func testTheLowAndVeryLowThresholdsStillFireOncePerEpisode() {
+        let alerts = BatteryAlerts()
+        XCTAssertNil(alerts.step(batteryPercent: 40, charging: false, now: t0))
+        XCTAssertEqual(alerts.step(batteryPercent: 20, charging: false, now: t0 + 60),
+                       .low(percent: 20))
+        XCTAssertNil(alerts.step(batteryPercent: 19, charging: false, now: t0 + 120))
+        // A different kind of alert, so the low alert's clock does not gag it.
+        XCTAssertEqual(alerts.step(batteryPercent: 10, charging: false, now: t0 + 180),
+                       .veryLow(percent: 10))
+        XCTAssertNil(alerts.step(batteryPercent: 9, charging: false, now: t0 + 240))
+    }
+
+    /// An alert the rate limit swallowed is postponed, not cancelled. The
+    /// very-low warning is the one nothing else in the app will repeat, so
+    /// losing it to a clock would be losing it altogether.
+    @MainActor
+    func testARateLimitedAlertIsOfferedAgainRatherThanDropped() {
+        let alerts = BatteryAlerts()
+        _ = alerts.step(batteryPercent: 12, charging: false, now: t0)
+        XCTAssertEqual(alerts.step(batteryPercent: 8, charging: false, now: t0 + 1),
+                       .veryLow(percent: 8),
+                       "low and very low keep separate clocks")
+
+        let alerts2 = BatteryAlerts()
+        XCTAssertEqual(alerts2.step(batteryPercent: 8, charging: false, now: t0),
+                       .veryLow(percent: 8))
+        // Re-armed by a charge that then stops: the warning is due again but
+        // muzzled, and comes out the moment it is allowed to.
+        _ = alerts2.step(batteryPercent: 8, charging: true, now: t0 + 10)
+        for i in 0..<BatteryAlerts.dischargeConfirmations {
+            XCTAssertNil(alerts2.step(batteryPercent: 8, charging: false,
+                                      now: t0 + 20 + Double(i)))
+        }
+        XCTAssertEqual(alerts2.step(batteryPercent: 8, charging: false,
+                                    now: t0 + BatteryAlerts.minimumInterval + 30),
+                       .veryLow(percent: 8))
     }
 }

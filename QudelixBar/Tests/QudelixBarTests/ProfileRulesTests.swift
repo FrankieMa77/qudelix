@@ -164,6 +164,113 @@ final class ProfileRulesTests: XCTestCase {
                        "a dropped automatic switch must surface, not vanish")
     }
 
+    // MARK: - EQ groups
+
+    /// The device keeps one bank of twenty presets per EQ group, and a load
+    /// addresses whichever group is live — so a slot number recorded in
+    /// 10-band mode names a different curve entirely once the device is in
+    /// 20-band mode. Nothing may switch on that.
+    @MainActor
+    func testARuleFromAnotherEqGroupNeitherSwitchesNorOffersTo() {
+        let rules = ProfileRules()
+        rules.currentEqGroupRaw = QxEqGroup.user.rawValue
+        rules.bind(outputUID: "uid-g", outputName: "Studio Cans", presetIndex: 3)
+        rules.canApplyNow = { true }
+        rules.setAutomatic(true, forUID: "uid-g")
+        var applied: [Int] = []
+        rules.onApplyPreset = { applied.append($0); return true }
+
+        rules.currentEqGroupRaw = QxEqGroup.b20.rawValue
+        rules.outputChanged(uid: "uid-g", name: "Studio Cans")
+
+        XCTAssertTrue(applied.isEmpty, "slot 3 of the 20-band bank is not what this rule means")
+        XCTAssertNil(rules.suggestion,
+                     "offering it would label the other bank's slot from this bank's names")
+    }
+
+    @MainActor
+    func testBindingRecordsTheGroupItWasMadeIn() {
+        let rules = ProfileRules()
+        rules.currentEqGroupRaw = QxEqGroup.b20.rawValue
+        rules.bind(outputUID: "uid-h", outputName: "Twenty Band", presetIndex: 4)
+
+        XCTAssertEqual(rules.rules.first?.eqGroupRaw, QxEqGroup.b20.rawValue)
+    }
+
+    @MainActor
+    func testARuleReturnsToLifeWhenTheDeviceIsBackInItsGroup() {
+        let rules = ProfileRules()
+        rules.currentEqGroupRaw = QxEqGroup.user.rawValue
+        rules.bind(outputUID: "uid-i", outputName: "Ten Band", presetIndex: 2)
+        rules.canApplyNow = { true }
+        rules.setAutomatic(true, forUID: "uid-i")
+        var applied: [Int] = []
+        rules.onApplyPreset = { applied.append($0); return true }
+
+        rules.currentEqGroupRaw = QxEqGroup.b20.rawValue
+        rules.outputChanged(uid: "uid-i", name: "Ten Band")
+        XCTAssertTrue(applied.isEmpty)
+
+        // Back to the mode it was bound in — nothing about the rule changed.
+        rules.currentEqGroupRaw = QxEqGroup.user.rawValue
+        rules.outputChanged(uid: "other", name: "Something Else")
+        rules.outputChanged(uid: "uid-i", name: "Ten Band")
+
+        XCTAssertEqual(applied, [2])
+    }
+
+    /// A rule loaded from a file written before the group was recorded could
+    /// belong to either bank. It is still offered — the user reads the name
+    /// and decides — but it does not get to switch unannounced on a guess.
+    @MainActor
+    func testAnUnmarkedRuleAsksRatherThanSwitchingSilently() {
+        let rules = ProfileRules()
+        rules.previewSet(rules: [ProfileRule(outputUID: "uid-j", outputName: "Old Rule",
+                                             presetIndex: 5, confirmed: true, automatic: true)])
+        rules.currentEqGroupRaw = QxEqGroup.user.rawValue
+        rules.canApplyNow = { true }
+        var applied: [Int] = []
+        rules.onApplyPreset = { applied.append($0); return true }
+
+        rules.outputChanged(uid: "uid-j", name: "Old Rule")
+
+        XCTAssertTrue(applied.isEmpty)
+        XCTAssertEqual(rules.suggestion?.presetIndex, 5)
+    }
+
+    /// …and confirming it once settles which bank it meant, so it never has to
+    /// ask again on those grounds.
+    @MainActor
+    func testConfirmingAnUnmarkedRuleRecordsTheGroupItWasUsedIn() {
+        let rules = ProfileRules()
+        rules.previewSet(rules: [ProfileRule(outputUID: "uid-k", outputName: "Old Rule",
+                                             presetIndex: 5)])
+        rules.currentEqGroupRaw = QxEqGroup.b20.rawValue
+        rules.onApplyPreset = { _ in true }
+
+        rules.outputChanged(uid: "uid-k", name: "Old Rule")
+        rules.confirmSuggestion()
+
+        XCTAssertEqual(rules.rules.first?.eqGroupRaw, QxEqGroup.b20.rawValue)
+    }
+
+    /// Nothing sets the current group in a headless app, and nothing did
+    /// before this field existed either. With no group known there is nothing
+    /// to contradict a rule, so it behaves exactly as it always has.
+    @MainActor
+    func testWithNoKnownGroupTheRulesBehaveAsBefore() {
+        let rules = ProfileRules()
+        rules.bind(outputUID: "uid-l", outputName: "Home Rig", presetIndex: 7)
+        rules.canApplyNow = { true }
+        rules.setAutomatic(true, forUID: "uid-l")
+        var applied: [Int] = []
+        rules.onApplyPreset = { applied.append($0); return true }
+
+        rules.outputChanged(uid: "uid-l", name: "Home Rig")
+
+        XCTAssertEqual(applied, [7])
+    }
+
     // MARK: - Durable-identifier collisions
 
     /// Two physically different adapters can legitimately report the same
@@ -203,14 +310,61 @@ final class ProfileRulesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let original = [
             ProfileRule(outputUID: "uid-a", outputName: "Studio Cans", presetIndex: 2,
-                       confirmed: true, automatic: true),
-            ProfileRule(outputUID: "uid-b", outputName: "Travel IEMs", presetIndex: 11),
+                       eqGroupRaw: QxEqGroup.user.rawValue, confirmed: true, automatic: true),
+            ProfileRule(outputUID: "uid-b", outputName: "Travel IEMs", presetIndex: 11,
+                        eqGroupRaw: QxEqGroup.b20.rawValue),
         ]
 
         ProfileRulesFile.save(original, to: url)
         let loaded = ProfileRulesFile.load(from: url)
 
         XCTAssertEqual(loaded, original)
+    }
+
+    /// The compatibility case this file's hand-written `init(from:)` exists
+    /// for. Every profiles.json in the field predates the group field; if one
+    /// of them stopped decoding, the load path would swallow it and the next
+    /// save would write the empty list over the top.
+    func testAFileWrittenBeforeGroupsWereRecordedStillLoads() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        // Byte for byte the shape the previous version encoded.
+        let json = """
+        [
+          {
+            "automatic" : true,
+            "confirmed" : true,
+            "outputName" : "Studio Cans",
+            "outputUID" : "uid-old",
+            "presetIndex" : 2
+          }
+        ]
+        """
+        try? json.data(using: .utf8)?.write(to: url)
+
+        let loaded = ProfileRulesFile.load(from: url)
+
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.outputUID, "uid-old")
+        XCTAssertEqual(loaded.first?.presetIndex, 2)
+        XCTAssertEqual(loaded.first?.automatic, true)
+        XCTAssertNil(loaded.first?.eqGroupRaw,
+                     "no group was recorded, and inventing one would be a guess")
+        XCTAssertEqual(loaded.first?.standing(inGroup: QxEqGroup.user.rawValue), .unmarked)
+    }
+
+    func testAGroupTheDeviceHasNoSuchBankForIsDroppedToUnmarked() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let json = """
+        [{"outputUID":"uid-w","outputName":"Something","presetIndex":1,"eqGroupRaw":200}]
+        """
+        try? json.data(using: .utf8)?.write(to: url)
+
+        let loaded = ProfileRulesFile.load(from: url)
+
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertNil(loaded.first?.eqGroupRaw)
     }
 
     // MARK: - Hostile / corrupted files

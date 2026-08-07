@@ -398,9 +398,18 @@ final class DebugLog: ObservableObject {
         logQueue.async {
             if self.bytesWritten > Self.maxLogBytes { self.rotate(url) }
             guard let h = self.appendHandle(url) else { return }
-            h.write(data)
+            // `write(_:)` is the Objective-C method behind the Swift name: it
+            // raises NSFileHandleOperationException when the write fails, and
+            // Swift cannot catch an ObjC exception, so a full disk would take
+            // the whole app down while merely trying to note something. The
+            // throwing overload turns the same ENOSPC into an error, which for
+            // a log line is something to shrug at — there is nowhere left to
+            // report it to anyway. The byte count only advances on a write that
+            // happened, so rotation still measures the real file.
+            if (try? h.write(contentsOf: data)) != nil {
+                self.bytesWritten += data.count
+            }
             try? h.close()
-            self.bytesWritten += data.count
         }
     }
 

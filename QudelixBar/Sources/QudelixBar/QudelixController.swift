@@ -234,8 +234,26 @@ final class QudelixController: ObservableObject {
     /// from.
     private var eqSnapshots = EqSnapshotFile.load()
 
-    /// The stored curve for the group currently addressed on the wire.
     private var eqSnapshot: EqSnapshot? { eqSnapshots[eqGroup.rawValue] }
+
+    /// Which device is on the other end, as far as anything can tell.
+    ///
+    /// Over Bluetooth the pinned peripheral's identifier; over USB the name
+    /// the device reports. Neither is authenticated — a peripheral chooses its
+    /// own name — but tagging a saved curve with one is enough to stop it
+    /// being written back onto a *different* device, which is the failure that
+    /// matters: adoption over Bluetooth is trust on first use, so anything in
+    /// range can be pinned, pass the handshake as a supported model, report a
+    /// curve, and have it filed as "your last EQ".
+    private var deviceIdentity: String? {
+        switch link {
+        case .bluetooth: return ble.pinnedIdentity.map { "ble:" + $0 }
+        case .usb:
+            if case .connected(let name) = connection { return "usb:" + name }
+            return nil
+        default: return nil
+        }
+    }
 
     // MARK: - Undo
 
@@ -249,6 +267,7 @@ final class QudelixController: ObservableObject {
         var bands: [QxEqBandValue]
         var preGain: Double
         var mutedBands: [Int: QxFilter]
+        var activePreset: Int?
         /// What the curve was understood to be at the time. Restored with it:
         /// undoing an import that left a requested-curve overlay behind would
         /// otherwise keep drawing "the device could not hold this" over a curve
@@ -281,6 +300,7 @@ final class QudelixController: ObservableObject {
 
     private var currentEqEdit: EqEdit {
         EqEdit(bands: bands, preGain: preGain, mutedBands: mutedBands,
+               activePreset: activePreset,
                sourceName: eqSourceName, requested: requestedCorrection,
                sourceCurve: sourceCurve, sourcePreGain: sourcePreGain, label: "")
     }
@@ -328,6 +348,7 @@ final class QudelixController: ObservableObject {
 
         suppressUndo = true
         defer { suppressUndo = false; lastEditLabel = ""; lastEditAt = .distantPast }
+        activePreset = entry.activePreset
         eqSourceName = entry.sourceName
         requestedCorrection = entry.requested
         sourceCurve = entry.sourceCurve
@@ -405,6 +426,9 @@ final class QudelixController: ObservableObject {
         }
         return true
     }
+    private var packetLogWindow = Date.distantPast
+    private var packetsLoggedThisSecond = 0
+    private var suppressedPackets = 0
     private var lastImplausibleDump = Date.distantPast
     private var lastStateLogLine = ""
 
@@ -465,7 +489,8 @@ final class QudelixController: ObservableObject {
         guard presetRead, case .connected = connection else { return }
         let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: bands,
                               preGain: preGain, enabled: eqEnabled,
-                              name: eqSourceName, mutedBands: mutedBands)
+                              name: eqSourceName, mutedBands: mutedBands,
+                              deviceIdentity: deviceIdentity)
         guard snap != eqSnapshot else { return }
         // Only this group's entry is replaced; the other group's stays as it
         // was last seen, which is what makes a mode switch survivable.
@@ -493,6 +518,15 @@ final class QudelixController: ObservableObject {
             return
         }
         restoreDecidedGroups.insert(eqGroup.rawValue)
+        // Never write a curve back onto a device it did not come from. A file
+        // written before identities were recorded has no provenance to check,
+        // and is therefore not restored either — it will be re-tagged the next
+        // time this device's own curve is saved.
+        if let snap = eqSnapshots[eqGroup.rawValue],
+           snap.deviceIdentity == nil || snap.deviceIdentity != deviceIdentity {
+            DebugLog.shared.log("not restoring: that curve was saved from a different device")
+            return
+        }
         guard let snap = eqSnapshot,
               snap.bands.count == bandCount,
               !snap.matches(bands: bands, preGain: preGain) else { return }
@@ -569,7 +603,13 @@ final class QudelixController: ObservableObject {
 
         ble.onConnected = { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.link != .usb else { return }
+                guard let self else { return }
+                // The pin happens the moment characteristics are adopted, USB
+                // or not, so the state that shows the Forget button has to be
+                // refreshed before the early return below — otherwise a pin
+                // made while USB owned the link stayed invisible all session.
+                self.refreshBluetoothPinState()
+                guard self.link != .usb else { return }
                 self.adoptBluetooth()
             }
         }
@@ -633,6 +673,7 @@ final class QudelixController: ObservableObject {
         eqSourceName = nil
         sourceCurve = nil
         sourcePreGain = nil
+        lastImportSummary = nil
         requestedCorrection = nil
         batteryAlerts.connectionReset()
         state = QxDeviceState()
@@ -673,6 +714,16 @@ final class QudelixController: ObservableObject {
 
     /// Forget the remembered Bluetooth device and start looking again. Drops the
     /// current link if it is the Bluetooth one, so the next device can be adopted.
+    /// Kept in step with the transport rather than only at the moments the
+    /// controller happens to adopt a link. A peripheral is pinned as soon as
+    /// its characteristics are adopted, which can happen in the background
+    /// while USB owns the link — and the button that undoes a wrong pin was
+    /// then hidden for the rest of the session.
+    func refreshBluetoothPinState() {
+        let pinned = ble.hasPinnedDevice
+        if hasPinnedBluetoothDevice != pinned { hasPinnedBluetoothDevice = pinned }
+    }
+
     func forgetBluetoothDevice() {
         ble.forgetPinnedDevice()
         hasPinnedBluetoothDevice = ble.hasPinnedDevice
@@ -748,7 +799,25 @@ final class QudelixController: ObservableObject {
     }
 
     private func dispatch(_ cmdId: UInt16, _ data: [UInt8]) {
-        DebugLog.shared.rx(cmdId, data)
+        // One line per accepted packet, throttled by volume rather than by
+        // content. A device — broken or hostile — can push notifications fast
+        // enough to roll the 2 MB log in under a minute, leaving a bug report
+        // with two minutes of history. Above the burst allowance only the
+        // count is kept, so the log still says what happened.
+        if packetLogWindow.timeIntervalSinceNow < -1 {
+            if suppressedPackets > 0 {
+                DebugLog.shared.log("… \(suppressedPackets) further packets not logged")
+            }
+            packetLogWindow = Date()
+            packetsLoggedThisSecond = 0
+            suppressedPackets = 0
+        }
+        if packetsLoggedThisSecond < 40 {
+            packetsLoggedThisSecond += 1
+            DebugLog.shared.rx(cmdId, data)
+        } else {
+            suppressedPackets += 1
+        }
 
         switch QxCmd(rawValue: cmdId) {
         case .rspInitData:
@@ -779,7 +848,11 @@ final class QudelixController: ObservableObject {
         guard data.count >= 2 else { return }
         if data[0] >= 128 {
             let group = data[1]
-            guard group == eqGroup.rawValue || data[0] == 129 else { return }
+            // Every field here belongs to one EQ group, including the active
+        // preset index: accepting it from a group the app is not in highlights
+        // and names the wrong slot, and satisfies one of the gates on silent
+        // preset switching.
+        guard group == eqGroup.rawValue else { return }
             switch data[0] {
             case 129: if data.count >= 3 { setActivePreset(Int(data[2])) }  // eqPresetIdx
             case 130:                                                        // eqEnable
@@ -826,6 +899,12 @@ final class QudelixController: ObservableObject {
     /// rather than escaped — a U+202E override would visually reorder the rows
     /// around it, and a newline would stretch the row.
     nonisolated static func displayName(_ s: String) -> String {
+        // Bounded by scalars before anything else. The length cap below counts
+        // Characters, and a grapheme cluster has no upper size — one letter
+        // carrying a hundred combining marks is a single Character that
+        // survives the cap intact and renders as a vertical smear over the
+        // rows around it.
+        let s = String(String.UnicodeScalarView(s.unicodeScalars.prefix(maxPresetNameLength * 4)))
         let kept = s.unicodeScalars.filter { u in
             switch u.properties.generalCategory {
             case .control, .format, .lineSeparator, .paragraphSeparator: return false
@@ -1118,11 +1197,6 @@ final class QudelixController: ObservableObject {
         // made a moment ago has a snapshot queued against the outgoing curve;
         // letting it fire would file one group's bands under the other's.
         snapshotWork?.cancel()
-        // Same reasoning for the undo history: its entries are this group's
-        // curve, and replaying one onto the other group's bands would write a
-        // shape that was never on it.
-        undoStack.removeAll()
-        redoStack.removeAll()
         // Rate limited, but the change is *deferred* rather than dropped. Simply
         // discarding it left `eqGroup` — which selects the band count and the
         // group byte on every write — disagreeing with the device until it
@@ -1143,6 +1217,14 @@ final class QudelixController: ObservableObject {
         pendingGroup = nil
         lastGroupSwitch = Date()
         DebugLog.shared.log("EQ group → \(group) (\(group.bandCount) bands)")
+        // Now that the switch is actually going ahead. The history describes
+        // the outgoing group's curve, and replaying an entry onto the incoming
+        // group's bands would write a shape that was never on them. Done here
+        // rather than on every differing report, so a deferred or rate-limited
+        // one no longer throws the history away for a switch that never
+        // happened.
+        undoStack.removeAll()
+        redoStack.removeAll()
         eqGroup = group
         assembler.group = group
         assembler.reset()
@@ -1158,6 +1240,7 @@ final class QudelixController: ObservableObject {
         eqSourceName = nil
         sourceCurve = nil
         sourcePreGain = nil
+        lastImportSummary = nil
         requestedCorrection = nil
         // Crossfeed is stored per preset, so it belongs to the group we left.
         crossfeedLevel = nil
@@ -1229,6 +1312,14 @@ final class QudelixController: ObservableObject {
     /// Whether hardware settings can be written right now — for disabling
     /// controls rather than letting them move and silently do nothing.
     var canWriteNow: Bool { canWrite }
+
+    /// Whether an EQ write would actually go out right now.
+    ///
+    /// `canWriteNow` only answers "is there a device"; EQ writes additionally
+    /// need the group settled. Controls that go through the EQ path have to
+    /// disable on this one, or they stay live during a mode switch and drop
+    /// the click silently.
+    var canEditEqNow: Bool { canWriteEq }
 
     var trimRange: ClosedRange<Double> { QxVolumeRange.trim }
     var volumeLimitRange: ClosedRange<Double> { QxVolumeRange.limit }
@@ -1399,6 +1490,7 @@ final class QudelixController: ObservableObject {
         eqSourceName = nil
         sourceCurve = nil
         sourcePreGain = nil
+        lastImportSummary = nil
         requestedCorrection = nil
         setPreGain(0)
         let defaults = eqGroup.defaultFreqs

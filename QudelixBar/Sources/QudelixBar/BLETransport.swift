@@ -165,6 +165,10 @@ final class BLETransport: NSObject {
 
     var hasPinnedDevice: Bool { pinnedIdentifier != nil }
 
+    /// The remembered peripheral, for tagging saved state with the device it
+    /// came from. Read-only; adoption is the only thing that sets it.
+    var pinnedIdentity: String? { pinnedIdentifier?.uuidString }
+
     /// A device the user just asked us to forget, held back briefly so it cannot
     /// immediately re-pin itself.
     ///
@@ -291,6 +295,8 @@ final class BLETransport: NSObject {
     private static let absentReconnectDelay: TimeInterval = 60
     private static let failuresBeforeAbsent = 3
 
+    private var lastRejectLog = Date.distantPast
+    private var suppressedRejects = 0
     private var connectTimeout: DispatchWorkItem?
     private var scanBurstEnd: DispatchWorkItem?
     private var scanScheduled = false
@@ -440,6 +446,12 @@ extension BLETransport: CBCentralManagerDelegate {
 
 extension BLETransport: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        // Pinned like every other callback. Discovery can land after the
+        // connect timeout has already torn this peripheral down and adopted
+        // another, and installing a dropped peripheral's characteristics
+        // against the live one leaves a link that reports connected and
+        // carries nothing.
+        guard isCurrent(p) else { return }
         guard let services = p.services else { return }
         for s in services {
             DebugLog.shared.log("BLE service: \(s.uuid)")
@@ -448,6 +460,12 @@ extension BLETransport: CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        // Pinned like every other callback. Discovery can land after the
+        // connect timeout has already torn this peripheral down and adopted
+        // another, and installing a dropped peripheral's characteristics
+        // against the live one leaves a link that reports connected and
+        // carries nothing.
+        guard isCurrent(p) else { return }
         guard let chars = service.characteristics else { return }
         for c in chars {
             DebugLog.shared.log("BLE char: \(service.uuid) / \(c.uuid) props=\(describe(c.properties))")
@@ -477,7 +495,10 @@ extension BLETransport: CBPeripheralDelegate {
             let encrypted = n.properties
                 .intersection([.notifyEncryptionRequired, .indicateEncryptionRequired])
             if encrypted.isEmpty {
-                DebugLog.shared.log("BLE link is unencrypted (peripheral does not require pairing)")
+                DebugLog.shared.log("BLE link: the peripheral does not declare encryption "
+                                    + "as required. This is its own claim about its "
+                                    + "characteristics, not an observation of the link — "
+                                    + "CoreBluetooth exposes no way to check.")
             }
             if pinnedIdentifier == nil {
                 pinnedIdentifier = p.identifier
@@ -518,7 +539,21 @@ extension BLETransport: CBPeripheralDelegate {
             // Status 1 is NOT_SUPPORTED. Before any successful exchange that
             // most likely means the wrong vendor id for this hardware, so try
             // the other one once rather than sitting mute.
-            DebugLog.shared.log("BLE vendor \(vendor.label) rejected the command (status \(status))")
+            // Throttled, and deliberately not gated on which link owns the
+            // device: a pinned peripheral can send these while the user is on
+            // USB, and one line per frame evicts the whole diagnostics log —
+            // which is the thing people attach to bug reports. The undecodable
+            // path next to it is already rate limited for the same reason.
+            let now = Date()
+            if now.timeIntervalSince(lastRejectLog) > 2 {
+                lastRejectLog = now
+                let extra = suppressedRejects > 0 ? " (\(suppressedRejects) more suppressed)" : ""
+                DebugLog.shared.log("BLE vendor \(vendor.label) rejected the command "
+                                    + "(status \(status))\(extra)")
+                suppressedRejects = 0
+            } else {
+                suppressedRejects += 1
+            }
             if !sawGoodReply, !triedFallbackVendor,
                let other = Vendor.allCases.first(where: { $0 != vendor }) {
                 triedFallbackVendor = true

@@ -125,7 +125,8 @@ struct CorrectionResult {
     /// Predicted mean preference rating for what is left after this device's
     /// filters have done what they can. nil whenever it cannot be computed
     /// honestly: an in-ear measurement, a curve that does not span the model's
-    /// band, or a response that arrived without one.
+    /// band or carries more points than it will read, or a response that
+    /// arrived without one.
     var preference: PreferenceScore.Reading?
 }
 
@@ -416,6 +417,54 @@ struct PEQFilter: Decodable {
     var gain: Double
 }
 
+// MARK: - Fallback cache
+
+/// The last correction that actually came back, per request shape.
+///
+/// Its whole job is to stop a dropped connection from costing someone a curve
+/// they already had a minute ago, which makes it a comfort rather than a
+/// store: what is worth keeping is the handful of shapes being tried in this
+/// sitting. The key carries both personalization sliders and the correction
+/// ceiling, so an afternoon of nudging a slider and re-fitting mints a fresh
+/// entry every time — which is why there is a ceiling on it at all, and why
+/// what falls out is what has gone longest untouched rather than what was
+/// fetched longest ago. A shape being re-fitted repeatedly is exactly the one
+/// a failure would hurt.
+struct LastGoodCorrections {
+    /// A session's worth of distinct fits. Small enough that the linear scan
+    /// in `touch` stays cheaper than the bookkeeping a linked-list LRU would
+    /// need, and large enough that nothing a person could plausibly be
+    /// comparing between falls out from under them.
+    static let capacity = 24
+
+    private var byKey: [String: ParametricEQFile] = [:]
+    /// Keys in order of use, least recent first.
+    private var recency: [String] = []
+
+    var count: Int { byKey.count }
+
+    /// Reading counts as using: the fallback a user keeps reaching for is the
+    /// one to keep.
+    mutating func value(for key: String) -> ParametricEQFile? {
+        guard let file = byKey[key] else { return nil }
+        touch(key)
+        return file
+    }
+
+    mutating func store(_ file: ParametricEQFile, for key: String) {
+        byKey[key] = file
+        touch(key)
+        while recency.count > Self.capacity {
+            byKey.removeValue(forKey: recency.removeFirst())
+        }
+    }
+
+    private mutating func touch(_ key: String) {
+        if let i = recency.firstIndex(of: key) { recency.remove(at: i) }
+        recency.append(key)
+    }
+}
+
 // MARK: - The service
 
 /// Asks AutoEq's optimizer for a filter set that is already legal for this
@@ -461,9 +510,9 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     @Published private(set) var targets: [AutoEqTarget] = []
     private var loadTask: Task<Void, Never>?
 
-    /// Last correction that actually came back, per request shape. A transient
-    /// failure then costs the user a staleness note rather than the curve.
-    private var lastGood: [String: ParametricEQFile] = [:]
+    /// A transient failure costs the user a staleness note rather than the
+    /// curve.
+    private var lastGood = LastGoodCorrections()
 
     private let transport: HTTPTransport
 
@@ -632,6 +681,35 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             + "one target at publication time; use “Fit to my device” to choose one"
     }
 
+    /// Why a bass or tilt setting goes unhonoured on the published-preset
+    /// path, or nil when both were left at the target as published.
+    ///
+    /// Same reasoning as the target and the ceiling: both boosts are layered
+    /// on during a fit, and the published path does not fit. The sliders are
+    /// hidden in that mode but their values survive a switch into it, so
+    /// somebody who set them, switched, and downloaded a preset would
+    /// otherwise be given a curve with none of their shaping in it and nothing
+    /// said about it.
+    ///
+    /// Worded the way the provenance line words the same two numbers, so the
+    /// setting a user recognises from one is the setting they read in the
+    /// other.
+    nonisolated static func unhonouredPersonalizationWarning(
+        for options: CorrectionOptions) -> String? {
+        var asked: [String] = []
+        if options.bassBoostGain != 0 {
+            asked.append(String(format: "%+.1f dB bass", options.bassBoostGain))
+        }
+        if options.tilt != 0 {
+            asked.append(String(format: "%+.2f dB/oct tilt", options.tilt))
+        }
+        guard !asked.isEmpty else { return nil }
+        return "the \(asked.joined(separator: " and ")) "
+            + (asked.count == 1 ? "was" : "were")
+            + " not applied — a published preset is fitted at publication time; "
+            + "use “Fit to my device” to shape the target"
+    }
+
     // MARK: Request construction
 
     /// Exactly `bandCount` filters, shaped the way AutoEq's own presets are: a
@@ -767,8 +845,15 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     /// The interesting number is the error that survives. The server's `error`
     /// is the headphone against the target before anything is done; adding the
     /// response of the filters the device will really run leaves what a
-    /// listener would still be hearing, and that is what gets scored. Only the
-    /// bands that fit are used, since the rest never reach the device.
+    /// listener would still be hearing, and that is what gets scored.
+    ///
+    /// Every band the active mode can hold counts, including any that came
+    /// back outside the device's range. Those are clamped on the way in, not
+    /// discarded — see `QudelixController.apply` — so dropping them here would
+    /// score a curve the device never produces. Only the bands past the mode's
+    /// count are left out, because those really do go nowhere. Nothing has had
+    /// to be clamped so far: the request carries the device's own bounds as
+    /// its `filter_defaults`, so the fit comes back already legal.
     ///
     /// The pre-gain is deliberately left out. It shifts the whole curve, and
     /// both of the model's predictors ignore a constant offset, so including
@@ -788,6 +873,13 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         guard let freqs = decoded.fr?.frequency,
               let error = decoded.fr?.errorSmoothed ?? decoded.fr?.error,
               freqs.count == error.count, !freqs.isEmpty else { return nil }
+        // Sized by what the model can read, not by what arrived. Every point
+        // below costs one biquad evaluation per band, on the thread drawing
+        // the window, over a body whose only ceiling is four megabytes. Past
+        // the bound the honest answer is no score: that costs the user a line
+        // of text, where working through a response nobody asked for would
+        // cost them the window.
+        guard freqs.count <= PreferenceScore.maxInputPoints else { return nil }
         let applied = Array(file.bands.prefix(limits.bandCount))
         let correction = EQCurve.response(bands: applied, preGain: 0, at: freqs)
         guard correction.count == error.count else { return nil }
@@ -830,8 +922,9 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             throw Self.mapped(error)
         }
         let (file, warnings, preference) = try Self.correction(from: data, limits: limits)
-        lastGood[Self.cacheKey(model: model, source: source, rig: rig, target: target,
-                               limits: limits, options: options)] = file
+        lastGood.store(file, for: Self.cacheKey(model: model, source: source, rig: rig,
+                                                target: target, limits: limits,
+                                                options: options))
         return (file, warnings, preference)
     }
 
@@ -900,7 +993,7 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             let key = Self.cacheKey(model: candidate.title, source: candidate.source,
                                     rig: candidate.rig, target: chosen,
                                     limits: limits, options: resolved)
-            guard let cached = lastGood[key] else { throw error }
+            guard let cached = lastGood.value(for: key) else { throw error }
             return CorrectionResult(
                 file: cached, provenance: provenance,
                 warnings: ["reused the last correction that worked — \(Self.describe(error))"])

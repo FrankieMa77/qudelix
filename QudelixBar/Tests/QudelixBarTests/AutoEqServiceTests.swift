@@ -470,6 +470,33 @@ final class AutoEqServiceTests: XCTestCase {
         XCTAssertTrue(warning.contains("not applied"), warning)
     }
 
+    /// The published path can't layer bass or tilt on either — the fit is over
+    /// by the time the file is downloaded — so the two sliders are reported
+    /// exactly the way an unhonoured ceiling or target is. They are hidden in
+    /// that mode but keep their values across the switch into it, which is how
+    /// a request carrying shaping nobody can see gets made.
+    func testUnhonouredPersonalizationNamesBothBoostsAndOnlyFiresWhenSet() throws {
+        XCTAssertNil(AutoEqService.unhonouredPersonalizationWarning(for: CorrectionOptions()),
+                     "the target as published needs no warning")
+
+        let bass = try XCTUnwrap(AutoEqService.unhonouredPersonalizationWarning(
+            for: CorrectionOptions(bassBoostGain: 3)))
+        XCTAssertTrue(bass.contains("+3.0 dB bass"), bass)
+        XCTAssertTrue(bass.contains("was not applied"), bass)
+        XCTAssertFalse(bass.contains("tilt"), bass)
+
+        let tilt = try XCTUnwrap(AutoEqService.unhonouredPersonalizationWarning(
+            for: CorrectionOptions(tilt: -0.25)))
+        XCTAssertTrue(tilt.contains("-0.25 dB/oct tilt"), tilt)
+        XCTAssertTrue(tilt.contains("was not applied"), tilt)
+        XCTAssertFalse(tilt.contains("bass"), tilt)
+
+        let both = try XCTUnwrap(AutoEqService.unhonouredPersonalizationWarning(
+            for: CorrectionOptions(bassBoostGain: 3, tilt: -0.25)))
+        XCTAssertTrue(both.contains("+3.0 dB bass and -0.25 dB/oct tilt"), both)
+        XCTAssertTrue(both.contains("were not applied"), both)
+    }
+
     func testCeilingIsSpelledWithOneDecimal() {
         XCTAssertEqual(CorrectionOptions.describeCeiling(16400), "16.4 kHz")
         XCTAssertEqual(CorrectionOptions.describeCeiling(16000), "16.0 kHz")
@@ -800,6 +827,87 @@ final class AutoEqServiceTests: XCTestCase {
                                              shapedFor: .qudelix(bandCount: 20),
                                              options: CorrectionOptions(target: "Harman over-ear 2018"))
             XCTFail("expected the failure to surface")
+        } catch {
+            guard case CorrectionError.offline = error else {
+                return XCTFail("expected .offline, got \(error)")
+            }
+        }
+    }
+
+    // MARK: - The fallback cache
+
+    private func marked(_ preamp: Double) -> ParametricEQFile {
+        var file = ParametricEQFile()
+        file.preamp = preamp
+        return file
+    }
+
+    /// Two of the things in a cache key are continuous sliders, so distinct
+    /// shapes arrive faster than anyone would guess and the cache has to be
+    /// able to forget.
+    func testCacheStopsAtItsCapacityAndDropsTheOldest() {
+        var cache = LastGoodCorrections()
+        let overflow = 5
+        for i in 0..<(LastGoodCorrections.capacity + overflow) {
+            cache.store(marked(Double(i)), for: "key\(i)")
+        }
+        XCTAssertEqual(cache.count, LastGoodCorrections.capacity)
+        for i in 0..<overflow {
+            XCTAssertNil(cache.value(for: "key\(i)"), "key\(i) should be gone")
+        }
+        let newest = LastGoodCorrections.capacity + overflow - 1
+        XCTAssertEqual(cache.value(for: "key\(newest)")?.preamp, Double(newest))
+    }
+
+    /// Least recently *used*, not oldest: the shape someone keeps coming back
+    /// to is the one a dropped connection would hurt.
+    func testUsingAnEntryKeepsItFromBeingEvicted() {
+        var cache = LastGoodCorrections()
+        for i in 0..<LastGoodCorrections.capacity {
+            cache.store(marked(Double(i)), for: "key\(i)")
+        }
+        XCTAssertNotNil(cache.value(for: "key0"))
+        cache.store(marked(-1), for: "newcomer")
+
+        XCTAssertNil(cache.value(for: "key1"), "the oldest untouched entry is the one to go")
+        XCTAssertEqual(cache.value(for: "key0")?.preamp, 0, "reading key0 renewed it")
+        XCTAssertEqual(cache.count, LastGoodCorrections.capacity)
+    }
+
+    /// Re-fitting the same shape replaces its entry rather than adding one.
+    func testStoringTheSameShapeTwiceDoesNotAccumulate() {
+        var cache = LastGoodCorrections()
+        cache.store(marked(1), for: "same")
+        cache.store(marked(2), for: "same")
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertEqual(cache.value(for: "same")?.preamp, 2)
+    }
+
+    /// The service holds that same bounded cache, so a fit far enough back is
+    /// gone and its failure surfaces instead of a curve from another shape.
+    @MainActor
+    func testTheServiceForgetsFitsBeyondTheCap() async throws {
+        let stub = StubTransport()
+        let service = AutoEqService(transport: stub)
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+        func options(bass: Double) -> CorrectionOptions {
+            CorrectionOptions(bassBoostGain: bass, target: "Harman over-ear 2018")
+        }
+
+        // One request shape per slider position, which is exactly how the
+        // collection used to grow without end.
+        for i in 0...LastGoodCorrections.capacity {
+            stub.enqueue(.success(fixture(filterCount: 10)))
+            _ = try await service.correction(for: candidate, shapedFor: limits,
+                                             options: options(bass: Double(i)))
+        }
+        stub.enqueue(.failure(URLError(.timedOut)))
+        do {
+            _ = try await service.correction(for: candidate, shapedFor: limits,
+                                             options: options(bass: 0))
+            XCTFail("the first fit should have been evicted, not served back")
         } catch {
             guard case CorrectionError.offline = error else {
                 return XCTFail("expected .offline, got \(error)")

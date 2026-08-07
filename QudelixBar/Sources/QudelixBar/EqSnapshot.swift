@@ -25,6 +25,19 @@ struct EqSnapshot: Codable, Equatable {
     /// silent with no way back and no record of what it had been.
     var mutedBands: [Int: QxFilter] = [:]
 
+    /// Which device this curve was read from.
+    ///
+    /// Restoring is the one place a saved curve is written *back* to hardware,
+    /// so it must not cross devices. Adoption over Bluetooth is trust on first
+    /// use — any peripheral in range that advertises the right name and
+    /// service can be pinned, answer the handshake as a supported model, and
+    /// report a curve, which is then filed here. Without an identity on the
+    /// record, attaching the real device afterwards let that curve be written
+    /// onto it and committed to its flash under the banner "Restored your last
+    /// EQ". nil means a file written before this existed, whose provenance
+    /// cannot be established.
+    var deviceIdentity: String?
+
     /// Written by hand rather than synthesised so that a file saved before
     /// `mutedBands` existed still loads. Swift's generated decoder treats a
     /// missing key as an error even when the property has a default, and this
@@ -38,10 +51,13 @@ struct EqSnapshot: Codable, Equatable {
         enabled = try c.decode(Bool.self, forKey: .enabled)
         name = try c.decodeIfPresent(String.self, forKey: .name)
         mutedBands = try c.decodeIfPresent([Int: QxFilter].self, forKey: .mutedBands) ?? [:]
+        deviceIdentity = try c.decodeIfPresent(String.self, forKey: .deviceIdentity)
     }
 
     init(groupRaw: UInt8, bands: [QxEqBandValue], preGain: Double,
-         enabled: Bool, name: String? = nil, mutedBands: [Int: QxFilter] = [:]) {
+         enabled: Bool, name: String? = nil, mutedBands: [Int: QxFilter] = [:],
+         deviceIdentity: String? = nil) {
+        self.deviceIdentity = deviceIdentity
         self.groupRaw = groupRaw
         self.bands = bands
         self.preGain = preGain

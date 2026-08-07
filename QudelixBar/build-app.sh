@@ -61,7 +61,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # --deep is deprecated and unreliable; sign the binary, then the bundle.
-codesign --force --sign - "$APP/Contents/MacOS/QudelixBar"
-codesign --force --sign - "$APP"
+#
+# --options runtime turns on the hardened runtime. This bundle holds a
+# system-audio recording grant, and without it library validation is off: any
+# unsigned dylib the loader can be pointed at is executed inside a process that
+# macOS has already been told may listen to everything the machine plays. The
+# grant is keyed to the signature, so turning this on invalidates it once and
+# the recording permission is asked for again on first launch.
+codesign --force --options runtime --sign - "$APP/Contents/MacOS/QudelixBar"
+codesign --force --options runtime --sign - "$APP"
 echo "Built: $(cd .. && pwd)/Qudelix.app"
 lipo -archs "$APP/Contents/MacOS/QudelixBar" | sed 's/^/  architectures: /'

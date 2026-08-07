@@ -418,6 +418,9 @@ extension AutoEqIndex: CorrectionSource {
         if let unhonoured = AutoEqService.unhonouredTargetWarning(for: options) {
             warnings.append(unhonoured)
         }
+        if let unhonoured = AutoEqService.unhonouredPersonalizationWarning(for: options) {
+            warnings.append(unhonoured)
+        }
         let reshaped = file.bands.prefix(limits.bandCount).filter { !limits.admits($0) }.count
         if reshaped > 0 {
             warnings.append("\(reshaped) band(s) fall outside what the device accepts and will be clamped")

@@ -123,7 +123,12 @@ struct ImportView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let p = lastPreference { preferenceRow(p) }
+            // Gated on the curve still being the one that was scored, rather
+            // than on enumerating the ways it can change. A drag, a Tune
+            // session, a flatten, a slot load, a profile rule and a disconnect
+            // all make this false; an undo back to the scored curve makes it
+            // true again and the number returns with it, correctly.
+            if let p = lastPreference, controller.curveMatchesSource { preferenceRow(p) }
         }
         .padding(.top, 6)
     }
@@ -385,14 +390,15 @@ struct ImportView: View {
 
     private func apply(_ candidate: CorrectionCandidate) {
         let source = activeSource
-        // The ceiling and the target both go to both sources. The published
-        // path can't honour either — the fit happened at publication time —
-        // and says so; suppressing them here would replace an explicit
-        // warning with a silent difference between the two modes.
-        let options = mode == .optimized
-            ? CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt,
-                                target: selectedTarget, maxCorrectionHz: requestedCeilingHz)
-            : CorrectionOptions(target: selectedTarget, maxCorrectionHz: requestedCeilingHz)
+        // Everything the user asked for goes to both sources, including the
+        // two personalization sliders. The published path can honour none of
+        // it — that fit happened at publication time — and says so. Omitting
+        // the sliders here, as this used to, replaced an explicit warning with
+        // a silent difference between the two modes: bass set to +4 in one
+        // mode was simply dropped in the other with nothing said.
+        let options = CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt,
+                                        target: selectedTarget,
+                                        maxCorrectionHz: requestedCeilingHz)
         applying = candidate.id
         Task {
             defer { applying = nil }

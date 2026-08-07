@@ -11,36 +11,47 @@ struct LevelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Nothing on this pane works without the engine, and the engine
+            // starts on its own for quality detection — so its refusal is
+            // reported here once, at the top, whatever asked it to run.
+            // Silent when nothing is wrong: `engineFailure` is nil unless a
+            // start was attempted and failed.
+            if let failure = stageState.engineFailure {
+                Text(verbatim: failure.message)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Toggle(isOn: Binding(
-                    get: { stageState.levelTracking || stageState.stage.enabled },
+                    get: { stageState.levelTracking },
                     set: { stageState.setLevelTracking($0) })) {
                     Text("Track listening levels")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .toggleStyle(.switch)
                 .controlSize(.small)
-                // While the Stage runs, the meter rides its engine for free
-                // and there is nothing to switch off here.
-                .disabled(stageState.stage.enabled)
                 Spacer()
             }
 
-            if stageState.stage.enabled {
+            // The switch says what it does and does what it says: it is the
+            // only thing that writes to the history. It used to be forced on
+            // (and greyed out) while Soundstage ran, on the grounds that the
+            // meter rides that engine anyway — but the meter is not the
+            // history, and nobody who turns on Soundstage has thereby asked
+            // for a record of their listening.
+            if !stageState.levelTracking {
+                Text("Nothing is recorded while this is off. Tracking reads "
+                     + "the Mac's output level only — it never touches the "
+                     + "audio path.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if stageState.stage.enabled {
                 Text("Metering rides the Soundstage engine while it runs.")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
-            } else if stageState.levelTracking, !stageState.engine.isRunning {
-                Text(verbatim: stageState.engine.status)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if !stageState.levelTracking {
-                Text("Listens to the Mac's output level only — nothing is "
-                     + "recorded and the audio path is untouched.")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             meter
@@ -74,9 +85,33 @@ struct LevelView: View {
     /// its label says exactly what's folded away rather than leaving a bare
     /// chevron to guess at.
     private var exposureSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let today = stageState.exposureDays.first(where: { $0.day == StageState.dayKey() }),
-               today.audibleSeconds > 0 {
+        let today = stageState.exposureDays.first { $0.day == StageState.dayKey() }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Listening history")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer()
+                // Recorded listening is personal, so getting rid of it is one
+                // click and doesn't require switching anything off first.
+                if !stageState.exposureDays.isEmpty {
+                    Button("Delete") { stageState.clearExposureHistory() }
+                        .buttonStyle(.link)
+                        .font(.system(size: 10))
+                        .help("Deletes every day recorded so far, from disk too.")
+                }
+            }
+
+            if !stageState.levelTracking {
+                // Whatever is shown below was recorded while tracking was on;
+                // saying so is what keeps this section from reading as a live
+                // total under a switch that is off.
+                Text(stageState.exposureDays.isEmpty
+                     ? "Nothing recorded."
+                     : "Paused — nothing new is being added.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                if let today, today.audibleSeconds > 0 { todayView(today) }
+            } else if let today, today.audibleSeconds > 0 {
                 todayView(today)
             } else {
                 Text("Nothing listened to today yet.")
@@ -158,7 +193,12 @@ struct LevelView: View {
     }
 
     private var verdictText: String {
-        guard stageState.engine.isRunning else { return "engine off" }
+        guard stageState.engine.isRunning else {
+            // "engine off" next to a switch reading on is true but useless.
+            // The reason itself is at the top of the pane; this only has to
+            // say which of the two situations it is.
+            return stageState.engineFailure == nil ? "engine off" : "engine didn't start"
+        }
         switch stageState.qualityVerdict {
         case nil: return "listening…"
         case .tooQuiet: return "too quiet to judge"

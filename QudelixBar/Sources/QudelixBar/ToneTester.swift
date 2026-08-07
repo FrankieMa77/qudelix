@@ -47,11 +47,20 @@ final class ToneTester: ObservableObject {
 
     enum Phase: Equatable { case idle, running, finished }
 
+    /// One frequency's outcome.
+    ///
+    /// `measured` is false where the staircase never settled — the listener
+    /// heard nothing at any level, or responded to everything. The row is still
+    /// carried so the results can show which frequencies came back empty, but a
+    /// zero deviation on such a row means "not measured", never "normal", and
+    /// nothing downstream may read it as a result.
+    typealias Point = (hz: Int, gain: Double, deviation: Double, measured: Bool)
+
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var currentHz = 0
     @Published private(set) var bandsDone = 0
     @Published private(set) var thresholds: [Int: Double?] = [:]
-    @Published private(set) var suggestion: [(hz: Int, gain: Double, deviation: Double)] = []
+    @Published private(set) var suggestion: [Point] = []
     @Published private(set) var catchPlayed = 0
     @Published private(set) var catchFalsePositives = 0
     /// True while a tone may be sounding, so the UI can prompt.
@@ -288,25 +297,52 @@ final class ToneTester: ObservableObject {
     /// Clinical fitting rules apply a third to a half; so does this. The mean is
     /// removed because the chain is uncalibrated, leaving only relative shape.
     static func suggest(_ results: [(Int, Double?)], fraction: Double = 0.4,
-                        cap: Double = 6) -> [(hz: Int, gain: Double, deviation: Double)] {
+                        cap: Double = 6) -> [Point] {
         var devs: [(Int, Double)] = []
         for (hz, t) in results {
             guard let t, let ref = reference[hz] else { continue }
             devs.append((hz, t - ref))
         }
-        guard devs.count >= 3 else { return [] }
+        guard devs.count >= minThresholds else { return [] }
         let mean = devs.map(\.1).reduce(0, +) / Double(devs.count)
 
         return results.map { (hz, t) in
-            guard let t, let ref = reference[hz] else { return (hz, 0, 0) }
+            guard let t, let ref = reference[hz] else { return (hz, 0, 0, false) }
             let dev = (t - ref) - mean
-            return (hz, min(max(dev * fraction, -cap), cap), dev)
+            return (hz, min(max(dev * fraction, -cap), cap), dev, true)
         }
     }
 
-    /// How far apart the deviations are. Inside test noise means "nothing to correct".
-    var deviationSpread: Double {
-        let ds = suggestion.map(\.deviation)
+    /// Fewest thresholds the derivation can work from.
+    ///
+    /// The mean is subtracted because the chain is uncalibrated, so only the
+    /// shape survives — and a mean taken from one or two frequencies is not a
+    /// reference, it is one of the points being measured. Below this the honest
+    /// output is nothing at all.
+    static let minThresholds = 3
+
+    /// Frequencies that produced a threshold, whether or not there were enough
+    /// of them to derive a correction from.
+    var measuredCount: Int { thresholds.values.filter { $0 != nil }.count }
+
+    /// True when the session ended without enough thresholds to compare against
+    /// anything: a room too noisy to hear the tones in, or a listener who
+    /// stopped responding.
+    ///
+    /// This has to be asked before any of the result copy is read. A measurement
+    /// that collected nothing has an empty suggestion, an empty suggestion has a
+    /// deviation spread of zero, and zero spread otherwise reads as "your
+    /// hearing is typical" — a failed test presented as a clean bill of health.
+    var measurementFailed: Bool { suggestion.isEmpty }
+
+    /// How far apart the deviations are. Inside test noise means "nothing to
+    /// correct". Only measured frequencies count: an unmeasured row carries a
+    /// zero deviation that would otherwise pull the spread toward saying there
+    /// is nothing to do.
+    var deviationSpread: Double { Self.spread(of: suggestion) }
+
+    nonisolated static func spread(of points: [Point]) -> Double {
+        let ds = points.filter(\.measured).map(\.deviation)
         guard let lo = ds.min(), let hi = ds.max() else { return 0 }
         return hi - lo
     }
@@ -328,7 +364,13 @@ final class ToneTester: ObservableObject {
         // No point writing a correction the device will not apply.
         c.setEqEnabled(true)
         c.beginUndoStep("hearing correction")
-        let points = suggestion.map { (hz: Double($0.hz), gain: $0.gain) }
+        // Only the frequencies that actually gave a reading anchor the curve.
+        // A band the staircase never settled on carries a zero, and feeding
+        // that in would pull the correction to flat at a frequency the test
+        // failed to look at — the same mistake the edge handling below exists
+        // to avoid, made in the middle of the range instead of past its ends.
+        let points = suggestion.filter(\.measured)
+            .map { (hz: Double($0.hz), gain: $0.gain) }
             .sorted { $0.hz < $1.hz }
         guard !points.isEmpty else { phase = .idle; return }
         for i in 0..<min(c.bandCount, c.bands.count) {

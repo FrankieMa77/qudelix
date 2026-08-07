@@ -157,7 +157,62 @@ struct TuneView: View {
         }
     }
 
+    /// Two quite different endings share this screen, and they must never be
+    /// confused: a measurement that found your hearing unremarkable, and a
+    /// measurement that found nothing at all. The second one used to render as
+    /// an empty table under the first one's reassuring sentence.
     private var toneResult: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if tones.measurementFailed {
+                toneFailure
+            } else {
+                toneReadings
+            }
+
+            if tones.falsePositiveRate > 0.3 {
+                Text(String(format: "You responded on %.0f%% of the silent trials, so "
+                            + "these numbers are unreliable. Worth repeating.",
+                            tones.falsePositiveRate * 100))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 8) {
+                if !tones.measurementFailed {
+                    Button("Apply") { tones.applySuggestion(controller) }
+                        .controlSize(.small)
+                        .disabled(tones.deviationSpread < 8)
+                }
+                Spacer()
+                Button(tones.measurementFailed ? "Close" : "Discard") { tones.stop(controller) }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private var toneFailure: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Couldn't measure your hearing")
+                .font(.system(size: 12, weight: .medium))
+
+            Text("\(tones.measuredCount) of the \(ToneTester.order.count) frequencies "
+                 + "gave a reading — too few to compare against anything. This says "
+                 + "nothing about your hearing either way; the test simply didn't "
+                 + "get an answer.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("A quieter room and a slightly higher volume before starting are "
+                 + "usually what's missing.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var toneReadings: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Compared with typical hearing")
                 .font(.system(size: 12, weight: .medium))
@@ -169,42 +224,37 @@ struct TuneView: View {
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 34, alignment: .trailing)
-                        Text(String(format: "%+.0f dB", s.deviation))
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 52, alignment: .trailing)
-                        Text(String(format: "EQ %+.1f", s.gain))
-                            .font(.system(size: 11).monospacedDigit())
-                            .frame(width: 66, alignment: .trailing)
+                        if s.measured {
+                            Text(String(format: "%+.0f dB", s.deviation))
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 52, alignment: .trailing)
+                            Text(String(format: "EQ %+.1f", s.gain))
+                                .font(.system(size: 11).monospacedDigit())
+                                .frame(width: 66, alignment: .trailing)
+                        } else {
+                            // Not zero. A frequency that gave no reading is a gap
+                            // in the measurement, and "+0 dB, EQ +0.0" would read
+                            // as having measured perfectly ordinary hearing there.
+                            Text("no reading")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 126, alignment: .trailing)
+                        }
                         Spacer()
                     }
                 }
             }
 
             if tones.deviationSpread < 8 {
-                Text("Your hearing is within test noise of typical across the range — "
-                     + "there is no personal correction to make. A headphone "
+                Text("Your hearing is within test noise of typical "
+                     + (tones.measuredCount < ToneTester.order.count
+                        ? "wherever it could be measured" : "across the range")
+                     + " — there is no personal correction to make. A headphone "
                      + "correction will do far more.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if tones.falsePositiveRate > 0.3 {
-                Text(String(format: "You responded on %.0f%% of the silent trials, so "
-                            + "these numbers are unreliable. Worth repeating.",
-                            tones.falsePositiveRate * 100))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 8) {
-                Button("Apply") { tones.applySuggestion(controller) }
-                    .controlSize(.small)
-                    .disabled(tones.deviationSpread < 8)
-                Spacer()
-                Button("Discard") { tones.stop(controller) }
-                    .controlSize(.small)
             }
         }
     }
@@ -235,7 +285,7 @@ struct TuneView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("About 20 comparisons. Your current EQ comes back if you stop.")
+                Text("Twenty comparisons. Your current EQ comes back if you stop.")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -321,7 +371,7 @@ struct TuneView: View {
                 }
             }
 
-            if tuner.maxTilt < 1.0 {
+            if tuner.maxMovement < 1.0 {
                 Text("Within a decibel of where you started — a real answer, "
                      + "not a failure. Nothing here worth keeping.")
                     .font(.system(size: 10))
@@ -329,7 +379,10 @@ struct TuneView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if tuner.consistencyPoor {
-                Text("You answered the identical pairs one-sidedly, so treat this as weak.")
+                Text("\(tuner.sameTrials) of the pairs were the same setting twice, and "
+                     + "you picked a winner on \(tuner.sameGuesses) of them. Some of "
+                     + "these answers are noise rather than preference, so treat the "
+                     + "result as weak.")
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
