@@ -872,6 +872,19 @@ final class QudelixController: ObservableObject {
         // and what `updateBand` would write back, so the displayed and exported
         // curve is one we could actually reproduce.
         preGain = EQHeadroom.clamp(p.preGain)
+        // The two stored channels are meant to agree. If they don't, the device
+        // is playing at different levels left and right, and the app cannot
+        // show it — one number is all there is room for. Correct it rather than
+        // report it: the value the user set is channel 0, so channel 1 is
+        // simply wrong, and rewriting pre-gain sends both from now on.
+        if abs(p.preGain - p.preGainCh1) > 0.06 {
+            DebugLog.shared.log(String(
+                format: "pre-gain channels disagree (%.1f / %.1f dB) — evening them up",
+                p.preGain, p.preGainCh1))
+            if canWriteEq {
+                sendPreGain(Int((preGain * QxScale.gain).rounded()))
+            }
+        }
         // Crossfeed is part of the preset the device just handed back, so it
         // is only known once a preset decodes cleanly.
         crossfeedLevel = p.crossfeedLevel
@@ -1245,7 +1258,7 @@ final class QudelixController: ObservableObject {
         guard canWriteEq, db.isFinite else { return }
         let clamped = EQHeadroom.clamp(db)
         preGain = clamped
-        sendEqParam(.setEqPreGain, band: 0, scaled: Int((clamped * QxScale.gain).rounded()))
+        sendPreGain(Int((clamped * QxScale.gain).rounded()))
         eqEdited()
     }
 
@@ -1431,6 +1444,28 @@ final class QudelixController: ObservableObject {
         transportSend(.reqDevStatus, [QxStatusMask.audio | QxStatusMask.power
                                  | QxStatusMask.conn | QxStatusMask.vol])
         transportSend(.reqEqPreset, [eqGroup.requestMask])
+    }
+
+    /// Pre-gain, to both stored channels.
+    ///
+    /// The preset keeps two pre-gain fields and this app only ever wrote the
+    /// first, leaving the second at whatever it already held — a left/right
+    /// imbalance the app could not even see, because the decoder reads channel
+    /// 0 and steps over channel 1. One device was found holding -8.0 and -3.7.
+    ///
+    /// Two single-channel writes rather than the both-channels mask. That mask
+    /// is what made the firmware corrupt its own preset struct once before, so
+    /// it is not sent here on any group; a hardware probe on both groups showed
+    /// mask 2 reaches channel 1 on its own, changing nothing else in the
+    /// preset. Separate coalescing keys, or the second would replace the first
+    /// during a slider drag.
+    private func sendPreGain(_ scaled: Int) {
+        for mask in [UInt8(1), UInt8(2)] {
+            transportSendCoalesced(
+                .setEqPreGain,
+                [eqGroup.rawValue, mask, 0] + QxPacket.int16BE(scaled),
+                key: "preGain-\(mask)")
+        }
     }
 
     private func sendEqParam(_ cmd: QxCmd, band: Int, scaled: Int) {

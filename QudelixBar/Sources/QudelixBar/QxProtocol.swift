@@ -456,6 +456,8 @@ struct QxBitReader {
 /// Decoded user-EQ preset (88-byte v3 bitstream, nCh=1, 10 bands).
 struct QxUserEqPreset {
     var preGain: Double = 0
+    /// The second stored pre-gain channel. Normally equal to `preGain`.
+    var preGainCh1: Double = 0
     /// Crossfeed level stored with this preset, in the device's own 6-bit
     /// field (0…63, 0 = off). Read only: the device does its crossfeed in
     /// hardware and keeps one setting per preset, but the step size and the
@@ -481,7 +483,11 @@ struct QxUserEqPreset {
         r.skip(1 + 14 + 11)                 // type, impedance, sensitivity
         preset.crossfeedLevel = r.read(6)   // crossfeed is stored per preset
         preset.preGain = Double(QxBitReader.signExtend(r.read(16), bits: 16)) / QxScale.gain
-        r.skip(16)  // ch1 pre-gain
+        // Read, not skipped. The two are meant to agree, and while this app
+        // wrote only the first they could silently drift apart into a left/right
+        // imbalance nothing could observe. Kept so a disagreement can be seen
+        // and corrected rather than lived with.
+        preset.preGainCh1 = Double(QxBitReader.signExtend(r.read(16), bits: 16)) / QxScale.gain
 
         let bandCount = group.bandCount
         var freqs = [[Int]](repeating: [Int](repeating: 0, count: bandCount),
