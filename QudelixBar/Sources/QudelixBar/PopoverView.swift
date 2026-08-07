@@ -560,6 +560,29 @@ struct EqEditorView: View {
 
             HStack {
                 Button("Flatten") { controller.flatten() }
+                // Visible buttons, not just a shortcut. Dragging the curve
+                // makes a wrong move cheap, and an undo nobody can see is an
+                // undo most people never find — the same trap this app has
+                // fallen into twice with hidden controls.
+                Button {
+                    controller.undoEqEdit()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
+                }
+                .controlSize(.mini)
+                .disabled(!controller.canUndo || !controller.canWriteNow)
+                .keyboardShortcut("z", modifiers: .command)
+                .help(controller.undoLabel.map { "Undo \($0)" } ?? "Nothing to undo")
+
+                Button {
+                    controller.redoEqEdit()
+                } label: {
+                    Image(systemName: "arrow.uturn.forward").font(.system(size: 9))
+                }
+                .controlSize(.mini)
+                .disabled(!controller.canRedo || !controller.canWriteNow)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .help(controller.redoLabel.map { "Redo \($0)" } ?? "Nothing to redo")
                 // Reflects the device's mode and asks it to switch; the
                 // selection only moves once the device confirms, so a brief
                 // lag after clicking is the round trip, not a lost click.

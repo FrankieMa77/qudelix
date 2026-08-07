@@ -237,6 +237,92 @@ final class QudelixController: ObservableObject {
     /// The stored curve for the group currently addressed on the wire.
     private var eqSnapshot: EqSnapshot? { eqSnapshots[eqGroup.rawValue] }
 
+    // MARK: - Undo
+
+    /// One reversible EQ state. Only what this app can put back: the curve, the
+    /// pre-gain and which bands are muted. Not the preset slot — undoing a
+    /// slot load restores the curve, which is what the user is looking at.
+    struct EqEdit: Equatable {
+        var bands: [QxEqBandValue]
+        var preGain: Double
+        var mutedBands: [Int: QxFilter]
+        /// What this step would undo, shown on the button.
+        var label: String
+    }
+
+    @Published private(set) var undoStack: [EqEdit] = []
+    @Published private(set) var redoStack: [EqEdit] = []
+    /// Deep enough for a session of shaping, shallow enough that the memory is
+    /// bounded no matter how long the app stays open.
+    private static let undoDepth = 40
+    /// Set while an undo, a redo or a device-state repair is writing. Those
+    /// replay history rather than making it, and recording them would make the
+    /// stack grow as the user tried to walk back through it.
+    private var suppressUndo = false
+    private var lastEditLabel = ""
+    private var lastEditAt = Date.distantPast
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+    var undoLabel: String? { undoStack.last?.label }
+    var redoLabel: String? { redoStack.last?.label }
+
+    private var currentEqEdit: EqEdit {
+        EqEdit(bands: bands, preGain: preGain, mutedBands: mutedBands, label: "")
+    }
+
+    /// Record the state *before* a change, coalescing a continuous gesture into
+    /// one step.
+    ///
+    /// A drag on the curve and a drag on a slider both emit a change per frame.
+    /// Undo has to step over the whole gesture, not one frame of it, so a fresh
+    /// entry is only pushed when the kind of edit changes or after a pause —
+    /// which is also how a user perceives "one edit".
+    private func checkpoint(_ label: String, discrete: Bool = false) {
+        guard !suppressUndo else { return }
+        let now = Date()
+        let continuing = !discrete && label == lastEditLabel
+            && now.timeIntervalSince(lastEditAt) < 0.7
+        lastEditLabel = label
+        lastEditAt = now
+        guard !continuing else { return }
+
+        var entry = currentEqEdit
+        entry.label = label
+        // Nothing to undo back to if the state is already what the top of the
+        // stack holds — a click that changes nothing should not cost a step.
+        if let top = undoStack.last,
+           top.bands == entry.bands, top.preGain == entry.preGain,
+           top.mutedBands == entry.mutedBands { return }
+        undoStack.append(entry)
+        if undoStack.count > Self.undoDepth { undoStack.removeFirst() }
+        redoStack.removeAll()
+    }
+
+    func undoEqEdit() { step(from: &undoStack, to: &redoStack) }
+    func redoEqEdit() { step(from: &redoStack, to: &undoStack) }
+
+    private func step(from source: inout [EqEdit], to destination: inout [EqEdit]) {
+        guard canWriteEq, var entry = source.popLast() else { return }
+        var here = currentEqEdit
+        here.label = entry.label
+        destination.append(here)
+        if destination.count > Self.undoDepth { destination.removeFirst() }
+
+        suppressUndo = true
+        defer { suppressUndo = false; lastEditLabel = ""; lastEditAt = .distantPast }
+        // Mutes first: restoring a band's shape and then muting it again would
+        // write the band twice and leave the mute map disagreeing with it.
+        mutedBands = entry.mutedBands
+        setPreGain(entry.preGain)
+        for (i, band) in entry.bands.enumerated() where i < bandCount {
+            guard bands.indices.contains(i), bands[i] != band else { continue }
+            updateBand(i, band, persistToFlash: false)
+        }
+        mutedBands = entry.mutedBands
+        entry.label = ""
+    }
+
     /// Reclaim the parked mute shapes from the snapshot for bands the device
     /// still reports as bypassed.
     ///
@@ -362,6 +448,8 @@ final class QudelixController: ObservableObject {
               snap.bands.count == bandCount,
               !snap.matches(bands: bands, preGain: preGain) else { return }
         DebugLog.shared.log("device EQ differs from last seen — restoring")
+        suppressUndo = true
+        defer { suppressUndo = false }
         // The same preamble apply() sends: band params are only meaningful
         // against the parametric EQ type.
         transportSend(.setEqType, [eqGroup.rawValue, 1])
@@ -466,6 +554,8 @@ final class QudelixController: ObservableObject {
         // trap, reached through a link drop instead of a quit.
         snapshotWork?.cancel()
         saveAllWork?.cancel()
+        undoStack.removeAll()
+        redoStack.removeAll()
         compatibility = .checking
         receivingReports = false
         firmwareVersion = nil
@@ -971,6 +1061,11 @@ final class QudelixController: ObservableObject {
         // made a moment ago has a snapshot queued against the outgoing curve;
         // letting it fire would file one group's bands under the other's.
         snapshotWork?.cancel()
+        // Same reasoning for the undo history: its entries are this group's
+        // curve, and replaying one onto the other group's bands would write a
+        // shape that was never on it.
+        undoStack.removeAll()
+        redoStack.removeAll()
         // Rate limited, but the change is *deferred* rather than dropped. Simply
         // discarding it left `eqGroup` — which selects the band count and the
         // group byte on every write — disagreeing with the device until it
@@ -1216,6 +1311,7 @@ final class QudelixController: ObservableObject {
     @discardableResult
     func loadPreset(_ index: Int) -> Bool {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return false }
+        checkpoint("load \(presetLabel(index))", discrete: true)
         eqSourceName = presetLabel(index)
         requestedCorrection = nil
         activePreset = index
@@ -1236,6 +1332,9 @@ final class QudelixController: ObservableObject {
     /// Reset every band to flat (0 dB, default frequencies) and clear pre-gain.
     func flatten() {
         guard canWriteEq else { return }
+        checkpoint("flatten", discrete: true)
+        suppressUndo = true
+        defer { suppressUndo = false }
         eqSourceName = nil
         requestedCorrection = nil
         setPreGain(0)
@@ -1281,6 +1380,7 @@ final class QudelixController: ObservableObject {
 
     func setPreGain(_ db: Double) {
         guard canWriteEq, db.isFinite else { return }
+        checkpoint("pre-gain")
         let clamped = EQHeadroom.clamp(db)
         preGain = clamped
         sendPreGain(Int((clamped * QxScale.gain).rounded()))
@@ -1314,6 +1414,7 @@ final class QudelixController: ObservableObject {
     /// it: a rejected edit changes nothing on either side.
     func updateBand(_ index: Int, _ value: QxEqBandValue, persistToFlash: Bool = true) {
         guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
+        checkpoint("band \(index + 1)")
         var v = value
         v.freq = max(20, min(20000, v.freq))
         v.gain = v.gain.isFinite ? max(-12, min(12, v.gain)) : 0
@@ -1349,6 +1450,10 @@ final class QudelixController: ObservableObject {
     /// the only difference is which field changes.
     func setBandMuted(_ index: Int, _ muted: Bool) {
         guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
+        checkpoint(muted ? "mute band \(index + 1)" : "unmute band \(index + 1)",
+                   discrete: true)
+        suppressUndo = true
+        defer { suppressUndo = false }
         if muted {
             let shape = bands[index].filter
             // A band already contributing nothing has no shape to keep, and
@@ -1381,6 +1486,9 @@ final class QudelixController: ObservableObject {
             lastImportSummary = "Not applied — this device isn't supported."
             return
         }
+        checkpoint("import", discrete: true)
+        suppressUndo = true
+        defer { suppressUndo = false }
         eqSourceName = name
         requestedCorrection = file
         // Every band is about to be rewritten, and the bands past the file's
