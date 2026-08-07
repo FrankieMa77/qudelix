@@ -56,6 +56,7 @@ right.
 - **Device settings** — channel trim, volume limit and the DAC reconstruction
   filter, all stored on the 5K itself
 - **Export** your EQ in the standard parametric format
+- **Update check** in the About panel — on request only, never in the background
 - **Tune** — find the EQ you actually prefer, by ear (see below)
 - **Stage** — a soundstage for headphones: width, crossfeed, dialogue lift and
   room, applied on the Mac (see below)
@@ -312,9 +313,13 @@ no third-party dependencies.
 
 ## Privacy
 
-- The only host contacted is `raw.githubusercontent.com`, and only to fetch the
-  AutoEq headphone list and the preset you choose. This happens when you open
-  the Import pane, never at launch.
+- Three hosts are contacted, each only when you ask. `raw.githubusercontent.com`
+  and `autoeq.app` are reached when you open the Import pane, to fetch the
+  headphone list and the correction you pick. `api.github.com` is reached only
+  when you press **Check** in the About panel, to read the latest release
+  number. Nothing is contacted at launch, and there is no background or
+  scheduled check — the update check runs once, when you press it, and
+  downloads nothing.
 - No telemetry, analytics, or crash reporting, and nothing is ever uploaded.
 - The Stage and Level features process audio in memory and write none of it
   anywhere, ever. What is persisted — per-device stage settings and the daily
@@ -356,7 +361,8 @@ Read the source before running them.
   identical identity to every other unit of their model.
 - Only firmware 3.x is supported; see the table above for what happens on
   anything else.
-- No auto-update mechanism yet.
+- No auto-update mechanism. The About panel will tell you when a newer release
+  exists, but downloading and installing it is manual.
 
 ## Feedback and contributions
 

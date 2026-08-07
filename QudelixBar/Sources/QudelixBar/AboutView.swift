@@ -8,6 +8,12 @@ import SwiftUI
 /// one glance that it is not the maker's own software and that nobody official
 /// is answerable for it.
 struct AboutView: View {
+    /// nil until asked. There is no check on launch and no timer: the privacy
+    /// note promises no host is contacted at startup, and quietly phoning home
+    /// for a version would make that false.
+    @State private var updateResult: UpdateCheck.Result?
+    @State private var checking = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -32,8 +38,53 @@ struct AboutView: View {
             // copyright string here said the same thing twice in two voices.
             licenceRow
             row("Source", Self.repoDisplay, url: Self.repoURL)
+            updateRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The update check, and whatever it last said.
+    ///
+    /// A button rather than anything automatic. The answer is worth having, but
+    /// not at the cost of the app reaching the network on its own — and an
+    /// update people check when they think of it is the honest trade.
+    private var updateRow: some View {
+        HStack(spacing: 6) {
+            Text("Updates")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer()
+            if checking {
+                ProgressView().controlSize(.small)
+            } else if let result = updateResult {
+                Text(verbatim: UpdateCheck.summary(result))
+                    .font(.system(size: 10))
+                    .foregroundStyle(isNewer(result) ? AnyShapeStyle(Color.accentColor)
+                                                     : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if isNewer(result), let url = UpdateCheck.releasesURL {
+                    linkButton("Get it", url: url)
+                }
+            }
+            Button(updateResult == nil ? "Check" : "Again") {
+                Task {
+                    checking = true
+                    defer { checking = false }
+                    updateResult = await UpdateCheck.run(current: Self.rawVersion)
+                }
+            }
+            .buttonStyle(.link)
+            .font(.system(size: 10))
+            .disabled(checking)
+        }
+        .help("Asks the release list once, when you press it. Nothing is sent "
+              + "but the request itself, and nothing is downloaded or installed.")
+    }
+
+    private func isNewer(_ result: UpdateCheck.Result) -> Bool {
+        if case .available = result { return true }
+        return false
     }
 
     /// Licence and holder on one line, with only the holder clickable — the
@@ -100,6 +151,9 @@ struct AboutView: View {
     /// "which build is this": most builds sit somewhere between two releases,
     /// and a "+" on the revision means this binary corresponds to no commit at
     /// all because the tree was dirty when it was built.
+    /// The bare version, for comparison rather than display.
+    static var rawVersion: String { info("CFBundleShortVersionString") ?? "0.0.0" }
+
     static var versionLine: String {
         let version = info("CFBundleShortVersionString") ?? "unreleased build"
         guard let rev = info("QBSourceRevision"), rev != "unknown" else { return version }

@@ -117,7 +117,12 @@ enum PinnedHTTP {
     /// ephemeral and carries no cookies or credentials — but a host check made
     /// when building a URL is worth nothing if a 302 can move the request
     /// afterwards.
-    static let allowedHosts: Set<String> = ["raw.githubusercontent.com", "autoeq.app"]
+    /// `api.github.com` is here for the manual update check only, and only
+    /// because the release list is the authoritative answer to "is there a
+    /// newer version" — a version file committed in the repository would drift
+    /// the first time someone forgot to bump it.
+    static let allowedHosts: Set<String> = ["raw.githubusercontent.com", "autoeq.app",
+                                            "api.github.com"]
 
     private final class HostPinnedRedirects: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask,
