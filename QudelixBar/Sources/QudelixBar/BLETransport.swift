@@ -161,6 +161,7 @@ final class BLETransport: NSObject {
         connectTimeout?.cancel()
         teardown(reason: "forget device")
         reconnectDelay = 0.5
+        consecutiveConnectFailures = 0
         // Deliberately scheduled rather than immediate. Scanning straight away
         // re-adopts the peripheral we just cancelled — it is still connected at
         // the system level — and the cancellation's disconnect callback then
@@ -249,15 +250,36 @@ final class BLETransport: NSObject {
     private static let connectTimeoutSeconds: TimeInterval = 10
     private static let scanBurstSeconds: TimeInterval = 10
     private static let scanRestSeconds: TimeInterval = 50
+
+    /// Where the backoff settles once the pinned device has stopped answering
+    /// altogether, and how many failures it takes to decide that.
+    ///
+    /// A remembered device is reconnected by identifier, which skips the
+    /// duty-cycled scan below and so skips the energy budget that goes with it.
+    /// That is right for a device that blinked — the first retries should be
+    /// quick. It is wrong for one that is switched off or out of range, where
+    /// the 8 s ceiling meant a connection attempt every 18 s for as long as the
+    /// app stayed open, indefinitely, and made the cheap path three times more
+    /// expensive than the expensive one. Once the device has clearly gone, the
+    /// delay converges on the same worst-case pickup latency the scan
+    /// duty-cycle already accepts.
+    private static let absentReconnectDelay: TimeInterval = 60
+    private static let failuresBeforeAbsent = 3
+
     private var connectTimeout: DispatchWorkItem?
     private var scanBurstEnd: DispatchWorkItem?
     private var scanScheduled = false
+    /// Consecutive connect attempts that ended in a timeout. Reset by any link
+    /// that comes up, so one good connection restores the fast retries.
+    private var consecutiveConnectFailures = 0
 
     private func scheduleScan() {
         guard !scanScheduled else { return }
         scanScheduled = true
         let delay = reconnectDelay
-        reconnectDelay = min(reconnectDelay * 2, Self.maxReconnectDelay)
+        let ceiling = consecutiveConnectFailures >= Self.failuresBeforeAbsent
+            ? Self.absentReconnectDelay : Self.maxReconnectDelay
+        reconnectDelay = min(reconnectDelay * 2, ceiling)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.scanScheduled = false
@@ -275,7 +297,16 @@ final class BLETransport: NSObject {
         connectTimeout?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, let pending = self.peripheral, !self.isConnected else { return }
-            DebugLog.shared.log("BLE connect timed out — cancelling and rescanning")
+            self.consecutiveConnectFailures += 1
+            // Logged once at the transition rather than on every attempt: this
+            // line was 3,000 entries of the diagnostics buffer, which pushed out
+            // everything anyone would actually want to read there.
+            if self.consecutiveConnectFailures == Self.failuresBeforeAbsent {
+                DebugLog.shared.log("BLE device not answering — backing off to "
+                                    + "\(Int(Self.absentReconnectDelay))s retries")
+            } else if self.consecutiveConnectFailures < Self.failuresBeforeAbsent {
+                DebugLog.shared.log("BLE connect timed out — cancelling and rescanning")
+            }
             self.central.cancelPeripheralConnection(pending)
             self.teardown(reason: "connect timeout")
             self.scheduleScan()
@@ -424,6 +455,7 @@ extension BLETransport: CBPeripheralDelegate {
             }
             connectTimeout?.cancel()
             reconnectDelay = 0.5           // a good link earns a fast retry next time
+            consecutiveConnectFailures = 0
             DebugLog.shared.log("BLE adopted GAIA link: tx=\(w.uuid) rx=\(n.uuid)")
             onConnected?(p.name ?? "Qudelix 5K")
         }
