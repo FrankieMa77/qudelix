@@ -86,9 +86,11 @@ struct AboutView: View {
         return "\(version) (\(rev))"
     }
 
-    static let repoDisplay = "github.com/FrankieMa77/qudelix"
+    /// The link reads "GitHub" rather than the bare URL: the row is one line
+    /// in a narrow panel, and the destination is unsurprising enough that
+    /// spelling it out costs more width than it buys anyone.
+    static let repoDisplay = "GitHub"
     static let repoURL = URL(string: "https://github.com/FrankieMa77/qudelix")
 
-    /// Matches the holder named in the LICENSE file at the repository root.
-    static let copyrightHolder = "© 2026 FrankieMa77"
+    static let copyrightHolder = "© 2026 wpmagic.pro"
 }
