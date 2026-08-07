@@ -53,36 +53,53 @@ final class PresetNameTests: XCTestCase {
     /// what the correction is called — otherwise the library reads "Preset 7".
     func testASourcedCurveNamesTheSlot() {
         XCTAssertEqual(
-            QudelixController.nameOnSave(source: "Sennheiser HD 650 · Harman", existing: nil),
+            QudelixController.nameOnSave(source: "Sennheiser HD 650 · Harman", existing: nil,
+                                        unchangedSinceSource: true),
             "Sennheiser HD 650 · Harman")
         XCTAssertEqual(
-            QudelixController.nameOnSave(source: "HD 650", existing: "Preset 7"),
+            QudelixController.nameOnSave(source: "HD 650", existing: "Preset 7",
+                                        unchangedSinceSource: true),
             "HD 650")
     }
 
     /// A hand-shaped curve has no name to offer. Clearing whatever the user
     /// typed there, in exchange for nothing, would be worse than leaving it.
     func testAHandShapedCurveLeavesAnExistingNameAlone() {
-        XCTAssertNil(QudelixController.nameOnSave(source: nil, existing: "Night listening"))
-        XCTAssertNil(QudelixController.nameOnSave(source: nil, existing: nil))
-        XCTAssertNil(QudelixController.nameOnSave(source: "   ", existing: "Night listening"))
+        XCTAssertNil(QudelixController.nameOnSave(source: nil, existing: "Night listening", unchangedSinceSource: true))
+        XCTAssertNil(QudelixController.nameOnSave(source: nil, existing: nil, unchangedSinceSource: true))
+        XCTAssertNil(QudelixController.nameOnSave(source: "   ", existing: "Night listening", unchangedSinceSource: true))
     }
 
     /// Re-saving a slot under the name it already carries is a pointless write
     /// to a part that stores it in flash.
     func testNoWriteWhenTheNameWouldNotChange() {
-        XCTAssertNil(QudelixController.nameOnSave(source: "HD 650", existing: "HD 650"))
+        XCTAssertNil(QudelixController.nameOnSave(source: "HD 650", existing: "HD 650", unchangedSinceSource: true))
     }
 
     /// Whatever comes back here still goes through the payload builder, so an
     /// over-long source name is cut there rather than refused.
     func testALongSourceNameStillProducesAValidPayload() {
         let long = String(repeating: "Sennheiser HD 650 ", count: 5)
-        let name = QudelixController.nameOnSave(source: long, existing: nil)
+        let name = QudelixController.nameOnSave(source: long, existing: nil,
+                                                unchangedSinceSource: true)
         let payload = QxPacket.presetNamePayload(group: .b20, index: 4,
                                                  name: try! XCTUnwrap(name))
         XCTAssertNotNil(payload)
         XCTAssertLessThanOrEqual(payload!.count - 3, QxPacket.maxPresetNameBytes)
+    }
+
+    /// A curve shaped since it arrived is no longer the thing the name
+    /// describes. Labelling a slot "HD 650" when it holds an hour of by-ear
+    /// tuning on top of HD 650 is worse than leaving it unnamed, because the
+    /// label would be believed. `eqSourceName` survives every hand edit on
+    /// purpose — the overlay needs it — so this is the guard that stops it
+    /// being used for something it cannot answer.
+    func testAnEditedCurveIsNotNamedAfterWhatItStartedAs() {
+        XCTAssertNil(QudelixController.nameOnSave(source: "HD 650", existing: nil,
+                                                  unchangedSinceSource: false))
+        XCTAssertNil(QudelixController.nameOnSave(source: "HD 650", existing: "Preset 3",
+                                                  unchangedSinceSource: false),
+                     "an existing name must survive rather than be overwritten wrongly")
     }
 
     // MARK: - Byte budget, not character budget

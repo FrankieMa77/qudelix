@@ -356,6 +356,31 @@ final class QudelixController: ObservableObject {
     private var sawEqMode = false
     /// The name attached to the current curve (import file, AutoEq entry).
     private var eqSourceName: String?
+    /// The curve exactly as the source produced it.
+    ///
+    /// Naming a slot after a correction is only honest while the curve still
+    /// is that correction. A Tune session or a dragged node can move it a long
+    /// way, and `eqSourceName` does not notice — it survives every hand edit
+    /// by design, because the requested-curve overlay wants it. Comparing
+    /// against what was applied is exact and needs no flag threaded through
+    /// the edit paths, so undoing back to the imported curve makes the name
+    /// honest again on its own.
+    private var sourceCurve: [QxEqBandValue]?
+    private var sourcePreGain: Double?
+
+    /// Whether the curve is still what `eqSourceName` describes.
+    var curveMatchesSource: Bool {
+        guard let curve = sourceCurve, let gain = sourcePreGain,
+              curve.count == bands.count, abs(gain - preGain) < 0.06 else { return false }
+        // Same tolerance the snapshot comparison uses: values come back
+        // through the device's fixed-point scaling, so exact equality would
+        // report a difference after every read-back.
+        for (a, b) in zip(curve, bands) {
+            if a.filter != b.filter || a.freq != b.freq { return false }
+            if abs(a.gain - b.gain) > 0.06 || abs(a.q - b.q) > 0.02 { return false }
+        }
+        return true
+    }
     private var lastImplausibleDump = Date.distantPast
     private var lastStateLogLine = ""
 
@@ -581,6 +606,8 @@ final class QudelixController: ObservableObject {
         presetRead = false
         sawEqMode = false
         eqSourceName = nil
+        sourceCurve = nil
+        sourcePreGain = nil
         requestedCorrection = nil
         batteryAlerts.connectionReset()
         state = QxDeviceState()
@@ -1099,6 +1126,8 @@ final class QudelixController: ObservableObject {
         // slot for this group.
         activePreset = nil
         eqSourceName = nil
+        sourceCurve = nil
+        sourcePreGain = nil
         requestedCorrection = nil
         // Crossfeed is stored per preset, so it belongs to the group we left.
         crossfeedLevel = nil
@@ -1314,6 +1343,8 @@ final class QudelixController: ObservableObject {
         checkpoint("load \(presetLabel(index))", discrete: true)
         eqSourceName = presetLabel(index)
         requestedCorrection = nil
+        sourceCurve = nil
+        sourcePreGain = nil
         activePreset = index
         // The slot brings its own curve, including whichever of its bands it
         // stores as bypassed. Those are the preset's, not mutes of ours.
@@ -1336,6 +1367,8 @@ final class QudelixController: ObservableObject {
         suppressUndo = true
         defer { suppressUndo = false }
         eqSourceName = nil
+        sourceCurve = nil
+        sourcePreGain = nil
         requestedCorrection = nil
         setPreGain(0)
         let defaults = eqGroup.defaultFreqs
@@ -1352,7 +1385,8 @@ final class QudelixController: ObservableObject {
         // name. Saving into slot 7 and reading back "Preset 7" is the gap
         // naming was built to close.
         if let name = Self.nameOnSave(source: eqSourceName,
-                                      existing: presetNames[index]) {
+                                      existing: presetNames[index],
+                                      unchangedSinceSource: curveMatchesSource) {
             setPresetName(index, name)
         }
     }
@@ -1364,7 +1398,13 @@ final class QudelixController: ObservableObject {
     /// it, because that is now what the slot contains. A hand-shaped curve has
     /// no name to offer, and clearing the slot's existing one would destroy
     /// something the user typed in exchange for nothing.
-    nonisolated static func nameOnSave(source: String?, existing: String?) -> String? {
+    nonisolated static func nameOnSave(source: String?, existing: String?,
+                                       unchangedSinceSource: Bool) -> String? {
+        // A curve that has been shaped since it arrived is no longer the thing
+        // the name describes. Labelling a slot "HD 650" when it holds an hour
+        // of by-ear tuning on top of HD 650 is worse than leaving it unnamed,
+        // because the label would be believed.
+        guard unchangedSinceSource else { return nil }
         guard let source = source?.trimmingCharacters(in: .whitespacesAndNewlines),
               !source.isEmpty else { return nil }
         // Re-saving a slot under the name it already has is a wasted write to
@@ -1546,6 +1586,8 @@ final class QudelixController: ObservableObject {
                 + (file.bands.count > bandCount && eqGroup != .b20
                    ? " (fit in 20-band mode)" : "") : "")
         DebugLog.shared.log("import: \(lastImportSummary ?? "")")
+        sourceCurve = bands
+        sourcePreGain = preGain
     }
 
     /// EQ files are a few hundred bytes; refuse anything absurd rather than
