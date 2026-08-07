@@ -50,6 +50,7 @@ enum UIPreview {
                 let root = PopoverView()
                     .environmentObject(controller)
                     .environmentObject(stage)
+                    .environmentObject(ProfileRules())
                     .frame(width: 400)
                     .background(VisualEffectBackground())
 
@@ -95,6 +96,7 @@ enum UIPreview {
                 let view = PopoverView()
                     .environmentObject(controller)
                     .environmentObject(stage)
+                    .environmentObject(ProfileRules())
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 

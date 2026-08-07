@@ -20,6 +20,9 @@ struct QudelixBarApp: App {
     /// App-owned, not popover-owned: the stage engine and the exposure meter
     /// must survive the popover closing.
     @StateObject private var stageState = StageState()
+    /// Also app-owned: it has to notice an output change while the popover is
+    /// closed, which is when swapping headphones actually happens.
+    @StateObject private var profileRules = ProfileRules()
     /// The menu bar label's `onAppear` can fire more than once; starting twice
     /// would replace the BLE central while the old one still held the link.
     @State private var started = false
@@ -35,6 +38,7 @@ struct QudelixBarApp: App {
             PopoverView()
                 .environmentObject(controller)
                 .environmentObject(stageState)
+                .environmentObject(profileRules)
         } label: {
             // One composed template image, not an HStack of Images — the
             // menu bar item drops all but the first SF symbol when handed
@@ -52,6 +56,28 @@ struct QudelixBarApp: App {
                     started = true
                     controller.start()
                     stageState.start()
+
+                    // The rules engine decides *what* should happen and this
+                    // is the only place that lets it happen, so it can never
+                    // reach the device except through the controller's own
+                    // gated write path.
+                    profileRules.onApplyPreset = { [weak controller] index in
+                        controller?.loadPreset(index)
+                    }
+                    profileRules.presetLabel = { [weak controller] index in
+                        controller?.presetLabel(index) ?? "Preset \(index + 1)"
+                    }
+                    // Switching silently is only ever allowed when there is
+                    // nothing to lose by it: the device must be writable, the
+                    // running curve must be a saved slot rather than an unsaved
+                    // custom one, and no band may be mid-edit. When this is
+                    // false an automatic rule degrades to asking.
+                    profileRules.canApplyNow = { [weak controller, weak profileRules] in
+                        guard let controller, controller.canWriteNow,
+                              controller.activePreset != nil else { return false }
+                        return profileRules?.editingNow != true
+                    }
+                    profileRules.start()
                     quitDelegate.onTerminate = { [weak stageState, weak controller] in
                         // A stale EQ snapshot doesn't just lose the last
                         // edit — the next connect restores over it.
