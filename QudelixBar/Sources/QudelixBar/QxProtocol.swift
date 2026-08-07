@@ -26,7 +26,7 @@ enum QxCmd: UInt16 {
     case setUsbFsMode     = 0x0209  // [idx], DESCENDING: 0=96, 1=88.2, 2=48, 3=44.1, 4=all, 5=48+mic, 6=44.1+mic; device re-enumerates USB
     case setBatteryCare   = 0x0213
     case setUsbDacMode    = 0x0217
-    case setDacFilter     = 0x0501
+    case setDacFilter     = 0x0501  // [idx] into QxStatusParser.dacFilters, no group byte
 
     // EQ (group 0 = usr/headphone, 10 bands, legacy 5K payloads)
     case setEqEnable      = 0x0700  // [group, 0|1]
@@ -301,6 +301,17 @@ enum QxPacket {
         guard db.isFinite else { return nil }
         let scaled = Int((param.clamp(db) * QxScale.volume).rounded())
         return [param.rawValue] + int16BE(scaled)
+    }
+
+    /// SetDacFilter payload: a single byte carrying the raw filter index,
+    /// verbatim — the same index `QxStatusParser` reads back out of the dac
+    /// config block's 4-bit field. Returns nil for anything outside
+    /// `QxStatusParser.dacFilters`, rather than clamping: there is no boundary
+    /// index that means "closest valid filter", only entries that name a real
+    /// one and a lot of numbers that name nothing the device defines.
+    static func dacFilterPayload(_ index: Int) -> [UInt8]? {
+        guard QxStatusParser.dacFilters.indices.contains(index) else { return nil }
+        return [UInt8(index)]
     }
 }
 

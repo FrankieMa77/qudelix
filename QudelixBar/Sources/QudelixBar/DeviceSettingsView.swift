@@ -18,7 +18,12 @@ struct DeviceSettingsView: View {
             Divider()
             volumeLimit
 
-            if controller.dacFilterLabel != nil || controller.crossfeedLevel != nil {
+            if controller.dacFilterType != nil {
+                Divider()
+                dacFilter
+            }
+
+            if controller.crossfeedLevel != nil {
                 Divider()
                 readOnlyFacts
             }
@@ -110,21 +115,44 @@ struct DeviceSettingsView: View {
         }
     }
 
+    // MARK: - DAC filter
+
+    private var dacFilter: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("DAC filter")
+                .font(.system(size: 11, weight: .medium))
+            Picker("", selection: Binding(
+                get: { controller.dacFilterType ?? 0 },
+                set: { controller.setDacFilter($0) })) {
+                ForEach(QxStatusParser.dacFilters.indices, id: \.self) { i in
+                    Text(QxStatusParser.dacFilters[i]).tag(i)
+                }
+            }
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .labelsHidden()
+            .disabled(!controller.canWriteNow)
+            Text("How the DAC reconstructs the signal between samples. The "
+                 + "differences are subtle enough that most listeners won't "
+                 + "hear them — this just names what's running.")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     // MARK: - Read-only
 
     /// Settings the device reports but this app doesn't write yet. Shown
     /// because knowing the current value is useful on its own, and because a
-    /// wrong guess at one of these commands is what makes the 5K stop
-    /// responding — so they stay read-only until each is verified.
+    /// wrong guess at this command is what makes the 5K stop responding — so
+    /// it stays read-only until it's verified.
     private var readOnlyFacts: some View {
         VStack(alignment: .leading, spacing: 3) {
-            if let filter = controller.dacFilterLabel {
-                fact("DAC filter", filter)
-            }
             if let xfeed = controller.crossfeedLevel {
                 fact("Crossfeed", xfeed == 0 ? "off" : "\(xfeed)")
             }
-            Text("Set these in the official app for now.")
+            Text("Set this in the official app for now.")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
         }

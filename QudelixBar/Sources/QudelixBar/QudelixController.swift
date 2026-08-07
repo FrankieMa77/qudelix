@@ -66,7 +66,8 @@ final class QudelixController: ObservableObject {
     @Published var volumeLimitDb: Double = 0
 
     /// DAC reconstruction filter the device is running (index into
-    /// `QxStatusParser.dacFilters`). Read only — see `dacFilterLabel`.
+    /// `QxStatusParser.dacFilters`). Set with `setDacFilter`; see
+    /// `dacFilterLabel` for the display name.
     @Published var dacFilterType: Int?
 
     /// Crossfeed level stored in the preset the device is currently running,
@@ -100,6 +101,7 @@ final class QudelixController: ObservableObject {
     @Published var presetNames: [Int: String] = [:]
     @Published var activePreset: Int?
     @Published var lastImportSummary: String?
+
 
     /// Set only by UIPreview to force a starting pane when rendering mocks.
     var previewPane: PopoverView.Pane?
@@ -363,6 +365,7 @@ final class QudelixController: ObservableObject {
         volumeLimitDb = 0
         volumeFieldEditUntil = .distantPast
         dacFilterType = nil
+        dacFilterEditUntil = .distantPast
         crossfeedLevel = nil
         eqGroup = .user
         assembler.group = .user
@@ -611,7 +614,13 @@ final class QudelixController: ObservableObject {
             eqEnabled = en
         }
         if let idx = state.eqPresetIdx, eqCfgApplies { setActivePreset(idx) }
-        if let f = state.dacFilterType, f != dacFilterType { dacFilterType = f }
+        // Same echo as the EQ enable flag below: a write's own broadcast can
+        // still carry the pre-change index for one round trip, so a report
+        // inside the edit window is ignored rather than snapping the picker
+        // back to what was just changed away from.
+        if let f = state.dacFilterType, Date() >= dacFilterEditUntil, f != dacFilterType {
+            dacFilterType = f
+        }
         // Trim and limit ride in the same volume block as the level, so a
         // device push can carry the values from *before* a local edit — one
         // round trip behind, the same echo the EQ enable flag guards against.
@@ -910,6 +919,25 @@ final class QudelixController: ObservableObject {
         DebugLog.shared.log("requesting USB FS mode → \(Self.usbFsModeLabels[idx])")
         usbFsMode = idx
         transportSend(.setUsbFsMode, [UInt8(idx)])
+    }
+
+    /// Reports of the filter are ignored for this long after a local pick,
+    /// for the same reason as the EQ enable flag just below: the device
+    /// answers by broadcasting its dac config block, and that can still
+    /// carry the pre-change index for one round trip. After the window, the
+    /// device's own report is what the picker shows — never what was asked
+    /// for.
+    private var dacFilterEditUntil = Date.distantPast
+
+    /// Switch the DAC's reconstruction filter. Only ever sends an index this
+    /// build's own label table defines: `dacFilterPayload` refuses anything
+    /// else, so a bad index from the UI can't reach the wire and land on some
+    /// other setting the device would silently accept in its place.
+    func setDacFilter(_ index: Int) {
+        guard canWrite, let payload = QxPacket.dacFilterPayload(index) else { return }
+        dacFilterType = index
+        dacFilterEditUntil = Date().addingTimeInterval(1.5)
+        transportSend(.setDacFilter, payload)
     }
 
     /// Reports of the enable flag are ignored for this long after a local
