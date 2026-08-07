@@ -6,6 +6,7 @@ struct PopoverView: View {
     @State private var pane: Pane = .equalizer
     @State private var showDiagnostics = false
     @State private var showDeviceSettings = false
+    @State private var showAbout = false
     @State private var editingBand: Int?
 
     enum Pane: String, CaseIterable, Identifiable {
@@ -126,7 +127,12 @@ struct PopoverView: View {
 
             Divider()
             FooterBar(showDiagnostics: $showDiagnostics,
-                      showDeviceSettings: $showDeviceSettings)
+                      showDeviceSettings: $showDeviceSettings,
+                      showAbout: $showAbout)
+            if showAbout {
+                Divider()
+                AboutView().padding(.horizontal, 14).padding(.bottom, 10)
+            }
             if showDeviceSettings {
                 Divider()
                 DeviceSettingsView().padding(.horizontal, 14).padding(.bottom, 10)
@@ -817,6 +823,7 @@ struct FooterBar: View {
     @EnvironmentObject var controller: QudelixController
     @Binding var showDiagnostics: Bool
     @Binding var showDeviceSettings: Bool
+    @Binding var showAbout: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -847,7 +854,7 @@ struct FooterBar: View {
             // the kind you go looking for exactly once.
             Button {
                 showDeviceSettings.toggle()
-                if showDeviceSettings { showDiagnostics = false }
+                if showDeviceSettings { showDiagnostics = false; showAbout = false }
             } label: {
                 Label("Device", systemImage: "slider.horizontal.3")
                     .font(.system(size: 10))
@@ -858,12 +865,21 @@ struct FooterBar: View {
 
             Button {
                 showDiagnostics.toggle()
-                if showDiagnostics { showDeviceSettings = false }
+                if showDiagnostics { showDeviceSettings = false; showAbout = false }
             } label: {
                 Image(systemName: "waveform.path.ecg").font(.system(size: 10))
             }
             .buttonStyle(.borderless)
             .help("Diagnostics")
+
+            Button {
+                showAbout.toggle()
+                if showAbout { showDeviceSettings = false; showDiagnostics = false }
+            } label: {
+                Image(systemName: "info.circle").font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+            .help("About \(AboutView.appName) \(AboutView.versionLine)")
 
             Button { NSApp.terminate(nil) } label: {
                 Image(systemName: "power").font(.system(size: 10))

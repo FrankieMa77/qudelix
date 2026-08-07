@@ -6,8 +6,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 APP=../Qudelix.app
+
+# Which source this bundle was actually built from. The About panel shows it,
+# so a build handed to someone can be tied back to a commit rather than to a
+# version number that may be several weeks of work behind. A trailing "+" means
+# the tree had uncommitted changes, i.e. this binary matches no commit at all.
+REVISION="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if ! git diff --quiet HEAD -- . 2>/dev/null; then REVISION="${REVISION}+"; fi
 
 if [[ "${1:-}" == "--universal" ]]; then
   echo "building universal (arm64 + x86_64)…"
@@ -40,6 +47,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>         <string>APPL</string>
     <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
     <key>CFBundleVersion</key>             <string>${VERSION}</string>
+    <key>QBSourceRevision</key>            <string>${REVISION}</string>
     <key>LSMinimumSystemVersion</key>      <string>14.0</string>
     <key>LSUIElement</key>                 <true/>
     <key>NSBluetoothAlwaysUsageDescription</key>
