@@ -14,6 +14,40 @@ struct EqSnapshot: Codable, Equatable {
     /// or nil for hand edits.
     var name: String?
 
+    /// Filter shapes parked by a per-band mute, keyed by band index.
+    ///
+    /// A mute writes `.bypass` to the device, and that write is durable: it
+    /// reaches the device's own state and this snapshot. The shape needed to
+    /// undo it used to live only in memory, so any disconnect — including the
+    /// re-enumeration a USB rate change causes by design — left the band
+    /// silent with no way back and no record of what it had been.
+    var mutedBands: [Int: QxFilter] = [:]
+
+    /// Written by hand rather than synthesised so that a file saved before
+    /// `mutedBands` existed still loads. Swift's generated decoder treats a
+    /// missing key as an error even when the property has a default, and this
+    /// file is read with `try?`, so that error would surface as the user
+    /// silently losing their saved EQ.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        groupRaw = try c.decode(UInt8.self, forKey: .groupRaw)
+        bands = try c.decode([QxEqBandValue].self, forKey: .bands)
+        preGain = try c.decode(Double.self, forKey: .preGain)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        mutedBands = try c.decodeIfPresent([Int: QxFilter].self, forKey: .mutedBands) ?? [:]
+    }
+
+    init(groupRaw: UInt8, bands: [QxEqBandValue], preGain: Double,
+         enabled: Bool, name: String? = nil, mutedBands: [Int: QxFilter] = [:]) {
+        self.groupRaw = groupRaw
+        self.bands = bands
+        self.preGain = preGain
+        self.enabled = enabled
+        self.name = name
+        self.mutedBands = mutedBands
+    }
+
     /// Loose value comparison: the device echoes gains/Qs through its own
     /// fixed-point scaling, so exact equality would flag every readback.
     func matches(bands other: [QxEqBandValue], preGain otherGain: Double) -> Bool {

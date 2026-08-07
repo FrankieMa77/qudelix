@@ -66,7 +66,8 @@ struct PopoverView: View {
                     EQCurveView(bands: controller.bands,
                                 preGain: controller.preGain,
                                 highlighted: editingBand,
-                                requested: controller.requestedCorrection)
+                                requested: controller.requestedCorrection,
+                                mutedBands: controller.mutedBands)
                         .frame(height: 104)
 
                     VolumeControl()

@@ -115,6 +115,19 @@ final class QudelixController: ObservableObject {
         return "Plugged in, not charging"
     }
 
+    /// The parametric-file token for a filter shape, or nil for one that has
+    /// no representation in the format.
+    nonisolated static func exportToken(for filter: QxFilter) -> String? {
+        switch filter {
+        case .peak: return "PK"
+        case .lowShelf: return "LSC"
+        case .highShelf: return "HSC"
+        case .lpf: return "LPQ"
+        case .hpf: return "HPQ"
+        case .bypass: return nil
+        }
+    }
+
     /// The filter's display name, or nil when the device hasn't reported one
     /// (or reported an index this build has no name for).
     var dacFilterLabel: String? {
@@ -216,6 +229,25 @@ final class QudelixController: ObservableObject {
     /// save below can still be missed. On connect, a device reporting a
     /// different curve than last seen gets the last one back.
     private var eqSnapshot = EqSnapshotFile.load()
+
+    /// Reclaim the parked mute shapes from the snapshot for bands the device
+    /// still reports as bypassed.
+    ///
+    /// Writes nothing: a mute already reached the device, and this only puts
+    /// back the app's ability to undo it. Bands the device reports as live
+    /// are dropped, so a shape parked before someone else rewrote the curve
+    /// cannot resurrect itself over their edit.
+    private func reclaimMutedBands() {
+        guard mutedBands.isEmpty, let snap = eqSnapshot,
+              snap.groupRaw == eqGroup.rawValue, !snap.mutedBands.isEmpty else { return }
+        let usable = snap.mutedBands.filter { index, shape in
+            shape != .bypass && bands.indices.contains(index)
+                && bands[index].filter == .bypass
+        }
+        guard !usable.isEmpty else { return }
+        mutedBands = usable
+        DebugLog.shared.log("reclaimed \(usable.count) muted band(s) from the last session")
+    }
     private var snapshotWork: DispatchWorkItem?
     private var saveAllWork: DispatchWorkItem?
     /// One restore decision per connection, taken at the first preset
@@ -234,12 +266,18 @@ final class QudelixController: ObservableObject {
     /// a quick app-side snapshot, and a slower ask for the device to
     /// persist its settings to flash (the official app only does that
     /// before firmware updates, so a restart otherwise reverts the EQ).
-    private func eqEdited() {
+    ///
+    /// `persistToFlash: false` keeps the app-side snapshot but skips the
+    /// device's own save. A per-band mute is a moment's A/B, not a curve the
+    /// user chose, and writing one into flash both wears the part and makes a
+    /// temporary comparison outlive the power cycle that should have ended it.
+    private func eqEdited(persistToFlash: Bool = true) {
         snapshotWork?.cancel()
         let snap = DispatchWorkItem { [weak self] in self?.snapshotNow() }
         snapshotWork = snap
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: snap)
 
+        guard persistToFlash else { return }
         saveAllWork?.cancel()
         let persist = DispatchWorkItem { [weak self] in
             guard let self, self.canWrite else { return }
@@ -268,9 +306,20 @@ final class QudelixController: ObservableObject {
     }
 
     private func snapshotNow() {
+        // Only ever snapshot a curve that came from a device.
+        //
+        // Without this, the published properties are a flat 10-band user-group
+        // curve until a device is read — and `resetDeviceState` puts them back
+        // to exactly that on every disconnect. Quitting with the 5K unplugged,
+        // or losing the link within a second of an edit, would therefore save
+        // "flat" as the last EQ. The next connect in 10-band mode passes every
+        // one of `restoreIfNeeded`'s guards and writes that flat curve over the
+        // user's real one, then commits it to flash five seconds later. The
+        // safety net would be the thing that destroys the curve.
+        guard presetRead, case .connected = connection else { return }
         let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: bands,
                               preGain: preGain, enabled: eqEnabled,
-                              name: eqSourceName)
+                              name: eqSourceName, mutedBands: mutedBands)
         guard snap != eqSnapshot else { return }
         eqSnapshot = snap
         EqSnapshotFile.save(snap)
@@ -394,6 +443,11 @@ final class QudelixController: ObservableObject {
     /// popover would otherwise show the previous session's firmware, sample rate
     /// and preset names against a different device.
     private func resetDeviceState() {
+        // A snapshot queued by an edit a moment ago must not fire against the
+        // values this method is about to reset — that is the same flat-curve
+        // trap, reached through a link drop instead of a quit.
+        snapshotWork?.cancel()
+        saveAllWork?.cancel()
         compatibility = .checking
         receivingReports = false
         firmwareVersion = nil
@@ -435,6 +489,7 @@ final class QudelixController: ObservableObject {
         trimRightDb = 0
         volumeLimitDb = 0
         volumeFieldEditUntil = .distantPast
+        eqEnableEditUntil = .distantPast
         dacFilterType = nil
         dacFilterEditUntil = .distantPast
         crossfeedLevel = nil
@@ -837,6 +892,9 @@ final class QudelixController: ObservableObject {
             bands.indices.contains(index) && bands[index].filter == .bypass
         }
         if surviving != mutedBands { mutedBands = surviving }
+        // Only once the real band values are in: the snapshot's shapes are
+        // only usable against bands the device actually reports as bypassed.
+        reclaimMutedBands()
         presetRead = true
         restoreIfNeeded()
         eqObserved()
@@ -878,6 +936,10 @@ final class QudelixController: ObservableObject {
         // confirmation is resolved either way.
         pendingEqMode = nil
         guard group != eqGroup else { pendingGroup = nil; return }
+        // The bands are about to be replaced with the other group's. An edit
+        // made a moment ago has a snapshot queued against the outgoing curve;
+        // letting it fire would file one group's bands under the other's.
+        snapshotWork?.cancel()
         // Rate limited, but the change is *deferred* rather than dropped. Simply
         // discarding it left `eqGroup` — which selects the band count and the
         // group byte on every write — disagreeing with the device until it
@@ -935,7 +997,13 @@ final class QudelixController: ObservableObject {
     /// just left — an edit sent then would silently modify the wrong curve.
     private var canWriteEq: Bool {
         guard canWrite else { return false }
-        guard pendingGroup == nil else {
+        // Both halves of "the group is in flux" matter. `pendingGroup` is the
+        // device deferring a switch; `pendingEqMode` is one this app asked for
+        // and the device has not confirmed. Gating only the first let a band
+        // edit made straight after clicking 10/20 go out carrying the old
+        // group byte — editing the curve the user had just left, while the
+        // table showed it as applied. `restoreIfNeeded` already checked both.
+        guard pendingGroup == nil, pendingEqMode == nil else {
             DebugLog.shared.log("EQ write dropped: group switch in progress")
             return false
         }
@@ -1104,8 +1172,12 @@ final class QudelixController: ObservableObject {
         }
     }
 
-    func loadPreset(_ index: Int) {
-        guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
+    /// Returns whether the load was actually sent. Callers that record a
+    /// consequence of it — the profile rules mark an output as confirmed —
+    /// must not treat a dropped write as a completed switch.
+    @discardableResult
+    func loadPreset(_ index: Int) -> Bool {
+        guard canWriteEq, (0..<Self.presetCount).contains(index) else { return false }
         eqSourceName = presetLabel(index)
         requestedCorrection = nil
         activePreset = index
@@ -1115,6 +1187,7 @@ final class QudelixController: ObservableObject {
         assembler.reset()
         transportSend(.loadEqPreset, [UInt8(index)])
         transportSend(.reqEqPreset, [eqGroup.requestMask])   // refresh band values
+        return true
     }
 
     /// Display name for a preset slot, falling back to its number.
@@ -1201,7 +1274,7 @@ final class QudelixController: ObservableObject {
     /// off the USB bus. `bandParamPayload` refuses whatever the clamp couldn't
     /// rescue, and the local value is only adopted once a packet exists for
     /// it: a rejected edit changes nothing on either side.
-    func updateBand(_ index: Int, _ value: QxEqBandValue) {
+    func updateBand(_ index: Int, _ value: QxEqBandValue, persistToFlash: Bool = true) {
         guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
         var v = value
         v.freq = max(20, min(20000, v.freq))
@@ -1215,7 +1288,7 @@ final class QudelixController: ObservableObject {
         if v.filter != .bypass, mutedBands[index] != nil { mutedBands[index] = nil }
 
         transportSendCoalesced(.setEqBandParam, payload, key: "band\(index)")
-        eqEdited()
+        eqEdited(persistToFlash: persistToFlash)
     }
 
     /// Whether this band is muted — bypassed by this app, with a shape kept
@@ -1246,7 +1319,7 @@ final class QudelixController: ObservableObject {
             guard shape != .bypass else { return }
             var b = bands[index]
             b.filter = .bypass
-            updateBand(index, b)
+            updateBand(index, b, persistToFlash: false)
             // Only after the write is known to have gone out: a refused one
             // leaves the band audible, and a mute recorded against it would
             // put a slash through a row that is still playing.
@@ -1256,7 +1329,7 @@ final class QudelixController: ObservableObject {
             guard isBandMuted(index), let shape = mutedBands[index] else { return }
             var b = bands[index]
             b.filter = shape
-            updateBand(index, b)   // clears the entry itself
+            updateBand(index, b, persistToFlash: false)   // clears the entry itself
         }
     }
 
@@ -1337,15 +1410,12 @@ final class QudelixController: ObservableObject {
     func exportText() -> String {
         var lines = [String(format: "Preamp: %.1f dB", preGain)]
         for (i, b) in bands.enumerated() {
-            let token: String
-            switch b.filter {
-            case .peak: token = "PK"
-            case .lowShelf: token = "LSC"
-            case .highShelf: token = "HSC"
-            case .lpf: token = "LPQ"
-            case .hpf: token = "HPQ"
-            case .bypass: continue
-            }
+            // A muted band is still part of the user's curve — the mute is a
+            // momentary A/B, so export its parked shape rather than dropping
+            // the band and handing out a file with a filter silently missing.
+            // A band that is bypassed with nothing parked really is empty.
+            let shape = b.filter == .bypass ? (mutedBands[i] ?? .bypass) : b.filter
+            guard let token = Self.exportToken(for: shape) else { continue }
             lines.append(String(format: "Filter %d: ON %@ Fc %d Hz Gain %.1f dB Q %.2f",
                                 i + 1, token, b.freq, b.gain, b.q))
         }

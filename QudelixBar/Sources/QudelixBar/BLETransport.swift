@@ -391,6 +391,12 @@ extension BLETransport: CBCentralManagerDelegate {
         guard isCurrent(p) else { return }
         DebugLog.shared.log("BLE disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
         connectTimeout?.cancel()
+        // A link that came up and then dropped on its own is a failure too.
+        // Only the connect *timeout* used to count, so a peripheral that
+        // accepted and immediately dropped reset the backoff every cycle and
+        // spun at the floor delay forever — the exact flap the backoff exists
+        // to stop. A disconnect we asked for carries no error and is left out.
+        if error != nil { consecutiveConnectFailures += 1 }
         // `teardown` also restarts each link on the 5K's vendor id. Latching the
         // fallback for the life of the process meant one rejected frame — which
         // any peripheral can send — left every later session framed for hardware

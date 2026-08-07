@@ -207,6 +207,32 @@ final class OutputWatcher: ObservableObject {
         }
     }
 
+    /// Unregister. `listeners` was recorded from the start but never read,
+    /// so every watcher left its blocks on the system object for the life of
+    /// the process. The two app-scoped watchers live as long as the app so
+    /// nothing leaked in practice, but any watcher created and dropped would
+    /// have left a permanent registration firing into a dead object.
+    func stop() {
+        for (addr, block) in listeners {
+            var a = addr
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &a, .main, block)
+        }
+        listeners.removeAll()
+        debounce?.cancel()
+        debounce = nil
+    }
+
+    deinit {
+        // Same removal, without hopping to the actor: the block itself holds
+        // `self` weakly, and CoreAudio needs the registration gone now.
+        for (addr, block) in listeners {
+            var a = addr
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &a, .main, block)
+        }
+    }
+
     /// Re-enumerate immediately, publish, and notify — for events that must
     /// not wait out the throttle.
     func refreshNow() {

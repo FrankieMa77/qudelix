@@ -385,6 +385,11 @@ struct EQCurveView: View {
     /// `EQDivergence.reading`.
     var requested: ParametricEQFile?
 
+    /// Shapes parked by a per-band mute, so the divergence measurement can tell
+    /// a band the user silenced from one the device could not hold. Empty in
+    /// the ordinary case, which is why it defaults.
+    var mutedBands: [Int: QxFilter] = [:]
+
     /// Everything a redraw needs, worked out once.
     ///
     /// The axis size and the curve were previously derived from two separate
@@ -405,7 +410,16 @@ struct EQCurveView: View {
     private func plot() -> Plot {
         let applied = EQCurve.response(bands: bands, preGain: 0)
         let asked = requested.map { EQCurve.response(bands: $0.bands, preGain: 0) }
-        let gap = asked.flatMap { EQDivergence.reading(requested: $0, applied: applied) }
+        // Divergence is measured against the curve with mutes undone, not the
+        // one being drawn. A mute is the user silencing a band on purpose; the
+        // shading and the "N dB" label mean "the device could not hold what was
+        // asked for", and pointing them at the user's own A/B would be the app
+        // blaming the hardware for something the user did a second ago. The
+        // drawn curve still shows the mute — that is what is being heard.
+        let comparable = mutedBands.isEmpty
+            ? applied
+            : EQCurve.response(bands: unmuted(bands), preGain: 0)
+        let gap = asked.flatMap { EQDivergence.reading(requested: $0, applied: comparable) }
 
         // The axis has to hold whichever curves are drawn. A request that
         // overshoots is exactly the case this feature exists for, and an axis
@@ -421,6 +435,16 @@ struct EQCurveView: View {
                     requested: gap == nil ? nil : asked,
                     divergence: gap,
                     range: min(18, max(9, (peak / 3).rounded(.up) * 3 + 3)))
+    }
+
+    /// `bands` with each muted band's parked shape put back, so a comparison
+    /// sees the curve the user actually asked the device to hold.
+    private func unmuted(_ input: [QxEqBandValue]) -> [QxEqBandValue] {
+        var out = input
+        for (index, shape) in mutedBands where out.indices.contains(index) {
+            if out[index].filter == .bypass { out[index].filter = shape }
+        }
+        return out
     }
 
     var body: some View {

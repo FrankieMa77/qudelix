@@ -56,6 +56,43 @@ final class ABTunerHeadroomTests: XCTestCase {
                        accuracy: 0.001)
     }
 
+    // MARK: - Macros must mean the same thing in either EQ mode
+
+    /// The macro shapes are authored against the ten-band layout. Applied by
+    /// index they landed on whatever band happened to sit at that position —
+    /// in 20-band mode "Treble" tilted 250-710 Hz and the top half of the
+    /// spectrum was never touched.
+    func testTrebleMacroWeightsTrebleFrequenciesNotBandIndices() {
+        let treble = ABTuner.macros.first { $0.name.hasPrefix("Treble") }!
+
+        // Near-zero down low, full weight up top, in actual hertz.
+        XCTAssertEqual(ABTuner.weight(treble.shape, atHz: 250), 0, accuracy: 0.01)
+        XCTAssertEqual(ABTuner.weight(treble.shape, atHz: 710), 0, accuracy: 0.01)
+        XCTAssertGreaterThan(ABTuner.weight(treble.shape, atHz: 8000), 0.9)
+        XCTAssertGreaterThan(ABTuner.weight(treble.shape, atHz: 16000), 0.9)
+    }
+
+    /// Interpolation must agree exactly with the authored array at the ten
+    /// frequencies it was written for, or 10-band behaviour would have shifted.
+    func testWeightMatchesTheAuthoredShapeAtItsOwnFrequencies() {
+        for m in ABTuner.macros {
+            for (i, hz) in QxEq.defaultFreqs.enumerated() {
+                XCTAssertEqual(ABTuner.weight(m.shape, atHz: hz), m.shape[i], accuracy: 0.0001,
+                               "\(m.name) at \(hz) Hz")
+            }
+        }
+    }
+
+    /// Outside the authored range the end weights hold rather than falling to
+    /// zero — a 20-band curve reaches 20 kHz, past the table's 16 kHz top.
+    func testWeightHoldsAtTheEdgesRatherThanCollapsing() {
+        let treble = ABTuner.macros.first { $0.name.hasPrefix("Treble") }!
+        XCTAssertEqual(ABTuner.weight(treble.shape, atHz: 20000),
+                       treble.shape.last!, accuracy: 0.0001)
+        XCTAssertEqual(ABTuner.weight(treble.shape, atHz: 20),
+                       treble.shape.first!, accuracy: 0.0001)
+    }
+
     /// Never louder than the user had it, even when the curve needs nothing.
     func testNeverRaisesTheUsersPreGain() {
         XCTAssertEqual(ABTuner.safePreGain(for: flat(), notAbove: -5), -5, accuracy: 0.001)

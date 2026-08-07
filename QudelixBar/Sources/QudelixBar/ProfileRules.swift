@@ -187,7 +187,11 @@ final class ProfileRules: ObservableObject {
     /// The one thing this file is allowed to cause: a request to load a
     /// preset slot. Wire this to `QudelixController.loadPreset` — that
     /// method is the only code that may actually write to the device.
-    var onApplyPreset: ((Int) -> Void)?
+    /// Returns whether the preset was actually applied. A load can be refused
+    /// downstream — the device may be mid-group-switch — and a switch that
+    /// never happened must not be recorded as one: `confirmed` is the single
+    /// gate that unlocks silent automatic switching for an output.
+    var onApplyPreset: ((Int) -> Bool)?
     /// Display name for a preset slot. Wire to `QudelixController.presetLabel`;
     /// falls back to "Preset N" if never wired, matching that method's own
     /// fallback.
@@ -247,8 +251,11 @@ final class ProfileRules: ObservableObject {
             suggestion = nil
             return
         }
-        if rule.automatic, rule.confirmed, canApplyNow?() == true {
-            onApplyPreset?(rule.presetIndex)
+        // An automatic switch that the write path refuses falls back to
+        // asking, rather than leaving the previous headphone's preset running
+        // and saying nothing.
+        if rule.automatic, rule.confirmed, canApplyNow?() == true,
+           onApplyPreset?(rule.presetIndex) == true {
             suggestion = nil
         } else {
             suggestion = Suggestion(outputUID: uid, outputName: rule.outputName,
@@ -317,7 +324,12 @@ final class ProfileRules: ObservableObject {
     /// The user tapped "Switch" on the suggestion banner.
     func confirmSuggestion() {
         guard let s = suggestion else { return }
-        onApplyPreset?(s.presetIndex)
+        // Only a switch that actually reached the device counts. Marking the
+        // output confirmed is what later allows it to switch silently, and
+        // earning that on a write nobody performed would arm the feature on
+        // the strength of something that never happened. The banner stays up
+        // so the user can see it did not take.
+        guard onApplyPreset?(s.presetIndex) == true else { return }
         if let idx = rules.firstIndex(where: { $0.outputUID == s.outputUID }) {
             rules[idx].confirmed = true
         }

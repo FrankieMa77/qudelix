@@ -67,7 +67,14 @@ struct TuneView: View {
             // the EQ switched off, an abandoned comparison leaves a trial
             // curve and its session pre-gain applied.
             if tones.phase == .running { tones.stop(controller) }
-            if tuner.phase == .running { tuner.cancel(controller) }
+            // `.finished` matters as much as `.running`: that is the results
+            // screen, before Keep or Discard, and the trial curve and session
+            // pre-gain are still on the device. Closing the popover there used
+            // to destroy the baseline along with the view, stranding both with
+            // no way back.
+            if tuner.phase == .running || tuner.phase == .finished {
+                tuner.cancel(controller)
+            }
         }
     }
 

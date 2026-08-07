@@ -20,7 +20,7 @@ final class ProfileRulesTests: XCTestCase {
     func testUnknownOutputProducesNoSuggestionAndNoApply() {
         let rules = ProfileRules()
         var applied: Int?
-        rules.onApplyPreset = { applied = $0 }
+        rules.onApplyPreset = { applied = $0; return true }
 
         rules.outputChanged(uid: "unknown-uid", name: "Mystery Adapter")
 
@@ -33,7 +33,7 @@ final class ProfileRulesTests: XCTestCase {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-1", outputName: "Studio Cans", presetIndex: 3)
         var applied: Int?
-        rules.onApplyPreset = { applied = $0 }
+        rules.onApplyPreset = { applied = $0; return true }
 
         // `bind` itself never runs the matching logic — it only records the
         // pairing — so this is the first `outputChanged` this instance sees.
@@ -67,7 +67,7 @@ final class ProfileRulesTests: XCTestCase {
         rules.previewSet(rules: [ProfileRule(outputUID: "uid-2", outputName: "Desk Speakers",
                                              presetIndex: 5)])
         var applied: [Int] = []
-        rules.onApplyPreset = { applied.append($0) }
+        rules.onApplyPreset = { applied.append($0); return true }
 
         rules.outputChanged(uid: "uid-2", name: "Desk Speakers")
         XCTAssertNotNil(rules.suggestion)
@@ -96,7 +96,7 @@ final class ProfileRulesTests: XCTestCase {
         rules.bind(outputUID: "uid-4", outputName: "Home Rig", presetIndex: 7)
         rules.canApplyNow = { true }
         var applied: [Int] = []
-        rules.onApplyPreset = { applied.append($0) }
+        rules.onApplyPreset = { applied.append($0); return true }
 
         rules.setAutomatic(true, forUID: "uid-4")
         XCTAssertEqual(rules.rules.first?.automatic, true)
@@ -116,13 +116,52 @@ final class ProfileRulesTests: XCTestCase {
         // custom curve with nowhere to fall back to silently.
         rules.canApplyNow = { false }
         var applied: [Int] = []
-        rules.onApplyPreset = { applied.append($0) }
+        rules.onApplyPreset = { applied.append($0); return true }
 
         rules.outputChanged(uid: "uid-5", name: "Night Setup")
 
         XCTAssertTrue(applied.isEmpty, "must not apply silently when it isn't safe to")
         XCTAssertEqual(rules.suggestion?.outputUID, "uid-5",
                        "the switch is still offered, just not done unannounced")
+    }
+
+    /// A load the write path refuses must not be recorded as a switch that
+    /// happened. `confirmed` is the single gate that later allows an output to
+    /// switch presets silently, so earning it on a write nobody performed
+    /// would arm the feature on the strength of nothing.
+    @MainActor
+    func testARefusedApplyDoesNotConfirmTheRule() {
+        let rules = ProfileRules()
+        rules.previewSet(rules: [ProfileRule(outputUID: "uid-r", outputName: "Refused",
+                                             presetIndex: 6)])
+        var attempts = 0
+        rules.onApplyPreset = { _ in attempts += 1; return false }   // device refused
+
+        rules.outputChanged(uid: "uid-r", name: "Refused")
+        XCTAssertNotNil(rules.suggestion)
+        rules.confirmSuggestion()
+
+        XCTAssertEqual(attempts, 1, "it should still have tried")
+        XCTAssertEqual(rules.rules.first?.confirmed, false,
+                       "a refused switch must not unlock automatic switching")
+        XCTAssertNotNil(rules.suggestion,
+                        "the offer stays up so the user can see it did not take")
+    }
+
+    /// An automatic rule whose write is refused falls back to asking, rather
+    /// than leaving the previous headphone's preset running and saying nothing.
+    @MainActor
+    func testAutomaticFallsBackToAskingWhenTheWriteIsRefused() {
+        let rules = ProfileRules()
+        rules.bind(outputUID: "uid-s", outputName: "Silent Fail", presetIndex: 8)
+        rules.canApplyNow = { true }
+        rules.setAutomatic(true, forUID: "uid-s")
+        rules.onApplyPreset = { _ in false }
+
+        rules.outputChanged(uid: "uid-s", name: "Silent Fail")
+
+        XCTAssertEqual(rules.suggestion?.presetIndex, 8,
+                       "a dropped automatic switch must surface, not vanish")
     }
 
     // MARK: - Durable-identifier collisions

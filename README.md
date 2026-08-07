@@ -46,8 +46,8 @@ right.
 - **Auto pre-gain** — works out how much the boosted bands need pulling back
   and offers the number, rather than moving it for you
 - **Per-band mute** for an instant A/B of one band; the gain is kept
-- **20 preset slots**. Whatever names the device already holds are shown;
-  naming a slot from here isn't supported yet
+- **20 preset slots**, which you can name from the app — the name is stored on
+  the 5K, so other software sees it too
 - **Profiles** — pair an output device with a preset and be offered the switch
   when that output becomes active
 - **Preset import** from a file, or from the
@@ -343,10 +343,9 @@ Read the source before running them.
 ## Known limitations
 
 - Only the user (headphone) EQ group is exposed, not the speaker group.
-- Preset slots show generic names unless you have named them on the device.
-  Naming a slot from this app is not supported: the device's own naming
-  command is understood well enough to read names but not to write them
-  safely, and a wrong guess there can damage the stored preset.
+- Preset slots show generic names until you name them. Names are limited by
+  bytes rather than characters, so a name in Japanese or emoji runs out of
+  room sooner than its length suggests.
 - Crossfeed is shown but cannot be changed here — it lives inside the preset
   the device stores, and writing it means rewriting that preset.
 - A muted band comes back after an app restart as a bypassed band rather than

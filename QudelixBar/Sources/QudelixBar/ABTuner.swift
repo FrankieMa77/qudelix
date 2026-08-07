@@ -320,19 +320,48 @@ final class ABTuner: ObservableObject {
 
     // MARK: - Curve building
 
+    /// A macro's weight at an arbitrary frequency.
+    ///
+    /// The `shape` arrays are authored against the ten-band layout, one weight
+    /// per band. Applying them by *index* only works if the bands are that
+    /// layout — in 20-band mode index 6-9 are 250-710 Hz, so the "Treble"
+    /// macro was tilting the lower midrange and the top ten bands were never
+    /// touched at all. Interpolating on log frequency makes a macro mean the
+    /// same thing in either mode, which is what its name promises.
+    nonisolated static func weight(_ shape: [Double], atHz hz: Int) -> Double {
+        let table = QxEq.defaultFreqs
+        guard let lowest = table.first, let highest = table.last,
+              shape.count == table.count else { return 0 }
+        if hz <= lowest { return shape[0] }
+        if hz >= highest { return shape[shape.count - 1] }
+        for i in 1..<table.count where hz <= table[i] {
+            let lo = Double(table[i - 1]), hi = Double(table[i])
+            let t = (log10(Double(hz)) - log10(lo)) / (log10(hi) - log10(lo))
+            return shape[i - 1] + t * (shape[i] - shape[i - 1])
+        }
+        return shape[shape.count - 1]
+    }
+
     /// The listener's own curve plus the macro tilt, loudness-matched.
+    ///
+    /// Sized from the baseline, so it covers whichever group is live rather
+    /// than always the first ten bands.
     private func curve(_ v: [String: Double]) -> [QxEqBandValue] {
-        var tilt = [Double](repeating: 0, count: QxEq.bandCount)
+        let count = baseline.count
+        guard count > 0 else { return [] }
+        var tilt = [Double](repeating: 0, count: count)
         for m in Self.macros {
             let amount = v[m.name] ?? 0
-            for i in 0..<min(tilt.count, m.shape.count) { tilt[i] += amount * m.shape[i] }
+            guard amount != 0 else { continue }
+            for i in 0..<count {
+                tilt[i] += amount * Self.weight(m.shape, atHz: baseline[i].freq)
+            }
         }
         // Remove the average so a tilt never changes overall loudness.
-        let mean = tilt.reduce(0, +) / Double(tilt.count)
+        let mean = tilt.reduce(0, +) / Double(count)
         var out: [QxEqBandValue] = []
-        for i in 0..<QxEq.bandCount {
-            var band = i < baseline.count ? baseline[i]
-                : QxEqBandValue(filter: .peak, freq: QxEq.defaultFreqs[i], gain: 0, q: 1.0)
+        for i in 0..<count {
+            var band = baseline[i]
             let shaped = min(max(tilt[i] - mean, -Self.tiltCap), Self.tiltCap)
             band.gain = min(max(band.gain + shaped, -12), 12)
             out.append(band)

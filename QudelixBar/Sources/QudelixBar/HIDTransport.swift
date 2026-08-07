@@ -83,7 +83,12 @@ final class HIDTransport {
             me.deviceDetached(device)
         }, ctx)
 
-        IOHIDManagerScheduleWithRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        // commonModes, not defaultMode: while the main runloop is tracking a
+        // drag — any slider in the popover — a defaultMode source does not
+        // fire. Device reports then arrive in a burst when the drag ends,
+        // seconds late, which silently defeats every 1.5 s echo-suppression
+        // window and lets a pre-change report snap a control back.
+        IOHIDManagerScheduleWithRunLoop(m, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         IOHIDManagerOpen(m, IOOptionBits(kIOHIDOptionsTypeNone))
         manager = m
     }

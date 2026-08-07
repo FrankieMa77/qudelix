@@ -62,7 +62,7 @@ struct QudelixBarApp: App {
                     // reach the device except through the controller's own
                     // gated write path.
                     profileRules.onApplyPreset = { [weak controller] index in
-                        controller?.loadPreset(index)
+                        controller?.loadPreset(index) ?? false
                     }
                     profileRules.presetLabel = { [weak controller] index in
                         controller?.presetLabel(index) ?? "Preset \(index + 1)"

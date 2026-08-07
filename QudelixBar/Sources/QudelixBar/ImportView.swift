@@ -139,7 +139,12 @@ struct ImportView: View {
                    help: "Overall slope. Negative is darker, positive brighter. 0 is the target as published.")
 
             HStack(spacing: 6) {
-                Text("Fitted to the \(controller.bandCount)-band mode — nothing is clamped on the way to the device.")
+                // "Asked for", not "got": the optimizer is sent this device's
+                // limits, but the response can still come back outside them,
+                // and the warnings printed a few lines below say so when it
+                // does. Claiming nothing was clamped would contradict them on
+                // the same screen.
+                Text("Fitted to the \(controller.bandCount)-band mode — asked for a curve this device can hold as-is.")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                 if bassBoost != 0 || tilt != 0 || selectedTarget != nil {
@@ -150,6 +155,11 @@ struct ImportView: View {
         }
     }
 
+    /// Shared by the target, bass and tilt rows so their controls line up.
+    /// Sized for the longest label rather than the shortest: at 28pt, which
+    /// fits "Bass" and "Tilt", "Target" wrapped and rendered as "Targe / t".
+    private static let paramLabelWidth: CGFloat = 40
+
     /// The target picker. Only meaningful on the optimizer path — a published
     /// preset is already fitted to whichever target its author chose, and
     /// `apply` names that as unhonoured rather than pretending to redirect it.
@@ -159,7 +169,8 @@ struct ImportView: View {
             Text("Target")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, alignment: .leading)
+                .fixedSize()
+                .frame(width: Self.paramLabelWidth, alignment: .leading)
             Picker("", selection: $selectedTarget) {
                 Text("Recommended for this measurement").tag(String?.none)
                 ForEach(AutoEqService.groupedTargets(optimizer.targets)) { group in
@@ -241,7 +252,8 @@ struct ImportView: View {
             Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, alignment: .leading)
+                .fixedSize()
+                .frame(width: Self.paramLabelWidth, alignment: .leading)
             Slider(value: value, in: range)
                 .controlSize(.small)
             Text(display)
