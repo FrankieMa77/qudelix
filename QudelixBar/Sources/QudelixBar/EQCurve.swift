@@ -390,6 +390,35 @@ struct EQCurveView: View {
     /// the ordinary case, which is why it defaults.
     var mutedBands: [Int: QxFilter] = [:]
 
+    /// Called with a band's new value as it is dragged. Absent — the default —
+    /// leaves the curve read-only, which is what the render harness and any
+    /// non-editing use of this view want.
+    var onBandChanged: ((Int, QxEqBandValue) -> Void)?
+    /// Reported while a drag is in progress so the band table can highlight
+    /// the same row, and cleared on release.
+    var onDragBand: ((Int?) -> Void)?
+
+    /// Which band this drag captured. Chosen once, at the press, and held for
+    /// the whole gesture: re-picking as the pointer moves would hop between
+    /// bands the moment it crossed another one, which turns one intended edit
+    /// into several unintended ones.
+    @State private var dragging: Int?
+
+    /// The canvas's drawn size. The gesture lives outside the `Canvas` closure,
+    /// which is the only place the size is handed to us, so it is recorded here
+    /// and read back when converting a press into a frequency and a gain.
+    @State private var viewSize: CGSize = .zero
+
+    /// How far from a marker a press still counts, in points. The 20-band
+    /// layout puts markers about 20pt apart in a 400pt window, so this is
+    /// deliberately larger than the dot: the nearest one wins rather than
+    /// requiring a hit on a 5pt target.
+    private static let grabRadius: CGFloat = 22
+
+    /// Neighbouring bands may not be dragged past each other, and must keep
+    /// this much of a gap. Crossing would reorder the curve under the table.
+    static let minNeighbourRatio = 1.05
+
     /// Everything a redraw needs, worked out once.
     ///
     /// The axis size and the curve were previously derived from two separate
@@ -570,6 +599,15 @@ struct EQCurveView: View {
                 }
             }
         }
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { viewSize = geo.size }
+                    .onChange(of: geo.size) { _, new in viewSize = new }
+            }
+        }
+        .contentShape(Rectangle())
+        .gesture(onBandChanged == nil ? nil : dragGesture(range: plot.range))
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topLeading) {
             Text("±\(Int(plot.range)) dB")
@@ -585,5 +623,85 @@ struct EQCurveView: View {
                     .padding(4)
             }
         }
+    }
+
+    // MARK: - Dragging a band
+
+    private func dragGesture(range: Double) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .local)
+            .onChanged { value in
+                if dragging == nil {
+                    guard let hit = nearestBand(to: value.startLocation, range: range)
+                    else { return }
+                    dragging = hit
+                    onDragBand?(hit)
+                }
+                guard let i = dragging, bands.indices.contains(i) else { return }
+                var band = bands[i]
+
+                // Vertical: gain, clamped to what the device accepts rather
+                // than to the drawn axis — the axis grows to fit a ghost and
+                // must not become a way to ask for more than ±12 dB.
+                let midY = viewSize.height / 2
+                let usable = max(viewSize.height / 2 - 6, 1)
+                let db = Double((midY - value.location.y) / usable) * range
+                band.gain = (min(max(db, -12), 12) * 10).rounded() / 10
+
+                // Horizontal: frequency, kept strictly between its neighbours.
+                // Compared by frequency value rather than array position: a
+                // typed edit in the table can leave the array unsorted, and an
+                // index-based clamp would then teleport the dot being dragged.
+                let fx = Double(min(max(value.location.x / viewSize.width, 0), 1))
+                band.freq = Self.clampedFrequency(EQCurve.frequency(atFraction: fx),
+                                                  forBand: i, in: bands)
+
+                guard band != bands[i] else { return }
+                onBandChanged?(i, band)
+            }
+            .onEnded { _ in
+                dragging = nil
+                onDragBand?(nil)
+            }
+    }
+
+    /// A dragged frequency, kept strictly between the band's neighbours.
+    ///
+    /// Neighbours are found by frequency *value*, not array position: a typed
+    /// edit in the band table can leave the array unsorted, and an index-based
+    /// clamp would then teleport the dot being dragged to the wrong side of
+    /// something. Bypassed bands draw no marker and are not obstacles.
+    nonisolated static func clampedFrequency(_ wanted: Double, forBand i: Int,
+                                             in bands: [QxEqBandValue]) -> Int {
+        guard bands.indices.contains(i) else { return 1000 }
+        var freq = wanted
+        let current = Double(bands[i].freq)
+        let others = bands.enumerated()
+            .filter { $0.offset != i && $0.element.filter != .bypass }
+            .map { Double($0.element.freq) }
+        if let below = others.filter({ $0 < current }).max() {
+            freq = max(freq, below * minNeighbourRatio)
+        }
+        if let above = others.filter({ $0 > current }).min() {
+            freq = min(freq, above / minNeighbourRatio)
+        }
+        return Int(min(max(freq.rounded(), 20), 20000))
+    }
+
+    /// The band whose marker is nearest the press, or nil if none is close
+    /// enough. Bypassed bands are excluded: they draw no marker, and grabbing
+    /// an invisible one would edit a band the user cannot see.
+    private func nearestBand(to point: CGPoint, range: Double) -> Int? {
+        let midY = viewSize.height / 2
+        let usable = max(viewSize.height / 2 - 6, 1)
+        var best: (index: Int, distance: CGFloat)?
+        for (i, band) in bands.enumerated() where band.filter != .bypass {
+            let bx = CGFloat(EQCurve.fraction(of: Double(band.freq))) * viewSize.width
+            let by = midY - CGFloat(max(-range, min(range, band.gain)) / range) * usable
+            let d = hypot(point.x - bx, point.y - by)
+            if d <= Self.grabRadius, best == nil || d < best!.distance {
+                best = (i, d)
+            }
+        }
+        return best?.index
     }
 }

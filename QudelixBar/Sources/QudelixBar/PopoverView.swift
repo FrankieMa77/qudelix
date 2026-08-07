@@ -67,7 +67,12 @@ struct PopoverView: View {
                                 preGain: controller.preGain,
                                 highlighted: editingBand,
                                 requested: controller.requestedCorrection,
-                                mutedBands: controller.mutedBands)
+                                mutedBands: controller.mutedBands,
+                                // Straight through `updateBand`, so a drag is
+                                // gated, clamped and coalesced exactly like the
+                                // slider it replaces — no second write path.
+                                onBandChanged: { controller.updateBand($0, $1) },
+                                onDragBand: { editingBand = $0 })
                         .frame(height: 104)
 
                     VolumeControl()
