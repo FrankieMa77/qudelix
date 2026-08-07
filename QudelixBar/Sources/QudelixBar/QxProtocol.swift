@@ -39,11 +39,24 @@ enum QxCmd: UInt16 {
     case setEqFreq        = 0x0707  // sendEqParam, Hz
     case saveEqPreset     = 0x0708  // [presetIndex]
     case loadEqPreset     = 0x0709  // [presetIndex]
+    // Declared, never sent: the read side gives the name field's contents
+    // (UTF-8, NUL-terminated, 32 bytes) but says nothing about the shape of
+    // the payload that writes it — whether a length or end-offset byte sits
+    // ahead of the text, and whether the field is padded to its full width.
+    // Those alternatives differ by one byte at the front of thirty bytes of
+    // user-controlled data, and a name written at the wrong offset lands in
+    // whatever the firmware keeps next to the slot. Nothing here may send
+    // this until the shape is confirmed against hardware.
     case setEqPresetName  = 0x070A
     case reqEqPresetName  = 0x070B  // [group, presetIndex]
-    case rspEqPresetName  = 0x070C
+    case rspEqPresetName  = 0x070C  // [group, presetIndex, endOffset, utf8…]
     case setEqMode        = 0x070E  // [mode]: 0 = usr/spk (10-band), 1 = b20 (20-band)
     case setEqBandParam   = 0x070F  // [group, chMask, band, filter, freqHi, freqLo, gainHi, gainLo, qHi, qLo]
+    // Declared, never sent: nothing the device reports carries a mute bit —
+    // not the preset bitstream, not the EQ config block — so there is no
+    // read side to take the payload's width or value domain from, and no way
+    // to see afterwards whether a write landed. Per-band muting goes through
+    // SetEqBandParam's filter field instead (`QudelixController.setBandMuted`).
     case setEqMute        = 0x0710
     case reqEqData        = 0x0750
     case rspEqData        = 0x0751
@@ -313,6 +326,43 @@ enum QxPacket {
     static func dacFilterPayload(_ index: Int) -> [UInt8]? {
         guard QxStatusParser.dacFilters.indices.contains(index) else { return nil }
         return [UInt8(index)]
+    }
+
+    /// Ranges a band parameter may hold on the wire. These are the editor's
+    /// own limits, and the same window `applyPreset` clamps a device
+    /// read-back into, so a value that came off the device can always be
+    /// written straight back.
+    enum BandLimit {
+        static let freq = 20...20000
+        static let gain: ClosedRange<Double> = -12...12
+        static let q: ClosedRange<Double> = 0.1...10
+    }
+
+    /// SetEqBandParam payload — every parameter of one band in a single
+    /// packet: `[group, channelMask, band, filter, freq BE, gain BE, Q BE]`.
+    ///
+    /// Each field mirrors the one the preset bitstream hands back on the way
+    /// in: the filter is the 4-bit type field's value, the gain the same
+    /// dB×10 the 10-bit field carries, the Q the same ×1024. The channel mask
+    /// is the group's own — the both-channels mask on a single-channel group
+    /// is what makes the firmware write over its neighbouring struct.
+    ///
+    /// Returns nil rather than a nearest-legal packet for anything outside
+    /// that domain: a band index the group doesn't have, a non-finite gain or
+    /// Q (which has no boundary that means anything, and traps on conversion),
+    /// or a value the editor's own limits exclude. Callers clamp first; this
+    /// is the backstop that keeps an unclamped path from reaching the wire.
+    static func bandParamPayload(group: QxEqGroup, band: Int,
+                                 _ v: QxEqBandValue) -> [UInt8]? {
+        guard (0..<group.bandCount).contains(band) else { return nil }
+        guard v.gain.isFinite, v.q.isFinite else { return nil }
+        guard BandLimit.freq.contains(v.freq),
+              BandLimit.gain.contains(v.gain),
+              BandLimit.q.contains(v.q) else { return nil }
+        return [group.rawValue, group.writeChannelMask, UInt8(band), v.filter.rawValue]
+            + int16BE(v.freq)
+            + int16BE(Int((v.gain * QxScale.gain).rounded()))
+            + int16BE(Int((v.q * QxScale.q).rounded()))
     }
 }
 

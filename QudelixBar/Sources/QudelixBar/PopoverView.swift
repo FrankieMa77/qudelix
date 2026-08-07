@@ -8,6 +8,7 @@ struct PopoverView: View {
     @State private var showDeviceSettings = false
     @State private var showAbout = false
     @State private var editingBand: Int?
+    @EnvironmentObject private var profileRules: ProfileRules
 
     enum Pane: String, CaseIterable, Identifiable {
         // "EQ", not "Equalizer": six segments share the popover's width now,
@@ -143,6 +144,9 @@ struct PopoverView: View {
             }
         }
         .frame(width: 400)
+        .onChange(of: editingBand, initial: true) { _, band in
+            profileRules.editingNow = band != nil
+        }
     }
 
     private var connected: Bool {
@@ -626,6 +630,7 @@ extension EqEditorView {
                 Text("Gain").font(.system(size: 9)).foregroundStyle(.secondary)
                 Text("").frame(width: 32)
                 Text("Q").font(.system(size: 9)).foregroundStyle(.secondary).frame(width: 42, alignment: .trailing)
+                Text("").frame(width: 16)
             }
             ForEach(0..<controller.bandCount, id: \.self) { i in
                 BandRow(index: i, editingBand: $editingBand)
@@ -653,6 +658,7 @@ struct BandRow: View {
         // read here nor the one in `set` may assume this index still exists.
         let band = controller.bands.indices.contains(index)
             ? controller.bands[index] : QxEqBandValue()
+        let muted = controller.isBandMuted(index)
         GridRow {
             Text("\(index + 1)")
                 .font(.system(size: 9).monospacedDigit())
@@ -693,8 +699,27 @@ struct BandRow: View {
                 .font(.system(size: 10).monospacedDigit())
                 .multilineTextAlignment(.trailing)
                 .frame(width: 42)
+
+            // The band's gain stays on the device while it is muted, so this
+            // is a straight there-and-back: no value is parked anywhere that
+            // a preset load or another app's write could take away.
+            Button {
+                controller.setBandMuted(index, !muted)
+            } label: {
+                Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2")
+                    .font(.system(size: 9))
+                    .foregroundStyle(muted ? Color.orange : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .frame(width: 16)
+            .disabled(band.filter == .bypass && !muted)
+            .help(muted ? "Bring this band back — its gain hasn't changed"
+                        : "Silence this band, keeping its gain")
         }
-        .opacity(band.filter == .bypass ? 0.45 : 1)
+        // A muted row is dimmed like any bypassed one, but less: it is a
+        // state the user is actively listening against, and the gain they
+        // are judging has to stay readable while it is off.
+        .opacity(band.filter == .bypass ? (muted ? 0.62 : 0.45) : 1)
     }
 
     /// Mutate one field of this band and push it to the device.
@@ -727,6 +752,9 @@ struct PresetsView: View {
                 }
             }
             .frame(height: 190)
+
+            Divider()
+            ProfilesView()
         }
     }
 

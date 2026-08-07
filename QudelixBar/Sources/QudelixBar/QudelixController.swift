@@ -102,6 +102,25 @@ final class QudelixController: ObservableObject {
     @Published var activePreset: Int?
     @Published var lastImportSummary: String?
 
+    /// Bands muted from the band table, and the filter shape each one had
+    /// when it was muted so unmuting can put it back.
+    ///
+    /// The mute itself is a real write, not a display trick: the band's
+    /// filter type goes to bypass — the one type that contributes nothing to
+    /// the response — while its gain, frequency and Q ride along in the same
+    /// packet, unchanged. So the values being A/B-ed never leave the
+    /// hardware, and nothing here has to hold them: a preset load, another
+    /// app's write or a device restart can't lose a number this app is
+    /// keeping in memory, because it isn't keeping any.
+    ///
+    /// What's here is only which shape to come back to, which is why an entry
+    /// is dropped the moment anything writes a real filter to that band, why
+    /// a read-back that disagrees wins (`applyPreset`), and why the whole map
+    /// is cleared when the bands underneath it are replaced wholesale — a
+    /// group switch, a preset load, an import, a new connection. An entry
+    /// that outlived its band would offer to unmute something else.
+    @Published private(set) var mutedBands: [Int: QxFilter] = [:]
+
     /// The correction as the file asked for it, before the device's limits were
     /// applied to it. Kept so the curve view can show what was requested next to
     /// what the 5K could actually hold — the import summary says how many bands
@@ -384,6 +403,10 @@ final class QudelixController: ObservableObject {
         bands = QxEq.defaultFreqs.map { QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0) }
         preGain = 0
         eqEnabled = true
+        // A mute is a state of the curve on the device; the shapes to come
+        // back to describe the curve we were just looking at. Neither
+        // survives a handover to a device this link hasn't identified.
+        mutedBands = [:]
     }
 
     /// Whether a Bluetooth device is remembered, so the UI can offer to forget it.
@@ -741,6 +764,16 @@ final class QudelixController: ObservableObject {
             v.q = v.q.isFinite ? max(0.1, min(10, v.q)) : 1.0
             return v
         }
+        // The device's report ends any mute it disagrees with. A band that
+        // came back carrying a real filter is audible again — whatever this
+        // app last asked for — so the shape held for it is no longer a way
+        // back to anything.
+        // Read-backs are frequent; only assign when it actually changes, so
+        // an unchanged curve doesn't redraw the band table on every poll.
+        let surviving = mutedBands.filter { index, _ in
+            bands.indices.contains(index) && bands[index].filter == .bypass
+        }
+        if surviving != mutedBands { mutedBands = surviving }
         presetRead = true
         restoreIfNeeded()
         eqObserved()
@@ -818,6 +851,9 @@ final class QudelixController: ObservableObject {
         requestedCorrection = nil
         // Crossfeed is stored per preset, so it belongs to the group we left.
         crossfeedLevel = nil
+        // The bands were just replaced with this group's defaults, so band 3
+        // is a different band than the one that was muted a moment ago.
+        mutedBands = [:]
         transportSend(.reqEqPreset, [group.requestMask])
         transportSend(.reqDevConfig, [0xC0])   // sys2 | eq → this group's cfg + name mask
     }
@@ -1010,6 +1046,9 @@ final class QudelixController: ObservableObject {
         eqSourceName = presetLabel(index)
         requestedCorrection = nil
         activePreset = index
+        // The slot brings its own curve, including whichever of its bands it
+        // stores as bypassed. Those are the preset's, not mutes of ours.
+        mutedBands = [:]
         assembler.reset()
         transportSend(.loadEqPreset, [UInt8(index)])
         transportSend(.reqEqPreset, [eqGroup.requestMask])   // refresh band values
@@ -1068,21 +1107,66 @@ final class QudelixController: ObservableObject {
 
     /// Every value written to the device is clamped here — a text field can
     /// produce anything, and out-of-range reports are what knock this hardware
-    /// off the USB bus.
+    /// off the USB bus. `bandParamPayload` refuses whatever the clamp couldn't
+    /// rescue, and the local value is only adopted once a packet exists for
+    /// it: a rejected edit changes nothing on either side.
     func updateBand(_ index: Int, _ value: QxEqBandValue) {
         guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
         var v = value
         v.freq = max(20, min(20000, v.freq))
         v.gain = v.gain.isFinite ? max(-12, min(12, v.gain)) : 0
         v.q = v.q.isFinite ? max(0.1, min(10, v.q)) : 1.0
+        guard let payload = QxPacket.bandParamPayload(group: eqGroup, band: index, v) else { return }
         bands[index] = v
+        // Any edit that gives the band a filter again ends its mute: there is
+        // nothing left to restore, and a shape kept past that point would
+        // later offer to "unmute" a band the user had since shaped by hand.
+        if v.filter != .bypass, mutedBands[index] != nil { mutedBands[index] = nil }
 
-        let payload: [UInt8] = [eqGroup.rawValue, eqGroup.writeChannelMask, UInt8(index), v.filter.rawValue]
-            + QxPacket.int16BE(v.freq)
-            + QxPacket.int16BE(Int((v.gain * QxScale.gain).rounded()))
-            + QxPacket.int16BE(Int((v.q * QxScale.q).rounded()))
         transportSendCoalesced(.setEqBandParam, payload, key: "band\(index)")
         eqEdited()
+    }
+
+    /// Whether this band is muted — bypassed by this app, with a shape kept
+    /// to bring back.
+    ///
+    /// Deliberately narrower than "bypassed". An import leaves the bands it
+    /// didn't fill bypassed too, and those are empty slots: showing them as
+    /// muted would promise an unmute that restores nothing.
+    func isBandMuted(_ index: Int) -> Bool {
+        guard mutedBands[index] != nil, bands.indices.contains(index) else { return false }
+        return bands[index].filter == .bypass
+    }
+
+    /// Silence one band, or bring it back, without touching its gain.
+    ///
+    /// This is the cheapest A/B the EQ has: it answers "what is this band
+    /// doing for me" in one click and one packet, and the answer costs
+    /// nothing to undo. It writes through `updateBand`, so it is gated,
+    /// clamped, coalesced and snapshotted exactly like moving the slider —
+    /// the only difference is which field changes.
+    func setBandMuted(_ index: Int, _ muted: Bool) {
+        guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
+        if muted {
+            let shape = bands[index].filter
+            // A band already contributing nothing has no shape to keep, and
+            // recording bypass as the way back would make unmute a no-op
+            // that looks like a broken button.
+            guard shape != .bypass else { return }
+            var b = bands[index]
+            b.filter = .bypass
+            updateBand(index, b)
+            // Only after the write is known to have gone out: a refused one
+            // leaves the band audible, and a mute recorded against it would
+            // put a slash through a row that is still playing.
+            guard bands[index].filter == .bypass else { return }
+            mutedBands[index] = shape
+        } else {
+            guard isBandMuted(index), let shape = mutedBands[index] else { return }
+            var b = bands[index]
+            b.filter = shape
+            updateBand(index, b)   // clears the entry itself
+        }
     }
 
     // MARK: - Preset import / export
@@ -1097,6 +1181,9 @@ final class QudelixController: ObservableObject {
         }
         eqSourceName = name
         requestedCorrection = file
+        // Every band is about to be rewritten, and the bands past the file's
+        // length are bypassed on purpose — empty slots, not mutes.
+        mutedBands = [:]
         if !eqEnabled { setEqEnabled(true) }
         transportSend(.setEqType, [eqGroup.rawValue, 1])   // 1 = PEQ
         setPreGain(max(-12, min(12, file.preamp)))
