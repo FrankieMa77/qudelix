@@ -416,6 +416,19 @@ struct EQCurveView: View {
     /// different thing from an edit in progress and should not look like one.
     @State private var hovering: Int?
 
+    /// The band's value when the drag began. Movement is applied as an offset
+    /// from this rather than by placing the band under the pointer: the grab
+    /// radius is far larger than the dot, so an absolute map would snap the
+    /// band to wherever the press landed before the pointer had moved at all.
+    /// Holding it also makes a fine-adjust modifier possible, which an
+    /// absolute map cannot express.
+    @State private var dragOrigin: QxEqBandValue?
+
+    /// How much a drag is slowed while Shift is held. The graph is 104 points
+    /// tall for as much as ±18 dB, so a quarter-speed mode is the difference
+    /// between setting 3 dB and setting roughly 3 dB.
+    private static let fineDragScale: CGFloat = 0.25
+
     /// How far from a marker a press still counts, in points. The 20-band
     /// layout puts markers about 20pt apart in a 400pt window, so this is
     /// deliberately larger than the dot: the nearest one wins rather than
@@ -635,7 +648,7 @@ struct EQCurveView: View {
         .gesture(onBandChanged == nil ? nil : dragGesture(range: plot.range))
         .help(onBandChanged == nil ? "" : "Drag a point to shape the curve: up and "
               + "down for gain, sideways for frequency. Hold Option and drag up or "
-              + "down for Q.")
+              + "down for Q. Hold Shift for fine adjustment.")
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topLeading) {
             Text("±\(Int(plot.range)) dB")
@@ -662,23 +675,34 @@ struct EQCurveView: View {
                     guard let hit = nearestBand(to: value.startLocation, range: range)
                     else { return }
                     dragging = hit
+                    dragOrigin = bands[hit]
                     onDragBand?(hit)
                 }
-                guard let i = dragging, bands.indices.contains(i) else { return }
+                guard let i = dragging, bands.indices.contains(i),
+                      let origin = dragOrigin else { return }
                 var band = bands[i]
+
+                // Modifiers are read live, not captured at the press: nobody
+                // reaches for one before there is something to hold, so both
+                // must be possible to take up and release mid-drag.
+                let mods = NSEvent.modifierFlags
+                let scale = mods.contains(.shift) ? Self.fineDragScale : 1
+                let dx = (value.location.x - value.startLocation.x) * scale
+                let dy = (value.location.y - value.startLocation.y) * scale
 
                 // Option turns the vertical axis into Q. Read from the live
                 // modifier state rather than captured at the press, so the key
                 // can be taken up or released mid-drag and the gesture follows
                 // — pressing it first, before there is anything to hold, is not
                 // how anyone reaches for a modifier.
-                if NSEvent.modifierFlags.contains(.option) {
-                    // Q is logarithmic to the ear and to the maths: a linear
-                    // pixel-to-Q map spends most of the travel between 8 and 10
-                    // and makes the wide end unreachable.
-                    let usableQ = max(viewSize.height - 12, 1)
-                    let t = Double(1 - min(max(value.location.y / usableQ, 0), 1))
-                    let q = pow(10, log10(0.1) + t * (log10(10.0) - log10(0.1)))
+                // Option turns the vertical axis into Q, logarithmically: Q
+                // runs 0.1 to 10, and a linear pixel map spends most of its
+                // travel between 8 and 10 while cramming the wide end — where
+                // the musically useful values are — into a few pixels.
+                if mods.contains(.option) {
+                    let decades = log10(10.0) - log10(0.1)
+                    let perPoint = decades / Double(max(viewSize.height - 12, 1))
+                    let q = pow(10, log10(origin.q) - Double(dy) * perPoint)
                     band.q = (min(max(q, 0.1), 10) * 100).rounded() / 100
                     guard band != bands[i] else { return }
                     return onBandChanged?(i, band) ?? ()
@@ -687,16 +711,16 @@ struct EQCurveView: View {
                 // Vertical: gain, clamped to what the device accepts rather
                 // than to the drawn axis — the axis grows to fit a ghost and
                 // must not become a way to ask for more than ±12 dB.
-                let midY = viewSize.height / 2
                 let usable = max(viewSize.height / 2 - 6, 1)
-                let db = Double((midY - value.location.y) / usable) * range
+                let db = origin.gain - Double(dy / usable) * range
                 band.gain = (min(max(db, -12), 12) * 10).rounded() / 10
 
                 // Horizontal: frequency, kept strictly between its neighbours.
                 // Compared by frequency value rather than array position: a
                 // typed edit in the table can leave the array unsorted, and an
                 // index-based clamp would then teleport the dot being dragged.
-                let fx = Double(min(max(value.location.x / viewSize.width, 0), 1))
+                let startFx = EQCurve.fraction(of: Double(origin.freq))
+                let fx = min(max(startFx + Double(dx / viewSize.width), 0), 1)
                 band.freq = Self.clampedFrequency(EQCurve.frequency(atFraction: fx),
                                                   forBand: i, in: bands)
 
@@ -705,6 +729,7 @@ struct EQCurveView: View {
             }
             .onEnded { _ in
                 dragging = nil
+                dragOrigin = nil
                 onDragBand?(nil)
             }
     }
