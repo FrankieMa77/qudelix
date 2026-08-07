@@ -87,15 +87,40 @@ final class BLETransport: NSObject {
         return (packet, status)
     }
 
+    /// Why a frame may not go out, or nil if it fits. Refusal, never a trim:
+    /// the only command that can reach this size is the preset name, whose
+    /// header declares the length of the name that follows — a body cut short
+    /// under a header that still claims the original length is precisely how a
+    /// stored field ends up corrupt. Better a name that was never written.
+    static func writeRefusal(frame: [UInt8], budget: Int) -> String? {
+        guard frame.count > budget else { return nil }
+        return "\(frame.count) bytes, over the \(budget)-byte single-write budget"
+    }
+
     func send(_ cmd: QxCmd, _ data: [UInt8] = []) {
         guard let p = peripheral, let c = writeChar else {
             DebugLog.shared.log("BLE send dropped (not connected): \(cmd)")
             return
         }
-        DebugLog.shared.tx(cmd, data)
         let type: CBCharacteristicWriteType =
             c.properties.contains(.write) ? .withResponse : .withoutResponse
-        p.writeValue(Data(Self.frame(vendor, cmd, data)), for: c, type: type)
+        let frame = Self.frame(vendor, cmd, data)
+        // Every command here bar one fits a single ATT write with room to
+        // spare; naming a preset slot is the one that can run to 36 bytes,
+        // which at an unnegotiated 23-byte MTU is nearly twice the 20 bytes a
+        // packet can carry. Measured against the without-response budget for
+        // either write type on purpose: that number is the negotiated MTU less
+        // ATT overhead, so it is what actually fits in one packet. A larger
+        // with-response write would be split into a queued (prepare/execute)
+        // write instead, a path nothing in this app needs and no 5K has been
+        // seen to answer.
+        let budget = p.maximumWriteValueLength(for: .withoutResponse)
+        if let reason = Self.writeRefusal(frame: frame, budget: budget) {
+            DebugLog.shared.log("BLE send refused: \(cmd) is \(reason)")
+            return
+        }
+        DebugLog.shared.tx(cmd, data)
+        p.writeValue(Data(frame), for: c, type: type)
     }
 
     /// Latest-value-wins queue, same idea as the USB path: a slider drag emits

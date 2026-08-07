@@ -1,10 +1,12 @@
 import Foundation
 
-/// The last EQ this app saw on the device — bands, pre-gain, mode, and the
-/// name of whatever produced it. Kept on disk so a device that comes back
-/// from a restart or reset with a different curve can be put back the way
-/// the user left it. This is a cache of device state, not a preset library:
-/// the 5K's own preset slots remain the place presets live.
+/// The last EQ this app saw on the device for ONE group — bands, pre-gain,
+/// mode, and the name of whatever produced it. Kept on disk so a device that
+/// comes back from a restart or reset with a different curve can be put back
+/// the way the user left it. This is a cache of device state, not a preset
+/// library: the 5K's own preset slots remain the place presets live.
+///
+/// One of these per EQ group; `EqSnapshotStore` owns the collection.
 struct EqSnapshot: Codable, Equatable {
     var groupRaw: UInt8
     var bands: [QxEqBandValue]
@@ -61,17 +63,94 @@ struct EqSnapshot: Codable, Equatable {
     }
 }
 
+/// Every group's last-seen curve, keyed by the device's group id.
+///
+/// The 5K's EQ groups are independent stores: the 10-band user group and the
+/// 20-band b20 group hold different curves, and changing mode selects which
+/// one is live without disturbing the other. Keeping a single snapshot could
+/// not describe that. A mode switch re-requests the preset, and the read-back
+/// wrote the incoming group's curve over the file — so the group the user had
+/// just left lost its saved curve, and the restore this file exists for found
+/// a snapshot for the wrong group and declined for the rest of the session.
+struct EqSnapshotStore: Codable, Equatable {
+    /// Keyed by `QxEqGroup.rawValue`. Private so the key and the snapshot's
+    /// own `groupRaw` cannot drift apart — `set` is the only way in.
+    private(set) var byGroup: [UInt8: EqSnapshot] = [:]
+
+    init() {}
+    /// For the loader's clamping pass alone — it re-files exactly the entries
+    /// the decoder keyed, so the invariant `set` protects still holds.
+    fileprivate init(byGroup: [UInt8: EqSnapshot]) { self.byGroup = byGroup }
+
+    subscript(group: UInt8) -> EqSnapshot? { byGroup[group] }
+    var isEmpty: Bool { byGroup.isEmpty }
+
+    mutating func set(_ snapshot: EqSnapshot) { byGroup[snapshot.groupRaw] = snapshot }
+
+    private enum CodingKeys: String, CodingKey { case groups }
+
+    /// Written by hand so that a file saved before snapshots were kept per
+    /// group still loads. Such a file IS one snapshot, at the top level, with
+    /// no container around it — the shape this type would otherwise reject
+    /// outright. That rejection is silent (the load path swallows it) and its
+    /// symptom is the user's saved EQ disappearing, so the old shape is
+    /// migrated into the new one rather than discarded.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let groups = try c.decodeIfPresent([String: EqSnapshot].self, forKey: .groups) {
+            for (key, snapshot) in groups {
+                guard let raw = UInt8(key), QxEqGroup(rawValue: raw) != nil else { continue }
+                var s = snapshot
+                // The key decides which group this curve belongs to; a
+                // hand-edited file that disagrees with itself would otherwise
+                // offer a curve for one group to a device reading another.
+                s.groupRaw = raw
+                byGroup[raw] = s
+            }
+            return
+        }
+        let single = try EqSnapshot(from: decoder)
+        guard QxEqGroup(rawValue: single.groupRaw) != nil else { return }
+        byGroup[single.groupRaw] = single
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        let keyed = Dictionary(uniqueKeysWithValues:
+            byGroup.map { (String($0.key), $0.value) })
+        try c.encode(keyed, forKey: .groups)
+    }
+}
+
 enum EqSnapshotFile {
     static var url: URL {
         StageStateFile.directory.appendingPathComponent("last-eq.json")
     }
 
-    static func load() -> EqSnapshot? {
-        guard let data = SafeFile.read(url, cap: 100_000),
-              let snap = try? JSONDecoder().decode(EqSnapshot.self, from: data)
-        else { return nil }
-        // Off-disk values head for the device; clamp like every other input.
-        var s = snap
+    /// Three groups of at most twenty bands. Generous headroom, not an
+    /// expected size — anything past it is not a file this app wrote.
+    private static let maxBytes = 100_000
+
+    static func load(from fileURL: URL = url) -> EqSnapshotStore {
+        guard let data = SafeFile.read(fileURL, cap: maxBytes) else { return EqSnapshotStore() }
+        guard let store = try? JSONDecoder().decode(EqSnapshotStore.self, from: data) else {
+            // Decode failed — the next read-back would save over the file and
+            // take every group's curve with it. Park the undecodable document
+            // where the user (or a newer app version) can recover it, the same
+            // gesture a corrupt stage.json or profiles.json gets.
+            let parked = fileURL.deletingLastPathComponent()
+                .appendingPathComponent(fileURL.lastPathComponent + ".recovered")
+            try? data.write(to: parked, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: parked.path)
+            return EqSnapshotStore()
+        }
+        return EqSnapshotStore(byGroup: store.byGroup.mapValues(sanitized))
+    }
+
+    /// Off-disk values head for the device; clamp like every other input.
+    private static func sanitized(_ snapshot: EqSnapshot) -> EqSnapshot {
+        var s = snapshot
         // The name heads for the UI: the one string in this pipeline that a
         // handcrafted file controls gets the same scrub every device string
         // gets (control/bidi scalars out, length capped).
@@ -87,10 +166,12 @@ enum EqSnapshotFile {
         return s
     }
 
-    static func save(_ snapshot: EqSnapshot) {
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: url, options: .atomic)
+    static func save(_ store: EqSnapshotStore, to fileURL: URL = url) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(store) else { return }
+        try? data.write(to: fileURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: url.path)
+                                               ofItemAtPath: fileURL.path)
     }
 }

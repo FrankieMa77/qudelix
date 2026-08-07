@@ -228,7 +228,14 @@ final class QudelixController: ObservableObject {
     /// USB-mode change, a battery death) unless persisted, and the flash
     /// save below can still be missed. On connect, a device reporting a
     /// different curve than last seen gets the last one back.
-    private var eqSnapshot = EqSnapshotFile.load()
+    ///
+    /// One entry per EQ group: the groups hold independent curves, and the
+    /// user switching mode must not cost them the group they switched away
+    /// from.
+    private var eqSnapshots = EqSnapshotFile.load()
+
+    /// The stored curve for the group currently addressed on the wire.
+    private var eqSnapshot: EqSnapshot? { eqSnapshots[eqGroup.rawValue] }
 
     /// Reclaim the parked mute shapes from the snapshot for bands the device
     /// still reports as bypassed.
@@ -238,8 +245,8 @@ final class QudelixController: ObservableObject {
     /// are dropped, so a shape parked before someone else rewrote the curve
     /// cannot resurrect itself over their edit.
     private func reclaimMutedBands() {
-        guard mutedBands.isEmpty, let snap = eqSnapshot,
-              snap.groupRaw == eqGroup.rawValue, !snap.mutedBands.isEmpty else { return }
+        guard mutedBands.isEmpty, let snap = eqSnapshot, !snap.mutedBands.isEmpty
+        else { return }
         let usable = snap.mutedBands.filter { index, shape in
             shape != .bypass && bands.indices.contains(index)
                 && bands[index].filter == .bypass
@@ -250,9 +257,13 @@ final class QudelixController: ObservableObject {
     }
     private var snapshotWork: DispatchWorkItem?
     private var saveAllWork: DispatchWorkItem?
-    /// One restore decision per connection, taken at the first preset
-    /// read-back — later read-backs are the result of user actions.
-    private var restoreDecided = false
+    /// One restore decision per group per connection, taken at that group's
+    /// first preset read-back — later read-backs are the result of user
+    /// actions. Per group rather than per connection because the handshake
+    /// reads the provisional group before `eq_mode` names the real one: with
+    /// a single latch, deciding for the group we happened to start on left
+    /// the group the device is actually in unrepaired for the whole session.
+    private var restoreDecidedGroups: Set<UInt8> = []
     /// Whether this connection has read the device's EQ at least once.
     private var presetRead = false
     /// Whether this connection has seen the device report its eq_mode.
@@ -321,26 +332,33 @@ final class QudelixController: ObservableObject {
                               preGain: preGain, enabled: eqEnabled,
                               name: eqSourceName, mutedBands: mutedBands)
         guard snap != eqSnapshot else { return }
-        eqSnapshot = snap
-        EqSnapshotFile.save(snap)
+        // Only this group's entry is replaced; the other group's stays as it
+        // was last seen, which is what makes a mode switch survivable.
+        eqSnapshots.set(snap)
+        EqSnapshotFile.save(eqSnapshots)
     }
 
     /// First preset read-back of a connection: if the device came back with
     /// a different curve than this app last saw — a hard restart reverted
     /// its RAM state, or a reset wiped it — put the last one back.
     private func restoreIfNeeded() {
-        // Everything here must hold before the once-per-connection decision
-        // is taken: the read-back can beat the compatibility verdict, a
+        // Everything here must hold before this group's one decision is
+        // taken: the read-back can beat the compatibility verdict, and a
         // pending group switch gates the very writes a restore would send
-        // (they'd be dropped silently), and deciding against the handshake's
-        // provisional group burns the decision before eq_mode has spoken.
-        guard !restoreDecided, presetRead, compatibility.canWrite,
+        // (they'd be dropped silently) as well as meaning the group being
+        // judged is about to change.
+        guard !restoreDecidedGroups.contains(eqGroup.rawValue), presetRead,
+              compatibility.canWrite,
               pendingGroup == nil, pendingEqMode == nil else { return }
-        if let snap = eqSnapshot, snap.groupRaw != eqGroup.rawValue, !sawEqMode {
-            return   // the device's real mode isn't known yet; stay undecided
+        if eqSnapshot == nil, !eqSnapshots.isEmpty, !sawEqMode {
+            // Nothing stored for the group we are provisionally addressing,
+            // but something is stored for another one — and the device's real
+            // mode isn't known yet. Stay undecided rather than conclude
+            // "nothing to restore" against a group it may not be in.
+            return
         }
-        restoreDecided = true
-        guard let snap = eqSnapshot, snap.groupRaw == eqGroup.rawValue,
+        restoreDecidedGroups.insert(eqGroup.rawValue)
+        guard let snap = eqSnapshot,
               snap.bands.count == bandCount,
               !snap.matches(bands: bands, preGain: preGain) else { return }
         DebugLog.shared.log("device EQ differs from last seen — restoring")
@@ -469,7 +487,7 @@ final class QudelixController: ObservableObject {
         requestedNames = false
         pendingGroup = nil
         pendingEqMode = nil
-        restoreDecided = false
+        restoreDecidedGroups = []
         presetRead = false
         sawEqMode = false
         eqSourceName = nil
@@ -992,6 +1010,13 @@ final class QudelixController: ObservableObject {
         // The bands were just replaced with this group's defaults, so band 3
         // is a different band than the one that was muted a moment ago.
         mutedBands = [:]
+        // Those defaults are a placeholder, not something the device said.
+        // Until the request below is answered, nothing may treat them as this
+        // group's curve — neither the snapshot (quitting inside the round trip
+        // would file "flat" as the group's last EQ) nor the restore check
+        // (which would read the placeholder as a device that had diverged and
+        // write over the curve it is about to report).
+        presetRead = false
         transportSend(.reqEqPreset, [group.requestMask])
         transportSend(.reqDevConfig, [0xC0])   // sys2 | eq → this group's cfg + name mask
     }
