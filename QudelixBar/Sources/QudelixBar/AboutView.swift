@@ -30,18 +30,29 @@ struct AboutView: View {
 
             // The disclaimer is stated once, above. Repeating the bundle's
             // copyright string here said the same thing twice in two voices.
-            row("Licence", "MIT · \(Self.copyrightHolder)")
+            licenceRow
             row("Source", Self.repoDisplay, url: Self.repoURL)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func row(_ label: String, _ value: String, url: URL? = nil) -> some View {
-        HStack(spacing: 6) {
-            Text(label)
+    /// Licence and holder on one line, with only the holder clickable — the
+    /// licence name is not a destination and underlining it would invite a
+    /// click that goes nowhere.
+    private var licenceRow: some View {
+        HStack(spacing: 0) {
+            Text("Licence")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             Spacer()
+            Text(verbatim: "MIT · \(Self.copyrightYear) ")
+                .font(.system(size: 10))
+            linkButton(Self.siteDisplay, url: Self.siteURL)
+        }
+    }
+
+    private func linkButton(_ label: String, url: URL?) -> some View {
+        Group {
             if let url {
                 // A menu bar app is not the frontmost app, and openURL from an
                 // inactive app has bitten this project before — the same reason
@@ -50,13 +61,22 @@ struct AboutView: View {
                     NSApp.activate(ignoringOtherApps: true)
                     NSWorkspace.shared.open(url)
                 } label: {
-                    Text(verbatim: value).font(.system(size: 10))
+                    Text(verbatim: label).font(.system(size: 10))
                 }
                 .buttonStyle(.link)
             } else {
-                Text(verbatim: value)
-                    .font(.system(size: 10))
+                Text(verbatim: label).font(.system(size: 10))
             }
+        }
+    }
+
+    private func row(_ label: String, _ value: String, url: URL? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer()
+            linkButton(value, url: url)
         }
     }
 
@@ -92,5 +112,7 @@ struct AboutView: View {
     static let repoDisplay = "GitHub"
     static let repoURL = URL(string: "https://github.com/FrankieMa77/qudelix")
 
-    static let copyrightHolder = "© 2026 wpmagic.pro"
+    static let copyrightYear = "© 2026"
+    static let siteDisplay = "wpmagic.pro"
+    static let siteURL = URL(string: "https://wpmagic.pro")
 }
