@@ -95,6 +95,7 @@ struct TuneView: View {
             if let blocker = ToneTester.blocker(controller) {
                 HStack(alignment: .top, spacing: 5) {
                     Image(systemName: "exclamationmark.triangle.fill")
+                        .accessibilityHidden(true)
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                     Text(blocker.message)
@@ -225,6 +226,7 @@ struct TuneView: View {
             if let blocker = ABTuner.blocker(controller) {
                 HStack(alignment: .top, spacing: 5) {
                     Image(systemName: "exclamationmark.triangle.fill")
+                        .accessibilityHidden(true)
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                     Text(blocker.message)

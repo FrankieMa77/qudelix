@@ -176,6 +176,7 @@ struct DeviceHeader: View {
                           : AnyShapeStyle(Color.secondary.opacity(0.25)))
                     .frame(width: 34, height: 34)
                 Image(systemName: "headphones")
+                    .accessibilityHidden(true)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(connected ? .white : .secondary)
             }
@@ -188,6 +189,7 @@ struct DeviceHeader: View {
                 HStack(spacing: 4) {
                     if let icon = linkIcon {
                         Image(systemName: icon)
+                            .accessibilityHidden(true)
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.secondary)
                             .help(linkHelp)
@@ -206,6 +208,7 @@ struct DeviceHeader: View {
                     // A plain bolt, not battery.100.bolt — the bolt inside
                     // the battery glyph is a few pixels tall and unreadable.
                     Image(systemName: controller.charging ? "bolt.fill" : batteryIcon(batt))
+                        .accessibilityHidden(true)
                         .foregroundStyle(batteryColor(batt))
                     Text("\(batt)%")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
@@ -220,6 +223,7 @@ struct DeviceHeader: View {
 
             Button { controller.refresh() } label: {
                 Image(systemName: "arrow.clockwise")
+                    .accessibilityLabel("Re-read the device")
             }
             .buttonStyle(.borderless)
             .disabled(!connected)
@@ -327,6 +331,7 @@ struct VolumeControl: View {
         HStack(spacing: 10) {
             Button { controller.setMute(!controller.muted) } label: {
                 Image(systemName: controller.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .accessibilityLabel(controller.muted ? "Unmute" : "Mute")
                     .font(.system(size: 12))
                     .foregroundStyle(controller.muted ? .orange : .secondary)
                     .frame(width: 18)
@@ -568,6 +573,7 @@ struct EqEditorView: View {
                     controller.undoEqEdit()
                 } label: {
                     Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
+                        .accessibilityLabel(controller.undoLabel.map { "Undo \($0)" } ?? "Undo")
                 }
                 .controlSize(.mini)
                 .disabled(!controller.canUndo || !controller.canWriteNow)
@@ -578,6 +584,7 @@ struct EqEditorView: View {
                     controller.redoEqEdit()
                 } label: {
                     Image(systemName: "arrow.uturn.forward").font(.system(size: 9))
+                        .accessibilityLabel(controller.redoLabel.map { "Redo \($0)" } ?? "Redo")
                 }
                 .controlSize(.mini)
                 .disabled(!controller.canRedo || !controller.canWriteNow)
@@ -747,6 +754,8 @@ struct BandRow: View {
                 controller.setBandMuted(index, !muted)
             } label: {
                 Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2")
+                    .accessibilityLabel(muted ? "Unmute band \(index + 1)"
+                                              : "Mute band \(index + 1)")
                     .font(.system(size: 9))
                     .foregroundStyle(muted ? Color.orange : Color.secondary)
             }
@@ -845,6 +854,7 @@ struct PresetsView: View {
                     nameFocused = true
                 } label: {
                     Image(systemName: "pencil").font(.system(size: 9))
+                        .accessibilityLabel("Rename \(controller.presetLabel(i))")
                 }
                 .controlSize(.mini)
                 .disabled(!controller.canWriteNow)
@@ -856,6 +866,7 @@ struct PresetsView: View {
                     controller.savePreset(i)
                 } label: {
                     Image(systemName: "square.and.arrow.down").font(.system(size: 9))
+                        .accessibilityLabel("Save the current EQ to \(controller.presetLabel(i))")
                 }
                 .controlSize(.mini)
                 .help("Overwrite this slot with the current EQ")
@@ -880,6 +891,7 @@ struct UnsupportedDeviceView: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
+                .accessibilityHidden(true)
                 .font(.system(size: 24))
                 .foregroundStyle(.orange)
             Text(title)
@@ -909,6 +921,7 @@ struct DisconnectedView: View {
     var body: some View {
         VStack(spacing: 9) {
             Image(systemName: "cable.connector")
+                .accessibilityHidden(true)
                 .font(.system(size: 26))
                 .foregroundStyle(.tertiary)
             Text("No Qudelix 5K found").font(.system(size: 12, weight: .medium))
@@ -947,6 +960,7 @@ struct FooterBar: View {
                 Button { controller.forgetBluetoothDevice() } label: {
                     Image(systemName: "antenna.radiowaves.left.and.right.slash")
                         .font(.system(size: 10))
+                        .accessibilityLabel("Forget the remembered Bluetooth device")
                 }
                 .buttonStyle(.borderless)
                 .help("Forget the remembered Bluetooth device and look for another")
@@ -971,6 +985,7 @@ struct FooterBar: View {
                 if showDiagnostics { showDeviceSettings = false; showAbout = false }
             } label: {
                 Image(systemName: "waveform.path.ecg").font(.system(size: 10))
+                    .accessibilityLabel("Diagnostics")
             }
             .buttonStyle(.borderless)
             .help("Diagnostics")
@@ -980,12 +995,14 @@ struct FooterBar: View {
                 if showAbout { showDeviceSettings = false; showDiagnostics = false }
             } label: {
                 Image(systemName: "info.circle").font(.system(size: 10))
+                    .accessibilityLabel("About \(AboutView.appName)")
             }
             .buttonStyle(.borderless)
             .help("About \(AboutView.appName) \(AboutView.versionLine)")
 
             Button { NSApp.terminate(nil) } label: {
                 Image(systemName: "power").font(.system(size: 10))
+                    .accessibilityLabel("Quit \(AboutView.appName)")
             }
             .buttonStyle(.borderless)
             .help("Quit Qudelix")

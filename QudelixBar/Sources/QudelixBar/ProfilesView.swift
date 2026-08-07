@@ -173,6 +173,7 @@ struct ProfilesView: View {
                 profileRules.removeRule(outputUID: rule.outputUID)
             } label: {
                 Image(systemName: "trash")
+                    .accessibilityLabel("Remove this profile")
                     .font(.system(size: 9))
             }
             .buttonStyle(.borderless)

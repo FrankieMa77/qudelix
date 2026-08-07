@@ -66,6 +66,7 @@ struct ImportView: View {
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 TextField("Search AutoEq — e.g. HD 650", text: $autoEq.query)
                     .textFieldStyle(.plain)
                     .onSubmit { prepareActive() }
@@ -355,6 +356,7 @@ struct ImportView: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: mode == .optimized ? "wand.and.stars" : "arrow.down.circle")
+                        .accessibilityHidden(true)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

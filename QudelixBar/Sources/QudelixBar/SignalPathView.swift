@@ -315,7 +315,11 @@ struct SignalPathView: View {
 
     private func rowView(_ row: SignalPath.Row) -> some View {
         HStack(alignment: .top, spacing: 6) {
+            // The glyph encodes altering / passing through / unknown, which
+            // the row's own text does not repeat — so it is named rather
+            // than hidden.
             Image(systemName: icon(row.indicator))
+                .accessibilityLabel(indicatorDescription(row.indicator))
                 .font(.system(size: 9))
                 .foregroundStyle(color(row))
                 .frame(width: 12)
@@ -333,6 +337,16 @@ struct SignalPathView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+        }
+    }
+
+    /// Spoken form of the indicator glyph. It carries meaning the row text
+    /// does not restate, so hiding it would lose information.
+    private func indicatorDescription(_ i: SignalPath.Indicator) -> String {
+        switch i {
+        case .altering: return "altering the audio"
+        case .passthrough: return "passing through unchanged"
+        case .unknown: return "not observable"
         }
     }
 
