@@ -25,6 +25,7 @@ struct QudelixBarApp: App {
     @StateObject private var profileRules = ProfileRules()
     @StateObject private var abTuner = ABTuner()
     @StateObject private var toneTester = ToneTester()
+    @StateObject private var blindTuner = BlindTuner()
     /// The menu bar label's `onAppear` can fire more than once; starting twice
     /// would replace the BLE central while the old one still held the link.
     @State private var started = false
@@ -43,6 +44,7 @@ struct QudelixBarApp: App {
                 .environmentObject(profileRules)
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
+                .environmentObject(blindTuner)
         } label: {
             // One composed template image, not an HStack of Images — the
             // menu bar item drops all but the first SF symbol when handed
@@ -89,13 +91,16 @@ struct QudelixBarApp: App {
                     // logic in them is inert.
                     profileRules.currentEqGroupRaw = controller.eqGroup.rawValue
                     profileRules.start()
-                    quitDelegate.onTerminate = { [weak stageState, weak controller, weak abTuner, weak toneTester] in
+                    quitDelegate.onTerminate = { [weak stageState, weak controller, weak abTuner, weak toneTester, weak blindTuner] in
                         if let controller {
                             if let abTuner, abTuner.phase == .running || abTuner.phase == .finished {
                                 abTuner.cancel(controller)
                             }
                             if let toneTester, toneTester.phase == .running {
                                 toneTester.stop(controller)
+                            }
+                            if let blindTuner, blindTuner.phase != .idle {
+                                blindTuner.cancel(controller)
                             }
                         }
                         // A stale EQ snapshot doesn't just lose the last
