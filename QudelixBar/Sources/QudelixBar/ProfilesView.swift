@@ -105,7 +105,8 @@ struct ProfilesView: View {
     @ViewBuilder
     private func suggestionBanner(_ s: ProfileRules.Suggestion) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Switch to \u{201C}\(s.presetLabel)\u{201D} for \(s.outputName)?")
+            Text(verbatim: "Switch to \u{201C}" + s.presetLabel
+                 + "\u{201D} for " + s.outputName + "?")
                 .font(.system(size: 11, weight: .medium))
             // The one place this file can discard something without saying
             // so — an unsaved custom curve — so it says so, right here,
