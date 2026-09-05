@@ -358,6 +358,9 @@ no third-party dependencies.
 - The Stage and Level features process audio in memory and write none of it
   anywhere, ever. What they open, when, and how to close it is set out under
   [The audio tap](#the-audio-tap).
+- The microphone guard reads which device macOS has as its default input, and
+  in **Fix automatically** mode sets that default to the built-in microphone —
+  it never opens a microphone, records nothing, and does nothing else.
 - Everything the app keeps is a local file, readable only by your user
   account, and never transmitted. Four of them live in
   `~/Library/Application Support/QudelixBar/`:

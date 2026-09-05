@@ -1,11 +1,10 @@
 import Foundation
-@preconcurrency import UserNotifications
 
 /// Standard system notifications for the 5K's battery: low, very low, and
 /// charging. Each fires once per episode — latched, with hysteresis on the
 /// re-arm so a battery reading that jitters around a threshold can't nag.
 @MainActor
-final class BatteryAlerts: NSObject {
+final class BatteryAlerts {
     static let lowThreshold = 20
     static let veryLowThreshold = 10
 
@@ -49,6 +48,14 @@ final class BatteryAlerts: NSObject {
                 return "\(pct)% left — it will shut down soon. Plug it in."
             }
         }
+
+        var notificationID: String {
+            switch self {
+            case .charging: return Notifier.identifier("qudelix-battery-charging")
+            case .low: return Notifier.identifier("qudelix-battery-low")
+            case .veryLow: return Notifier.identifier("qudelix-battery-very-low")
+            }
+        }
     }
 
     private var notifiedLow = false
@@ -63,13 +70,6 @@ final class BatteryAlerts: NSObject {
     private var lastChargingAlert: Date?
     private var lastLowAlert: Date?
     private var lastVeryLowAlert: Date?
-    private var configured = false
-
-    /// Notifications need a real app bundle; the bare debug binary (the UI
-    /// render harness) has none, and UNUserNotificationCenter aborts the
-    /// process rather than erroring when asked without one.
-    private static let canNotify = Bundle.main.bundleIdentifier != nil
-        && Bundle.main.bundleURL.pathExtension == "app"
 
     /// Call when a connection episode ends. The low/very-low latches
     /// deliberately survive (a Bluetooth blip must not re-announce the same
@@ -91,7 +91,8 @@ final class BatteryAlerts: NSObject {
     func update(batteryPercent: Int?, charging: Bool, deviceSaysLow: Bool = false) {
         guard let alert = step(batteryPercent: batteryPercent, charging: charging,
                                deviceSaysLow: deviceSaysLow) else { return }
-        post(title: alert.title, body: alert.body)
+        Notifier.shared.post(id: alert.notificationID, title: alert.title,
+                             body: alert.body)
     }
 
     /// The decision `update` acts on, and the whole of the state machine.
@@ -157,47 +158,5 @@ final class BatteryAlerts: NSObject {
         if let last, now.timeIntervalSince(last) < Self.minimumInterval { return false }
         last = now
         return true
-    }
-
-    private func post(title: String, body: String) {
-        guard Self.canNotify else { return }
-        let center = UNUserNotificationCenter.current()
-        if !configured {
-            configured = true
-            center.delegate = self
-        }
-        let fire = {
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.sound = .default
-            center.add(UNNotificationRequest(identifier: UUID().uuidString,
-                                             content: content, trigger: nil))
-        }
-        // Authorization is requested at the first alert, not at launch — the
-        // permission dialog then appears attached to something the user can
-        // see the point of. Denied means center.add silently no-ops, which
-        // is the user's decision working as intended.
-        center.getNotificationSettings { settings in
-            if settings.authorizationStatus == .notDetermined {
-                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    if granted { fire() }
-                }
-            } else {
-                fire()
-            }
-        }
-    }
-}
-
-extension BatteryAlerts: UNUserNotificationCenterDelegate {
-    /// A menu bar app can count as "active" while the popover is open;
-    /// battery alerts should still show rather than being swallowed.
-    nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler:
-            @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound])
     }
 }

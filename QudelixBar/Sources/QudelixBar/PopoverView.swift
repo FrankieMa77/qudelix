@@ -9,6 +9,7 @@ struct PopoverView: View {
     @State private var showAbout = false
     @State private var editingBand: Int?
     @EnvironmentObject private var profileRules: ProfileRules
+    @EnvironmentObject private var micGuard: A2dpGuard
 
     enum Pane: String, CaseIterable, Identifiable {
         // "EQ", not "Equalizer": six segments share the popover's width now,
@@ -66,6 +67,7 @@ struct PopoverView: View {
                         .frame(maxWidth: .infinity)
                     Divider()
                     VStack(spacing: 14) {
+                        micGuardBanner
                         Picker("", selection: $pane) {
                             ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
                                 Label(p.rawValue, systemImage: p.icon).tag(p)
@@ -107,6 +109,8 @@ struct PopoverView: View {
 
                     UsbAudioRow()
 
+                    micGuardBanner
+
                     Picker("", selection: $pane) {
                         ForEach(Pane.allCases) { p in
                             Label(p.rawValue, systemImage: p.icon).tag(p)
@@ -141,6 +145,7 @@ struct PopoverView: View {
                     // need the device present to be switched off.
                     Divider()
                     VStack(spacing: 14) {
+                        micGuardBanner
                         Picker("", selection: $pane) {
                             ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
                                 Label(p.rawValue, systemImage: p.icon).tag(p)
@@ -189,6 +194,49 @@ struct PopoverView: View {
     private var connected: Bool {
         if case .connected = controller.connection { return true }
         return false
+    }
+
+    @ViewBuilder
+    private var micGuardBanner: some View {
+        if let hijack = micGuard.hijack {
+            HStack(spacing: 8) {
+                Image(systemName: "phone.badge.waveform.fill")
+                    .accessibilityHidden(true)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    (Text(verbatim: hijack.name) + Text(" took the microphone"))
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                    Text(A2dpGuard.bannerDetail(
+                        reason: hijack.reason,
+                        isTheDevice: A2dpGuard.isTheDevice(
+                            hijackName: hijack.name, connectedName: connectedName),
+                        deviceInputSource: controller.inputSource))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Button("Use Built-in Mic") { micGuard.useBuiltInMic() }
+                    .controlSize(.small)
+                Button { micGuard.ignoreHijack() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityLabel("Leave this microphone alone")
+                }
+                .buttonStyle(.plain)
+                .help("Leave it — I want this microphone")
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.orange.opacity(0.1)))
+        }
+    }
+
+    private var connectedName: String? {
+        guard case .connected(let name) = controller.connection else { return nil }
+        return name
     }
 }
 
@@ -1029,6 +1077,7 @@ struct DisconnectedView: View {
 
 struct FooterBar: View {
     @EnvironmentObject var controller: QudelixController
+    @EnvironmentObject var micGuard: A2dpGuard
     @Binding var showDiagnostics: Bool
     @Binding var showDeviceSettings: Bool
     @Binding var showAbout: Bool
@@ -1062,6 +1111,32 @@ struct FooterBar: View {
                 .buttonStyle(.borderless)
                 .help("Forget the remembered Bluetooth device and look for another")
             }
+
+            Menu {
+                Picker("Mic guard", selection: Binding(
+                    get: { micGuard.mode },
+                    set: { micGuard.setMode($0) })) {
+                    ForEach(A2dpGuard.Mode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "mic")
+                        .font(.system(size: 10))
+                        .accessibilityHidden(true)
+                    Text("Mic \(micGuard.mode.shortLabel)")
+                        .font(.system(size: 10))
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Microphone guard: \(micGuard.mode.label)")
+            .help("When something takes over your headphones' microphone, "
+                  + "Bluetooth playback drops to voice quality — this can "
+                  + "leave it alone, warn you, or put the Mac's built-in "
+                  + "microphone back.")
 
             // Worded, not a bare icon: an unlabelled glyph in a row of glyphs
             // is indistinguishable from decoration, and these settings are
