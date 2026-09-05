@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let profileRules: ProfileRules
         let presetLibrary: PresetLibrary
         let headphoneSuggestions: HeadphoneSuggestions
+        let aiStudio: AIPresetStudio
         let abTuner: ABTuner
         let toneTester: ToneTester
         let blindTuner: BlindTuner
@@ -63,6 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         w.stageState.guardDiagnostics = { [weak guardian = w.a2dpGuard] in
             guardian?.diagSummary ?? "guard=off hijack=none"
+        }
+        w.stageState.aiDiagnostics = { [weak studio = w.aiStudio] in
+            studio?.diagSummary ?? "ai=idle"
         }
         w.stageState.qudelixVolumeDb = { [weak controller = w.controller] in
             controller?.reportedVolumeDb
@@ -327,6 +331,7 @@ struct QudelixBarApp: App {
     @StateObject private var profileRules: ProfileRules
     @StateObject private var presetLibrary: PresetLibrary
     @StateObject private var headphoneSuggestions: HeadphoneSuggestions
+    @StateObject private var aiStudio: AIPresetStudio
     @StateObject private var a2dpGuard: A2dpGuard
     @StateObject private var abTuner: ABTuner
     @StateObject private var toneTester: ToneTester
@@ -341,6 +346,7 @@ struct QudelixBarApp: App {
         let profileRules = ProfileRules()
         let presetLibrary = PresetLibrary()
         let headphoneSuggestions = HeadphoneSuggestions(library: presetLibrary)
+        let aiStudio = AIPresetStudio()
         let a2dpGuard = A2dpGuard()
         let abTuner = ABTuner()
         let toneTester = ToneTester()
@@ -353,6 +359,7 @@ struct QudelixBarApp: App {
                 .environmentObject(profileRules)
                 .environmentObject(presetLibrary)
                 .environmentObject(headphoneSuggestions)
+                .environmentObject(aiStudio)
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
@@ -362,6 +369,7 @@ struct QudelixBarApp: App {
                                stageState: stageState, profileRules: profileRules,
                                presetLibrary: presetLibrary,
                                headphoneSuggestions: headphoneSuggestions,
+                               aiStudio: aiStudio,
                                abTuner: abTuner, toneTester: toneTester,
                                blindTuner: blindTuner, a2dpGuard: a2dpGuard)
         }
@@ -371,6 +379,7 @@ struct QudelixBarApp: App {
         _profileRules = StateObject(wrappedValue: profileRules)
         _presetLibrary = StateObject(wrappedValue: presetLibrary)
         _headphoneSuggestions = StateObject(wrappedValue: headphoneSuggestions)
+        _aiStudio = StateObject(wrappedValue: aiStudio)
         _a2dpGuard = StateObject(wrappedValue: a2dpGuard)
         _abTuner = StateObject(wrappedValue: abTuner)
         _toneTester = StateObject(wrappedValue: toneTester)

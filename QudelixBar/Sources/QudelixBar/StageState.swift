@@ -56,6 +56,7 @@ final class StageState: ObservableObject {
         scheduleSave()
     }
     var guardDiagnostics: (() -> String)?
+    var aiDiagnostics: (() -> String)?
 
     var suggestionDiagnostics: (() -> String)?
 
@@ -781,6 +782,7 @@ final class StageState: ObservableObject {
                 + "hold=\(engine.callHold) "
                 + (guardDiagnostics.map { $0() + " " } ?? "")
                 + (suggestionDiagnostics.map { $0() + " " } ?? "")
+                + (aiDiagnostics.map { $0() + " " } ?? "")
                 + "status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
                 + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room) "
