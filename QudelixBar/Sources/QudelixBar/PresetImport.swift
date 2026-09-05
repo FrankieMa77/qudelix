@@ -245,7 +245,9 @@ struct AutoEqEntry: Identifiable, Hashable {
     /// URL is re-checked: it must still point at the AutoEq results root, and
     /// must not contain traversal segments.
     var presetURL: URL? {
-        guard !path.contains(".."), !path.hasPrefix("/") else { return nil }
+        guard !path.hasPrefix("/"), !path.contains("?"), !path.contains("#"),
+              let decoded = path.removingPercentEncoding,
+              !decoded.contains("..") else { return nil }
         let leaf = path.split(separator: "/").last.map(String.init) ?? ""
         guard !leaf.isEmpty else { return nil }
         guard let url = URL(string: "\(AutoEqIndex.root)/\(path)/\(leaf)%20ParametricEQ.txt"),
@@ -310,7 +312,8 @@ final class AutoEqIndex: ObservableObject {
                 state = entries.isEmpty ? .failed("Index was empty") : .ready
                 DebugLog.shared.log("AutoEq index: \(entries.count) headphones")
             } catch {
-                let why = AutoEqService.describe(AutoEqService.mapped(error, host: Self.host))
+                let why = SafeText.scrubbed(
+                    AutoEqService.describe(AutoEqService.mapped(error, host: Self.host)))
                 state = .failed(why)
                 DebugLog.shared.log("AutoEq index failed: \(why)")
             }
@@ -322,6 +325,8 @@ final class AutoEqIndex: ObservableObject {
     /// Index lines look like:
     ///   `- [Sennheiser HD 650](./oratory1990/over-ear/Sennheiser%20HD%20650)`
     static let maxIndexEntries = 20_000
+    static let maxIndexTitleLength = 120
+    static let maxIndexPathLength = 400
 
     static func parseIndex(_ markdown: String) -> [AutoEqEntry] {
         var out: [AutoEqEntry] = []
@@ -339,6 +344,8 @@ final class AutoEqIndex: ObservableObject {
             if path.hasPrefix("./") { path.removeFirst(2) }
             // Skip the doc links at the top of the README (INDEX.md, RANKING.md…).
             guard path.contains("/"), !path.hasSuffix(".md"), !path.hasPrefix("http") else { continue }
+            guard title.count <= maxIndexTitleLength,
+                  path.count <= maxIndexPathLength else { continue }
 
             let source = path.split(separator: "/").first
                 .map { $0.replacingOccurrences(of: "%20", with: " ") } ?? ""

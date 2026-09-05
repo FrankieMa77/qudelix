@@ -904,7 +904,9 @@ final class QudelixController: ObservableObject {
         // carrying a hundred combining marks is a single Character that
         // survives the cap intact and renders as a vertical smear over the
         // rows around it.
-        let s = String(String.UnicodeScalarView(s.unicodeScalars.prefix(maxPresetNameLength * 4)))
+        let s = SafeText.scrubbed(
+            String(String.UnicodeScalarView(s.unicodeScalars.prefix(maxPresetNameLength * 4))),
+            limit: maxPresetNameLength * 4)
         let kept = s.unicodeScalars.filter { u in
             switch u.properties.generalCategory {
             case .control, .format, .lineSeparator, .paragraphSeparator: return false
@@ -1744,26 +1746,22 @@ final class QudelixController: ObservableObject {
     }
 
     func importFile(at url: URL) {
-        do {
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            guard size <= Self.maxImportBytes else {
-                lastImportSummary = "That file is too large to be an EQ preset."
-                return
-            }
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            guard let text = String(data: data, encoding: .utf8)
-                    ?? String(data: data, encoding: .isoLatin1) else {
-                lastImportSummary = "Could not read \(url.lastPathComponent) as text."
-                return
-            }
-            guard let parsed = ParametricEQFile.parse(text) else {
-                lastImportSummary = "No filters found in \(url.lastPathComponent)"
-                return
-            }
-            apply(parsed, named: url.deletingPathExtension().lastPathComponent)
-        } catch {
-            lastImportSummary = "Could not read file: \(error.localizedDescription)"
+        let name = SafeText.scrubbed(url.lastPathComponent, limit: 64)
+        guard let data = SafeFile.read(url, cap: Self.maxImportBytes) else {
+            lastImportSummary = "Couldn't read \(name) — an EQ preset is a plain "
+                + "text file, and not a large one."
+            return
         }
+        guard let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else {
+            lastImportSummary = "Could not read \(name) as text."
+            return
+        }
+        guard let parsed = ParametricEQFile.parse(text) else {
+            lastImportSummary = "No filters found in \(name)"
+            return
+        }
+        apply(parsed, named: url.deletingPathExtension().lastPathComponent)
     }
 
     /// Serialise the current bands in the same format we import.

@@ -767,10 +767,11 @@ struct BandRow: View {
                    in: -12...12,
                    onEditingChanged: { editing in editingBand = editing ? index : nil })
                 .controlSize(.mini)
+                .disabled(!band.filter.hasGain)
 
-            Text(String(format: "%+.1f", band.gain))
+            Text(band.filter.hasGain ? String(format: "%+.1f", band.gain) : "—")
                 .font(.system(size: 10).monospacedDigit())
-                .foregroundStyle(band.gain == 0 ? .secondary : .primary)
+                .foregroundStyle(band.filter.hasGain && band.gain != 0 ? .primary : .secondary)
                 .frame(width: 32, alignment: .trailing)
 
             TextField("", value: Binding(get: { band.q }, set: { set { $0.q = $1 } ($0) }),
@@ -941,7 +942,7 @@ struct UnsupportedDeviceView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
             if let fw = controller.firmwareVersion {
-                Text("Reported firmware \(fw)")
+                Text(verbatim: "Reported firmware \(fw)")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
             }

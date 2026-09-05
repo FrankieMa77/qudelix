@@ -234,6 +234,34 @@ final class ProtocolTests: XCTestCase {
         XCTAssertLessThanOrEqual(cleaned.count, QudelixController.maxPresetNameLength)
     }
 
+    func testSafeTextDropsEveryInvisibleItClaimsTo() {
+        let hostile = "a\u{0}b\u{1B}c\u{7F}d\u{9B}e\n\u{2028}\u{2029}"
+            + "\u{200B}\u{200E}\u{202E}\u{2066}\u{FEFF}\u{00AD}\u{061C}"
+            + "\u{FE0F}\u{115F}\u{1160}\u{3164}\u{E0041}\u{E007F}f"
+        XCTAssertEqual(SafeText.scrubbed(hostile), "abcdef")
+    }
+
+    func testSafeTextKeepsOrdinaryTextIncludingEmoji() {
+        XCTAssertEqual(SafeText.scrubbed("Sennheiser HD 650 — oratory1990"),
+                       "Sennheiser HD 650 — oratory1990")
+    }
+
+    func testSafeTextCapsLengthAndSaysItDidSo() {
+        let capped = SafeText.scrubbed(String(repeating: "A", count: 500), limit: 16)
+        XCTAssertEqual(capped, String(repeating: "A", count: 16) + "…")
+    }
+
+    @MainActor
+    func testDisplayNameDropsTheMarksTheCategoryFilterMisses() {
+        let hostile = "Qu\u{FE0F}de\u{115F}li\u{3164}x\u{E0041}"
+        XCTAssertEqual(QudelixController.displayName(hostile), "Qudelix")
+    }
+
+    func testOnlyTheShapesWithAGainParameterSayTheyHaveOne() {
+        XCTAssertEqual(QxFilter.allCases.filter(\.hasGain),
+                       [.lowShelf, .highShelf, .peak])
+    }
+
     func testLogSanitizerEscapesForgery() {
         let line = DebugLog.sanitized("evil\ninjected\u{202E}")
         XCTAssertFalse(line.contains("\n"))

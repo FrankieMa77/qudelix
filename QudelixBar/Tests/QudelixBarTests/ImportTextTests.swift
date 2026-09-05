@@ -82,6 +82,65 @@ final class ImportTextTests: XCTestCase {
         XCTAssertEqual(c.preGain, -6.1, accuracy: 0.05)
     }
 
+    private func scratchDirectory() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("import-file-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    func testAFileOnDiskIsAppliedAndNamesTheSlotSource() throws {
+        let dir = try scratchDirectory()
+        let url = dir.appendingPathComponent("HD 650.txt")
+        try Data(realCorrection.utf8).write(to: url)
+
+        let c = connected()
+        c.importFile(at: url)
+        XCTAssertEqual(c.bands[0].freq, 105)
+        XCTAssertEqual(c.preGain, -6.1, accuracy: 0.05)
+    }
+
+    func testAnOversizedFileIsRefusedRatherThanRead() throws {
+        let dir = try scratchDirectory()
+        let url = dir.appendingPathComponent("huge.txt")
+        try Data(repeating: 0x41, count: QudelixController.maxImportBytes + 1).write(to: url)
+
+        let c = connected()
+        let before = c.bands
+        c.importFile(at: url)
+        XCTAssertEqual(c.bands, before)
+        XCTAssertNotNil(c.lastImportSummary)
+    }
+
+    func testASymlinkedFileIsNotFollowed() throws {
+        let dir = try scratchDirectory()
+        let real = dir.appendingPathComponent("real.txt")
+        try Data(realCorrection.utf8).write(to: real)
+        let link = dir.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let c = connected()
+        let before = c.bands
+        c.importFile(at: link)
+        XCTAssertEqual(c.bands, before, "a link is not a file this app agreed to read")
+    }
+
+    func testAFifoIsRefusedInsteadOfBlockingForever() throws {
+        let dir = try scratchDirectory()
+        let fifo = dir.appendingPathComponent("pipe.txt")
+        let made = fifo.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return mkfifo(path, 0o600)
+        }
+        XCTAssertEqual(made, 0, "could not create the FIFO this test is about")
+
+        let c = connected()
+        let before = c.bands
+        c.importFile(at: fifo)
+        XCTAssertEqual(c.bands, before)
+    }
+
     func testNothingIsAppliedWhileDisconnected() {
         let c = QudelixController()
         let before = c.bands

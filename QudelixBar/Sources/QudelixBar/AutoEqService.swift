@@ -538,9 +538,10 @@ final class AutoEqService: ObservableObject, CorrectionSource {
                 // and fetching them now keeps the first apply fast.
                 self.targets = (try? await self.fetchTargets()) ?? []
             } catch {
-                self.state = .failed(Self.describe(error))
+                let why = SafeText.scrubbed(Self.describe(error))
+                self.state = .failed(why)
                 self.loadTask = nil
-                DebugLog.shared.log("AutoEq catalogue failed: \(Self.describe(error))")
+                DebugLog.shared.log("AutoEq catalogue failed: \(why)")
             }
         }
     }
@@ -578,6 +579,14 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         return try Self.parseTargets(data)
     }
 
+    nonisolated static let maxCatalogueStringLength = 120
+    nonisolated static let maxCatalogueEntries = 20_000
+    nonisolated static let maxCatalogueTargets = 2_000
+
+    nonisolated static func admissible(_ s: String) -> Bool {
+        !s.isEmpty && s.count <= maxCatalogueStringLength && !s.contains("\u{1}")
+    }
+
     /// `{"Model Name": [{"form": …, "rig": …, "source": …}, …], …}`. `rig` can
     /// be explicitly null for sources that publish only one rig.
     nonisolated static func parseEntries(_ data: Data) throws -> [AutoEqModel] {
@@ -592,14 +601,28 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         } catch {
             throw CorrectionError.badResponse("the headphone catalogue didn't parse")
         }
-        return raw
-            .map { name, ms in
-                AutoEqModel(name: name,
-                            measurements: ms.map {
-                                AutoEqMeasurement(source: $0.source, form: $0.form, rig: $0.rig)
-                            })
+        let names = raw.keys.sorted {
+            let order = $0.localizedCaseInsensitiveCompare($1)
+            return order == .orderedAscending || (order == .orderedSame && $0 < $1)
+        }
+        var out: [AutoEqModel] = []
+        for name in names {
+            guard out.count < maxCatalogueEntries else { break }
+            guard admissible(name) else { continue }
+            var seen = Set<String>()
+            var measurements: [AutoEqMeasurement] = []
+            for m in raw[name] ?? [] {
+                guard admissible(m.source) else { continue }
+                if let rig = m.rig, !admissible(rig) { continue }
+                if let form = m.form, !admissible(form) { continue }
+                guard seen.insert("\(m.source)\u{1}\(m.rig ?? "")").inserted else { continue }
+                measurements.append(AutoEqMeasurement(source: m.source, form: m.form,
+                                                      rig: m.rig))
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            guard !measurements.isEmpty else { continue }
+            out.append(AutoEqModel(name: name, measurements: measurements))
+        }
+        return out
     }
 
     nonisolated static func parseTargets(_ data: Data) throws -> [AutoEqTarget] {
@@ -620,13 +643,23 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             throw CorrectionError.badResponse("the target list didn't parse")
         }
         let toMeasurements: ([Ref]?) -> [AutoEqMeasurement] = { refs in
-            (refs ?? []).map { AutoEqMeasurement(source: $0.source, form: $0.form, rig: $0.rig) }
+            (refs ?? []).compactMap { ref in
+                guard admissible(ref.source) else { return nil }
+                if let rig = ref.rig, !admissible(rig) { return nil }
+                if let form = ref.form, !admissible(form) { return nil }
+                return AutoEqMeasurement(source: ref.source, form: ref.form, rig: ref.rig)
+            }
         }
-        return raw.map {
-            AutoEqTarget(label: $0.label,
-                         recommended: toMeasurements($0.recommended),
-                         compatible: toMeasurements($0.compatible))
+        var seen = Set<String>()
+        var out: [AutoEqTarget] = []
+        for target in raw {
+            guard out.count < maxCatalogueTargets else { break }
+            guard admissible(target.label), seen.insert(target.label).inserted else { continue }
+            out.append(AutoEqTarget(label: target.label,
+                                    recommended: toMeasurements(target.recommended),
+                                    compatible: toMeasurements(target.compatible)))
         }
+        return out
     }
 
     // MARK: Target choice
@@ -796,7 +829,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         var unknownTypes = 0
         var outOfRange = 0
 
-        for f in decoded.parametricEq.filters {
+        let returned = decoded.parametricEq.filters
+        for f in returned.prefix(limits.bandCount) {
             guard let type = AutoEqFilterType(rawValue: f.type) else {
                 unknownTypes += 1
                 continue
@@ -833,8 +867,9 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         if outOfRange > 0 {
             warnings.append("\(outOfRange) filter(s) came back outside the device's range")
         }
-        if file.bands.count > limits.bandCount {
-            warnings.append("\(file.bands.count - limits.bandCount) filter(s) beyond the \(limits.bandCount)-band mode were dropped")
+        let beyondMode = returned.count - limits.bandCount
+        if beyondMode > 0 {
+            warnings.append("\(beyondMode) filter(s) beyond the \(limits.bandCount)-band mode were dropped")
         }
         return (file, warnings, residualScore(decoded, file: file, limits: limits))
     }
@@ -1020,7 +1055,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         if let c = error as? CorrectionError { return c }
         if let http = error as? HTTPStatusError {
             return CorrectionError.server(host: host, status: http.status,
-                                          detail: detail(from: http.body))
+                                          detail: detail(from: http.body,
+                                                         status: http.status))
         }
         guard let url = error as? URLError else { return error }
         switch url.code {
@@ -1039,18 +1075,20 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     /// The API reports the field it disliked in a `detail` member — a string on
     /// a 500, a list of validation objects on a 422. Either is worth surfacing;
     /// the raw body is not.
-    nonisolated static func detail(from body: String) -> String? {
+    nonisolated static func detail(from body: String, status: Int) -> String? {
+        let fallback = "the service answered \(status)"
         guard let data = body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let detail = object["detail"] else {
-            return body.isEmpty ? nil : String(body.prefix(200))
+            return fallback
         }
-        if let text = detail as? String { return String(text.prefix(200)) }
+        if let text = detail as? String { return SafeText.scrubbed(text) }
         if let items = detail as? [[String: Any]] {
             let messages = items.compactMap { $0["msg"] as? String }
-            return messages.isEmpty ? nil : String(messages.joined(separator: "; ").prefix(200))
+            return messages.isEmpty ? fallback
+                : SafeText.scrubbed(messages.joined(separator: "; "))
         }
-        return nil
+        return fallback
     }
 
     nonisolated static func describe(_ error: Error) -> String {

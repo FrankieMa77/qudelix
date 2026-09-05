@@ -71,6 +71,57 @@ final class StateFileSafetyTests: XCTestCase {
         XCTAssertNil(result, "a FIFO is not a state file this app ever wrote")
     }
 
+    func testAFileLargerThanOneReadComesBackWhole() throws {
+        let url = scratch.appendingPathComponent("long.json")
+        let payload = Data((0..<(512 << 10)).map { UInt8($0 % 251) })
+        try payload.write(to: url)
+
+        XCTAssertEqual(SafeFile.read(url, cap: 1 << 20), payload)
+    }
+
+    func testAnEmptyFileIsNotAReadableDocument() throws {
+        let url = scratch.appendingPathComponent("empty.json")
+        try Data().write(to: url)
+
+        XCTAssertNil(SafeFile.read(url, cap: 1000))
+    }
+
+    func testAnAtomicWriteLandsOwnerOnlyAndReadsBack() throws {
+        let url = scratch.appendingPathComponent("state.json")
+        XCTAssertTrue(SafeFile.writeAtomic(Data("{\"a\":1}".utf8), to: url))
+
+        XCTAssertEqual(SafeFile.read(url, cap: 1000), Data("{\"a\":1}".utf8))
+        var st = stat()
+        _ = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return lstat(path, &st)
+        }
+        XCTAssertEqual(st.st_mode & 0o777, 0o600)
+    }
+
+    func testAReplacementNeverLeavesAHalfWrittenDocument() throws {
+        let url = scratch.appendingPathComponent("state.json")
+        XCTAssertTrue(SafeFile.writeAtomic(Data(repeating: 0x41, count: 4096), to: url))
+        XCTAssertTrue(SafeFile.writeAtomic(Data(repeating: 0x42, count: 200_000), to: url))
+
+        let back = try XCTUnwrap(SafeFile.read(url, cap: 1 << 20))
+        XCTAssertEqual(back.count, 200_000)
+        XCTAssertTrue(back.allSatisfy { $0 == 0x42 })
+    }
+
+    func testTheTemporaryFileDoesNotSurviveTheWrite() throws {
+        let url = scratch.appendingPathComponent("state.json")
+        XCTAssertTrue(SafeFile.writeAtomic(Data("x".utf8), to: url))
+
+        let left = try FileManager.default.contentsOfDirectory(atPath: scratch.path)
+        XCTAssertEqual(left, ["state.json"], "left behind: \(left)")
+    }
+
+    func testAWriteWithNowhereToPutItFails() {
+        let url = scratch.appendingPathComponent("missing-dir/state.json")
+        XCTAssertFalse(SafeFile.writeAtomic(Data("x".utf8), to: url))
+    }
+
     func testADirectoryIsRefused() throws {
         let dir = scratch.appendingPathComponent("stage.json")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)

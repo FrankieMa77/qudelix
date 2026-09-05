@@ -629,7 +629,8 @@ struct EQCurveView: View {
             if let h = hovering, dragging == nil, bands.indices.contains(h),
                bands[h].filter != .bypass {
                 let hx = CGFloat(EQCurve.fraction(of: Double(bands[h].freq))) * size.width
-                let ring = Path(ellipseIn: CGRect(x: hx - 7, y: y(bands[h].gain) - 7,
+                let ring = Path(ellipseIn: CGRect(x: hx - 7,
+                                                  y: y(EQCurveView.markerGain(bands[h])) - 7,
                                                   width: 14, height: 14))
                 ctx.stroke(ring, with: .color(.accentColor.opacity(0.45)), lineWidth: 1)
             }
@@ -639,7 +640,8 @@ struct EQCurveView: View {
                 let dotX = CGFloat(EQCurve.fraction(of: Double(band.freq))) * size.width
                 let isOn = highlighted == i
                 let r: CGFloat = isOn ? 4 : 2.5
-                let dot = Path(ellipseIn: CGRect(x: dotX - r, y: y(band.gain) - r,
+                let dot = Path(ellipseIn: CGRect(x: dotX - r,
+                                                 y: y(EQCurveView.markerGain(band)) - r,
                                                  width: r * 2, height: r * 2))
                 ctx.fill(dot, with: .color(isOn ? .accentColor : .accentColor.opacity(0.55)))
                 if isOn {
@@ -741,9 +743,11 @@ struct EQCurveView: View {
                 // Vertical: gain, clamped to what the device accepts rather
                 // than to the drawn axis — the axis grows to fit a ghost and
                 // must not become a way to ask for more than ±12 dB.
-                let usable = max(viewSize.height / 2 - 6, 1)
-                let db = origin.gain - Double(dy / usable) * range
-                band.gain = (min(max(db, -12), 12) * 10).rounded() / 10
+                if band.filter.hasGain {
+                    let usable = max(viewSize.height / 2 - 6, 1)
+                    let db = origin.gain - Double(dy / usable) * range
+                    band.gain = (min(max(db, -12), 12) * 10).rounded() / 10
+                }
 
                 // Horizontal: frequency, kept strictly between its neighbours.
                 // Compared by frequency value rather than array position: a
@@ -771,6 +775,10 @@ struct EQCurveView: View {
             }
     }
 
+    nonisolated static func markerGain(_ band: QxEqBandValue) -> Double {
+        band.filter.hasGain ? band.gain : 0
+    }
+
     /// A dragged frequency, kept strictly between the band's neighbours.
     ///
     /// Neighbours are found by frequency *value*, not array position: a typed
@@ -783,14 +791,17 @@ struct EQCurveView: View {
         let current = Double(bands[i].freq)
         let others = bands.enumerated()
             .filter { $0.offset != i && $0.element.filter != .bypass }
-            .map { Double($0.element.freq) }
         var lower = 20.0, upper = 20000.0
-        if let below = others.filter({ $0 < current }).max() {
-            lower = max(lower, below * minNeighbourRatio)
-        }
-        if let above = others.filter({ $0 > current }).min() {
-            upper = min(upper, above / minNeighbourRatio)
-        }
+        let below = others.filter {
+            Double($0.element.freq) < current
+                || (Double($0.element.freq) == current && $0.offset < i)
+        }.map { Double($0.element.freq) }.max()
+        let above = others.filter {
+            Double($0.element.freq) > current
+                || (Double($0.element.freq) == current && $0.offset > i)
+        }.map { Double($0.element.freq) }.min()
+        if let below { lower = max(lower, below * minNeighbourRatio) }
+        if let above { upper = min(upper, above / minNeighbourRatio) }
         // Neighbours closer together than twice the gap leave no room between
         // them, and applying the two clamps in sequence let the upper one
         // overwrite the lower — throwing the node *past* the neighbour it was
@@ -810,7 +821,8 @@ struct EQCurveView: View {
         var best: (index: Int, distance: CGFloat)?
         for (i, band) in bands.enumerated() where band.filter != .bypass {
             let bx = CGFloat(EQCurve.fraction(of: Double(band.freq))) * viewSize.width
-            let by = midY - CGFloat(max(-range, min(range, band.gain)) / range) * usable
+            let g = EQCurveView.markerGain(band)
+            let by = midY - CGFloat(max(-range, min(range, g)) / range) * usable
             let d = hypot(point.x - bx, point.y - by)
             if d <= Self.grabRadius, best == nil || d < best!.distance {
                 best = (i, d)

@@ -625,6 +625,122 @@ final class AutoEqServiceTests: XCTestCase {
         XCTAssertNil(iem.measurements.first?.rig)
     }
 
+    func testFarMoreFiltersThanTheModeHoldsAreCappedAndCounted() throws {
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+        let (file, warnings, _) = try AutoEqService.correction(from: fixture(filterCount: 400),
+                                                               limits: limits)
+        XCTAssertEqual(file.bands.count, 10)
+        XCTAssertTrue(warnings.contains { $0.contains("390 filter(s) beyond the 10-band mode") },
+                      "\(warnings)")
+    }
+
+    func testAResponseInsideTheModeIsNotReportedAsDropped() throws {
+        let limits = DeviceEQLimits.qudelix(bandCount: 20)
+        let (file, warnings, _) = try AutoEqService.correction(from: fixture(filterCount: 20),
+                                                               limits: limits)
+        XCTAssertEqual(file.bands.count, 20)
+        XCTAssertFalse(warnings.contains { $0.contains("beyond the") }, "\(warnings)")
+    }
+
+    func testServerDetailIsSanitizedBeforeItIsShown() {
+        let body = #"{"detail":"bad rig\nQudelixBar: everything is fine‮"}"#
+        let detail = try? XCTUnwrap(AutoEqService.detail(from: body, status: 422))
+        XCTAssertEqual(detail, "bad rigQudelixBar: everything is fine")
+    }
+
+    func testDetailIsCappedRatherThanShownWhole() throws {
+        let body = "{\"detail\":\"\(String(repeating: "A", count: 4000))\"}"
+        let detail = try XCTUnwrap(AutoEqService.detail(from: body, status: 500))
+        XCTAssertLessThanOrEqual(detail.count, SafeText.defaultLimit + 1)
+    }
+
+    func testANonJsonBodyBecomesTheStatusCodeAndNothingElse() {
+        for body in ["<html><body>502 Bad Gateway</body></html>", "", "not json at all"] {
+            XCTAssertEqual(AutoEqService.detail(from: body, status: 502),
+                           "the service answered 502", "for \(body.prefix(20))")
+        }
+    }
+
+    func testCatalogueStringsCarryingTheKeySeparatorAreRefused() throws {
+        let data = #"""
+        {"Good":[{"form":"over-ear","rig":"GRAS 45BC ","source":"oratory1990"}],
+         "Bad\u0001Name":[{"form":"over-ear","rig":"r","source":"s"}],
+         "Bad Rig":[{"form":"over-ear","rig":"r\u0001x","source":"s"}],
+         "Bad Source":[{"form":"over-ear","rig":"r","source":"s\u0001x"}]}
+        """#.data(using: .utf8)!
+        let models = try AutoEqService.parseEntries(data)
+        XCTAssertEqual(models.map(\.name), ["Good"])
+    }
+
+    func testCatalogueStringsAreLengthCapped() throws {
+        let long = String(repeating: "A", count: AutoEqService.maxCatalogueStringLength + 1)
+        let data = """
+        {"\(long)":[{"form":"over-ear","rig":"r","source":"s"}],
+         "Keep":[{"form":"over-ear","rig":"\(long)","source":"s"},
+                 {"form":"over-ear","rig":"r","source":"s"}]}
+        """.data(using: .utf8)!
+        let models = try AutoEqService.parseEntries(data)
+        XCTAssertEqual(models.map(\.name), ["Keep"])
+        XCTAssertEqual(models.first?.measurements.map(\.rig), ["r"])
+    }
+
+    func testAModelLeftWithNoUsableMeasurementIsDropped() throws {
+        let data = """
+        {"Ghost":[{"form":"over-ear","rig":"r","source":""}]}
+        """.data(using: .utf8)!
+        XCTAssertTrue(try AutoEqService.parseEntries(data).isEmpty)
+    }
+
+    func testCatalogueOrderingIsStableAcrossCaseTies() throws {
+        let data = """
+        {"hd 650":[{"form":"over-ear","rig":"r","source":"s"}],
+         "HD 650":[{"form":"over-ear","rig":"r","source":"s"}],
+         "HD 600":[{"form":"over-ear","rig":"r","source":"s"}]}
+        """.data(using: .utf8)!
+        let first = try AutoEqService.parseEntries(data).map(\.name)
+        for _ in 0..<20 {
+            XCTAssertEqual(try AutoEqService.parseEntries(data).map(\.name), first)
+        }
+        XCTAssertEqual(first.first, "HD 600")
+    }
+
+    func testDuplicateTargetLabelsAreCollapsed() throws {
+        let data = """
+        [{"label":"Harman over-ear 2018","recommended":[],"compatible":[]},
+         {"label":"Harman over-ear 2018","recommended":[],"compatible":[]},
+         {"label":"","recommended":[],"compatible":[]}]
+        """.data(using: .utf8)!
+        XCTAssertEqual(try AutoEqService.parseTargets(data).map(\.label),
+                       ["Harman over-ear 2018"])
+    }
+
+    func testAPublishedPresetPathCannotEscapeTheResultsRoot() {
+        for path in ["../../etc/passwd", "oratory1990/%2e%2e/%2e%2e/secret",
+                     "/absolute/path", "oratory1990/x?a=b", "oratory1990/x#frag"] {
+            let entry = AutoEqEntry(title: "t", source: "s", path: path)
+            XCTAssertNil(entry.presetURL, "accepted \(path)")
+        }
+    }
+
+    func testAnOrdinaryPublishedPresetPathStillResolves() throws {
+        let entry = AutoEqEntry(title: "Sennheiser HD 650", source: "oratory1990",
+                                path: "oratory1990/over-ear/Sennheiser%20HD%20650")
+        let url = try XCTUnwrap(entry.presetURL)
+        XCTAssertTrue(url.absoluteString.hasPrefix(AutoEqIndex.root + "/"), url.absoluteString)
+        XCTAssertTrue(url.absoluteString.hasSuffix("Sennheiser%20HD%20650%20ParametricEQ.txt"))
+    }
+
+    @MainActor
+    func testIndexEntriesWithAbsurdTitlesOrPathsAreSkipped() {
+        let long = String(repeating: "A", count: 500)
+        let markdown = """
+        - [Sennheiser HD 650](./oratory1990/over-ear/Sennheiser%20HD%20650)
+        - [\(long)](./oratory1990/over-ear/x)
+        - [Fine](./oratory1990/over-ear/\(long))
+        """
+        XCTAssertEqual(AutoEqIndex.parseIndex(markdown).map(\.title), ["Sennheiser HD 650"])
+    }
+
     func testTargetsParseAndRecommendationWins() throws {
         let data = """
         [{"label":"AutoEq in-ear","recommended":[{"source":"crinacle","form":"in-ear","rig":"711"}],

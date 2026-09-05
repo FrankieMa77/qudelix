@@ -140,6 +140,19 @@ final class EqSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(try? String(contentsOf: parked, encoding: .utf8), original)
     }
 
+    func testAFileClaimingMoreBandsThanAnyGroupHasIsCutToSize() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let band = "{\"filter\":5,\"freq\":1000,\"gain\":1,\"q\":1}"
+        let json = """
+        {"groups":{"0":{"groupRaw":0,"preGain":0,"enabled":true,
+         "bands":[\(Array(repeating: band, count: 1000).joined(separator: ","))]}}}
+        """
+        try? Data(json.utf8).write(to: url)
+
+        XCTAssertEqual(EqSnapshotFile.load(from: url)[0]?.bands.count, QxEq.maxBandCount)
+    }
+
     func testAnOversizedFileIsRefusedOutright() {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }

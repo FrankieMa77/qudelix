@@ -297,7 +297,7 @@ struct ImportView: View {
                 .font(.caption).foregroundStyle(.secondary)
         case .failed(let msg):
             HStack {
-                Text("Couldn't load catalogue: \(msg)")
+                Text(verbatim: "Couldn't load catalogue: \(msg)")
                     .font(.caption).foregroundStyle(.orange)
                 Button("Retry") { optimizer.prepare() }
                     .buttonStyle(.link).font(.caption)
@@ -317,7 +317,7 @@ struct ImportView: View {
                 .font(.caption).foregroundStyle(.secondary)
         case .failed(let msg):
             HStack {
-                Text("Couldn't load database: \(msg)")
+                Text(verbatim: "Couldn't load database: \(msg)")
                     .font(.caption).foregroundStyle(.orange)
                 Button("Retry") { autoEq.loadIfNeeded() }
                     .buttonStyle(.link).font(.caption)

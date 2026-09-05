@@ -195,6 +195,13 @@ enum QxFilter: UInt8, CaseIterable, Identifiable, Codable {
         case .peak: return "Peak"
         }
     }
+    var hasGain: Bool {
+        switch self {
+        case .peak, .lowShelf, .highShelf: return true
+        case .lpf, .hpf, .bypass: return false
+        }
+    }
+
     /// Compact form for the band table.
     var shortLabel: String {
         switch self {
