@@ -1,6 +1,7 @@
-Qudelix for macOS 1.1.0
+Qudelix for macOS 1.3.0
 =======================
-An unofficial menu bar app for configuring the Qudelix 5K over USB.
+An unofficial menu bar app for configuring the Qudelix 5K over USB or
+Bluetooth.
 Not affiliated with or endorsed by Qudelix, Inc.
 
 
@@ -24,13 +25,13 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, so the
 "Open Anyway" click above is pure trust. Every release publishes a SHA-256 for
 the DMG. Check the file you downloaded against it:
 
-   shasum -a 256 /path/to/Qudelix-1.1.0.dmg
+   shasum -a 256 /path/to/Qudelix-1.3.0.dmg
 
 Compare that string to the one in the release notes; they must match exactly.
-If a Qudelix-1.1.0.dmg.sha256 file came with the download, this does the same
+If a Qudelix-1.3.0.dmg.sha256 file came with the download, this does the same
 comparison for you and prints "OK":
 
-   cd ~/Downloads && shasum -a 256 -c Qudelix-1.1.0.dmg.sha256
+   cd ~/Downloads && shasum -a 256 -c Qudelix-1.3.0.dmg.sha256
 
 Reading this from inside the mounted DMG? Then the hash is deliberately not
 here — it lives on the release page, because a checksum shipped inside the file
@@ -47,15 +48,25 @@ connects on its own and prefers USB when both are available; the menu bar icon
 fills in when it is talking to the device. Click it for:
 
   - Live status: battery, charging, firmware, sample rate, input source
-  - Volume slider and mute
-  - EQ on/off and the 20 preset slots
-  - A 10-band parametric EQ editor with pre-gain and save-to-preset
-  - Preset import from a file or from the AutoEq database (6,000+ headphones)
+  - Volume slider and mute, USB sample rate control
+  - EQ on/off and the 20 preset slots, which you can name from the app
+  - A 10- or 20-band parametric EQ editor: drag the curve, undo, per-band
+    mute, auto pre-gain, save-to-preset
+  - Preset import from a file, the clipboard, or the AutoEq database
+    (6,000+ headphones), fitted to a target of your choice
+  - Profiles that pair an output device with a preset
+  - Tune: find the EQ you prefer by ear
+  - Stage and Level: a soundstage and a listening-level meter, applied on
+    the Mac's audio rather than on the 5K
+  - Device settings: channel trim, volume limit, DAC filter
   - A diagnostics panel showing every packet exchanged with the device
 
 Either link carries the same commands: USB HID over the vendor interface, or
 Bluetooth LE with the same packets tunnelled inside Qualcomm GAIA frames.
-Neither touches the audio path, so playback is unaffected.
+The device control never touches the audio path. Stage, Level and stream
+quality detection do work on the Mac's audio through a system audio tap;
+detection is on by default and the README explains the three switches that
+govern the tap.
 
 To start it automatically, add it in System Settings > General > Login Items.
 
@@ -65,16 +76,20 @@ WHAT IT SENDS AND WHERE
 Since you are being asked to bypass Gatekeeper on trust, here is every bit of
 network and disk activity in the app:
 
-  - It contacts exactly one host, raw.githubusercontent.com, and only to fetch
-    the AutoEq headphone list and the preset you pick. This happens only when
-    you open the Import pane, never at launch.
+  - It contacts three hosts, each only when you ask: raw.githubusercontent.com
+    and autoeq.app when you open the Import pane, to fetch the headphone list
+    and the correction you pick; api.github.com when you press Check in the
+    About panel, to read the latest release number. Nothing is contacted at
+    launch.
   - There is no telemetry, no analytics, no identifiers, no crash reporting.
-  - It writes one local file, ~/Library/Logs/QudelixBar.log, containing device
+  - It writes a packet log, ~/Library/Logs/QudelixBar.log, containing device
     packets, firmware version, battery and volume. Because it records raw packet
     hex, it also contains your 5K's own Bluetooth address and any preset names
-    you have saved on the device. It is never transmitted, but do glance over it
-    before attaching it to a bug report. Bluetooth scanning does not record the
-    names of any other devices nearby.
+    you have saved on the device. Its settings live in
+    ~/Library/Application Support/QudelixBar/ (the README lists every file).
+    Nothing is transmitted, but glance over a file before attaching it to a
+    bug report. Bluetooth scanning does not record the names of any other
+    devices nearby.
   - It only writes EQ, volume, and preset settings to the 5K — the same
     settings the official app writes. It never touches firmware.
 
@@ -117,11 +132,9 @@ reconnect. Nothing is written to the device while it is in a refused state.
 KNOWN LIMITS
 ------------
   - Only the user (headphone) EQ group is exposed, not the speaker group.
-  - 20-band mode is implemented from Qudelix's own preset format but has not
-    been tested on real hardware. Writing should be identical to 10-band, which
-    is well tested; if reading your existing 20-band curve looks wrong, the app
-    keeps flat defaults rather than showing nonsense. Reports welcome.
-  - Preset slots show generic names unless you have named them on the device.
+  - Preset slots show generic names until you name them.
+  - Crossfeed is shown but cannot be changed here.
+  - The binary is universal but has only been run on Apple Silicon.
 
 
 LICENSE / CREDITS

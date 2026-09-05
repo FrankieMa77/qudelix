@@ -103,7 +103,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.2.0.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.3.0.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -111,7 +111,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.2.0.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.3.0.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -417,6 +417,136 @@ Read the source before running them.
   anything else.
 - No auto-update mechanism. The About panel will tell you when a newer release
   exists, but downloading and installing it is manual.
+
+## Changelog
+
+### 1.3.0 — 2026-09-05
+
+Equalizer
+
+- **Drag the curve to shape it.** Move a band's dot vertically for gain and
+  horizontally for frequency; hold Option for Q and Shift for fine steps.
+  Hovering shows which band a drag would take. Everything goes through the
+  same gated, clamped path as the sliders.
+- **Undo and redo** for EQ edits, with Cmd-Z and Cmd-Shift-Z and buttons beside
+  Flatten. A drag or an import is one step, not a hundred.
+- **Auto pre-gain.** The editor works out how much attenuation the summed curve
+  needs to avoid clipping in the 5K's own DSP and offers the number. It never
+  moves a value you set yourself.
+- **Per-band mute** for an instant A/B of one band. The gain is kept and
+  restored exactly, and a mute is never committed to the device's flash.
+- **The requested curve, shown.** When an import asks for more than the device
+  can hold, the requested shape is drawn as a dashed ghost behind the live
+  curve with the gap shaded and the worst point labelled.
+- Pre-gain is now written to both stored channels. Previously only the first
+  was written, which could leave a left/right level imbalance invisible from
+  the app.
+
+Presets and corrections
+
+- **Name preset slots** from the app. The name is stored on the 5K, so other
+  software sees it. Saving an imported correction into a slot names the slot
+  after it, unless the curve has since been edited.
+- **Fit to a target of your choice** when importing from AutoEq, with bass and
+  tilt adjustment on the same fit. Targets are grouped by form factor. The fit
+  is asked to stay within the device's limits, so nothing is clamped on
+  arrival; the published preset is still offered as-is.
+- **Predicted preference rating** for over-ear and on-ear corrections, from the
+  published AES model, scored on the error that survives the bands this device
+  can actually run. In-ear gets no score: those coefficients could not be
+  verified from a primary source.
+- **Import from the clipboard.** Paste a filter list as published sites print
+  it.
+- **Bandwidth-aware fitting.** When stream-quality detection has measured where
+  the source stops, an import can be told to stop correcting there.
+- **Profiles.** Pair an output device with a preset and be offered the switch
+  when that output becomes active. It always asks the first time; mark an
+  output automatic once you trust it.
+- The EQ snapshot used to repair a device is now kept per EQ group, tagged with
+  the device it came from, and never restored onto a different device. A
+  damaged snapshot is parked rather than overwritten.
+
+The device itself
+
+- **Device settings** drawer: channel trim, a volume ceiling, the DAC
+  reconstruction filter, power and battery-care state. Crossfeed is shown but
+  not settable.
+- The parser now reads the codec, output jack, gain, mute, charger and
+  low-battery fields it used to skip. The low-battery alert takes the device's
+  own flag as a trigger, and the header can say "plugged in, not charging"
+  when battery care is on rather than implying a fault.
+
+Everything else
+
+- **Signal path inspector** in the Level pane: five rows from source to output
+  saying what alters the audio and what passes it through.
+- **About panel** with the version and the exact source revision, and an
+  update check that runs only when you press it.
+- Accessibility names for every icon-only control.
+- Copy and Reveal buttons on the diagnostics log.
+- The README and privacy section now list every file the app writes and state
+  that a system-wide audio tap is created at launch by default, with the three
+  switches that govern it.
+
+Fixes
+
+- Bluetooth stopped retrying a switched-off device every 18 seconds for the
+  whole session. It backs off to once a minute and logs it once.
+- The by-ear tuner read headroom off the largest single band rather than the
+  summed response, so it under-read on exactly the curves with the least
+  headroom. Tune results derived on top of an import are worth re-running.
+- The by-ear macros and the tone-test correction were applied by band index,
+  so in 20-band mode they landed on the wrong frequencies. Both now map by
+  frequency.
+- A/B trials were being written to flash and pushed into undo one band at a
+  time. A trial now reaches neither.
+- Quitting with the 5K unplugged could save a flat curve as the last EQ and
+  write it over the real one on the next connect. Snapshots now require a
+  device that has been read.
+- Device reports stopped arriving during any slider drag and landed in a burst
+  afterwards, defeating the echo windows. The HID source now runs in common
+  run-loop modes.
+- Recording of the listening history now follows its switch alone. It used to
+  accumulate whenever the engine ran for stream detection.
+- Auto-rate refuses to renegotiate the 5K from audio that was going to a
+  different output device.
+- A tone test that measured nothing at a frequency says so instead of reporting
+  typical hearing and writing a "+0 dB" correction through the gap.
+- The Compare session's reliability check no longer flags a listener who
+  correctly answered "same" on identical pairs.
+- The Stage soft clipper is anti-aliased.
+- Hardened runtime on the bundle. The audio-recording permission is asked once
+  more on first launch of this version because the grant is keyed to the
+  signature.
+- Two audit rounds of crash, resource and input-validation fixes: NaN and
+  non-finite sample rates, unbounded loops on hostile buffer descriptions,
+  throttled logs, bounded caches, state files that refuse anything but a
+  regular file.
+
+### 1.2.0 — 2026-08-06
+
+- Stage: a soundstage for headphones, applied on the Mac.
+- Level: live output level and a 14-day listening history.
+- Stream quality detection, with optional automatic sample-rate matching.
+- USB sample rate control, including the rates the device offers the host.
+- Battery indication in the menu bar, with low and charging alerts.
+- Switch between 10-band and 20-band EQ from the app.
+- EQ settings persist across device restarts.
+
+### 1.1.0 — 2026-08-03
+
+- Control over Bluetooth LE as well as USB.
+- Tune tab: blind A/B comparison and tone thresholds, by ear.
+- Fixed the EQ mode being misread on connect.
+
+### 1.0.1 — 2026-08-02
+
+- Hardened device, log and network handling; release checksums published.
+
+### 1.0.0 — 2026-08-02
+
+- First release: USB control, live status, volume, 10-band parametric EQ,
+  20 preset slots, AutoEq import, diagnostics.
 
 ## Feedback and contributions
 
