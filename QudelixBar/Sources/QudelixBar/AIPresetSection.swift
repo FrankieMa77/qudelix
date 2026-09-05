@@ -16,7 +16,7 @@ struct AIPresetSection: View {
     @State private var slotChoice: Int?
 
     static let maxNote = AIPresetService.maxNoteLength
-    static let bodyHeight: CGFloat = 230
+    static let bodyHeight: CGFloat = 195
 
     private var headphoneName: String {
         library.headphoneName.trimmingCharacters(in: .whitespaces)

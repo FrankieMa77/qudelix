@@ -5,7 +5,7 @@ struct LevelView: View {
     @EnvironmentObject var stageState: StageState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             // Nothing on this pane works without the engine, and the engine
             // starts on its own for quality detection — so its refusal is
             // reported here once, at the top, whatever asked it to run.

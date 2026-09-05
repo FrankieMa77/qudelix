@@ -142,7 +142,7 @@ struct PopoverView: View {
 
                     switch pane {
                     case .equalizer: EqEditorView(editingBand: $editingBand)
-                    case .presets: PresetsView()
+                    case .presets: ScrollView { PresetsView() }
                     case .importing: ImportView()
                     // Tune, Stage and Level can outgrow the fixed pane area
                     // (a tone result with both warnings, the geometry
