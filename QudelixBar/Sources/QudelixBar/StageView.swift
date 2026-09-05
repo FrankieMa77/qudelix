@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Soundstage pane: stereo-derived spaciousness, applied on the Mac to
 /// whatever the system is playing, per output device.
@@ -151,6 +153,8 @@ struct StageView: View {
             limiterSection(uid)
 
             loudnessSection(uid)
+
+            impulseSection(uid)
 
             if stageState.stage.enabled, let corr = stageState.sourceCorrelation,
                corr > 0.985 {
@@ -359,6 +363,131 @@ struct StageView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
+    private func impulseSection(_ uid: String?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button(stageState.stage.hasImpulse ? "Replace…" : "Choose…") {
+                            chooseImpulse(uid)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!stageState.stage.enabled || stageState.impulseBusy)
+                        if stageState.stage.hasImpulse {
+                            Button("Remove") { stageState.removeImpulse(editedFor: uid) }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                                .disabled(!stageState.stage.enabled)
+                        }
+                        Spacer()
+                    }
+
+                    if stageState.stage.hasImpulse, let info = stageState.impulseInfo {
+                        Text(verbatim: impulseDetail(info))
+                            .font(.system(size: 9).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if stageState.stage.hasImpulse {
+                        slider("Mix", value: Binding(
+                            get: { stageState.stage.impulseMixValue * 100 },
+                            set: { v in
+                                stageState.setImpulseMix(v.rounded() / 100,
+                                                         editedFor: uid)
+                            }),
+                            in: 0...100, display: String(format: "%.0f %%",
+                                                         stageState.stage.impulseMixValue * 100),
+                            help: "How much of the convolved signal is blended "
+                                + "with the dry one. 100 % is the response alone.")
+                    }
+
+                    Text(impulseNote)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.top, 6)
+            } label: {
+                HStack(spacing: 5) {
+                    Text("Impulse response")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    if let info = stageState.impulseInfo, stageState.stage.hasImpulse {
+                        Text(verbatim: info.displayName)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .help("Convolves the Mac's output with a WAV, AIFF or CAF "
+                      + "response of your own. No added latency.")
+            }
+
+            if let problem = stageState.impulseProblem {
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .accessibilityHidden(true)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    Text(verbatim: problem)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
+    private func chooseImpulse(_ uid: String?) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.resolvesAliases = false
+        var types: [UTType] = [.wav, .aiff]
+        for ext in ["caf", "aifc"] {
+            if let type = UTType(filenameExtension: ext) { types.append(type) }
+        }
+        panel.allowedContentTypes = types
+        panel.message = "Choose a WAV, AIFF or CAF impulse response."
+        panel.prompt = "Use"
+        AppDelegate.runFilePanel(panel) { response in
+            guard response == .OK, let url = panel.url else { return }
+            stageState.installImpulse(url, editedFor: uid)
+        }
+    }
+
+    private func impulseDetail(_ info: ImpulseInfo) -> String {
+        var parts = [String(format: "%.2f s", info.seconds),
+                     info.channels == 1 ? "mono — both ears" : "stereo — one per side",
+                     String(format: "%g kHz file", info.sourceRate / 1000)]
+        if case .ready(_, let partitions, _, let hop, let rate) = stageState.impulseStatus {
+            parts.append(String(format: "%d × %d at %g kHz", partitions, hop,
+                                rate / 1000))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var impulseNote: String {
+        guard stageState.stage.enabled else {
+            return "Unavailable while Soundstage is off — with the stage off "
+                + "this app is not in the audio path at all, so it has nothing "
+                + "to convolve."
+        }
+        return "Convolves what the Mac is playing with a response of your own — "
+            + "a headphone correction, a room measurement, a reverb. A stereo "
+            + "file applies one response per side; a mono one applies the same "
+            + "response to both. The response is partitioned uniformly at the "
+            + "size the output hands this app, so however long it is it adds "
+            + "no latency at all. WAV, AIFF or CAF, up to "
+            + String(format: "%.0f seconds.", ImpulseLimits.maxSeconds)
     }
 
     private var loudnessAmount: String {

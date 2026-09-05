@@ -78,6 +78,7 @@ enum SignalPath {
         /// nil = the engine isn't running at all. Set only while running.
         var engineMode: StageEngine.Mode?
         var stage = StageSettings()
+        var impulseActive = false
 
         // Row 4: Qudelix EQ (runs on the device, not the Mac)
         var eqEnabled = true
@@ -205,15 +206,17 @@ enum SignalPath {
                       state: "not in the path — metering only, audio untouched",
                       indicator: .passthrough)
         case .insert:
-            return Row(id: "app", name: name, state: stageDescription(i.stage),
+            return Row(id: "app", name: name,
+                      state: stageDescription(i.stage, impulse: i.impulseActive),
                       indicator: .altering)
         }
     }
 
     /// What the Stage is actually doing, named rather than just "on" — the
     /// four audible controls that are above their neutral value.
-    private static func stageDescription(_ s: StageSettings) -> String {
-        guard !s.isAudiblyNeutral else {
+    private static func stageDescription(_ s: StageSettings,
+                                         impulse: Bool) -> String {
+        guard !s.isAudiblyNeutral || impulse else {
             return "Soundstage inserted — every control at neutral"
         }
         var parts: [String] = []
@@ -226,6 +229,7 @@ enum SignalPath {
         if s.dialogue > 0 { parts.append("dialogue") }
         if s.room > 0 { parts.append("room") }
         if s.balanceDbValue != 0 || s.alignMsValue != 0 { parts.append("balance") }
+        if impulse { parts.append("impulse response") }
         if s.loudnessValue { parts.append("loudness compensation") }
         if s.limiterValue { parts.append("true-peak limiter") }
         let detail = parts.isEmpty ? "processing the stereo mix"
@@ -339,6 +343,7 @@ struct SignalPathView: View {
             mixerDeviceName: stageState.outputName,
             engineMode: stageState.engine.isRunning ? stageState.engine.mode : nil,
             stage: stageState.stage,
+            impulseActive: stageState.impulseInPath,
             eqEnabled: controller.eqEnabled,
             bandCount: controller.bandCount,
             mutedBandCount: controller.mutedBands.count,

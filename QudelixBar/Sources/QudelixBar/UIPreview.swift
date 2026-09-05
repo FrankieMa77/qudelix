@@ -332,6 +332,10 @@ enum UIPreview {
         stage.enabled = running
         stage.limiter = running
         stage.loudness = running
+        if running {
+            stage.impulseFile = "Ambio_Room-1a2b3c4d.wav"
+            stage.impulseMix = 0.6
+        }
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: running ? -21 : nil,
                      loudnessShelfDb: running ? 4.2 : 0,
@@ -345,6 +349,14 @@ enum UIPreview {
             defaultUID: "mock-speakers")
         if running {
             s.engine.previewSetRunning(true, status: "Stage active → MacBook Pro Speakers @ 48 kHz")
+            let tail = [Float](repeating: 0, count: 26_400)
+            s.previewSetImpulse(
+                ImpulseResponse(fileName: "Ambio_Room-1a2b3c4d.wav",
+                                displayName: "Ambio_Room", hash: "1a2b3c4d",
+                                sourceRate: 48000, sourceChannels: 2,
+                                channels: [tail, tail]),
+                status: .ready(name: "Ambio_Room", partitions: 52, taps: 26_400,
+                               hop: 512, rate: 48000))
         }
         return s
     }

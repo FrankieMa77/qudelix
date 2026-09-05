@@ -224,6 +224,7 @@ final class StageProcessor {
         var loudHigh = BiquadSection.passthrough
         var loudDcGain: Double = 1
         var loudGlide: Double = 0.0001
+        var convWet: Float = 0
     }
 
     static let maxChannels = 32
@@ -251,6 +252,8 @@ final class StageProcessor {
         lock.deallocate()
         meterLock.deallocate()
         specLock.deallocate()
+        convScratchL.deallocate()
+        convScratchR.deallocate()
     }
 
     private var sampleRate: Double = 48000
@@ -294,6 +297,7 @@ final class StageProcessor {
         corrLR = 0; corrLL = 0; corrRR = 0
         limMinGain = 1
         os_unfair_lock_unlock(meterLock)
+        rebuildImpulse(block: wantedBlockFrames)
         redesign()
     }
 
@@ -426,6 +430,8 @@ final class StageProcessor {
                 q: Self.loudnessShelfQ, sampleRate: sampleRate)
         }
         p.loudGlide = 1 - exp(-1 / (Self.loudnessGlideSeconds * sampleRate))
+        p.convWet = s.hasImpulse
+            ? Float(min(max(s.impulseMixValue, 0), 1)) : 0
         return p
     }
 
@@ -450,6 +456,83 @@ final class StageProcessor {
         os_unfair_lock_unlock(lock)
     }
 
+    static let defaultBlockFrames = 512
+    static let convGraveyardDepth = 4
+
+    enum ImpulseStatus: Equatable {
+        case off
+        case ready(name: String, partitions: Int, taps: Int, hop: Int, rate: Double)
+        case refused(String)
+    }
+
+    private var impulse: ImpulseResponse?
+    private var convCurrent: ConvolverState?
+    private var convRetired: [ConvolverState] = []
+    private var convSlot: Unmanaged<ConvolverState>?
+    private var convProblem: String?
+    private var convBuiltBlock = 0
+    private var convBuiltRate: Double = 0
+
+    var impulseStatus: ImpulseStatus {
+        if let problem = convProblem { return .refused(problem) }
+        guard let c = convCurrent else { return .off }
+        return .ready(name: c.name, partitions: c.partitions, taps: c.taps,
+                      hop: c.hop, rate: c.sampleRate)
+    }
+
+    var impulseName: String? { convCurrent?.name }
+
+    func setImpulse(_ response: ImpulseResponse?) {
+        impulse = response
+        rebuildImpulse(block: wantedBlockFrames)
+    }
+
+    func refreshImpulseLayout() {
+        guard impulse != nil else { return }
+        let block = wantedBlockFrames
+        guard block != convBuiltBlock || sampleRate != convBuiltRate else { return }
+        rebuildImpulse(block: block)
+    }
+
+    private var wantedBlockFrames: Int {
+        let seen = observedBlockFrames
+        return seen > 0 ? seen : Self.defaultBlockFrames
+    }
+
+    private func rebuildImpulse(block: Int) {
+        convBuiltBlock = block
+        convBuiltRate = sampleRate
+        guard let response = impulse else {
+            publishConvolver(nil, problem: nil)
+            return
+        }
+        do {
+            let state = try ConvolverState(impulse: response,
+                                           sampleRate: sampleRate,
+                                           blockFrames: block)
+            publishConvolver(state, problem: nil)
+        } catch {
+            let message = (error as? ImpulseError)?.message
+                ?? error.localizedDescription
+            publishConvolver(nil, problem: message)
+        }
+    }
+
+    private func publishConvolver(_ state: ConvolverState?, problem: String?) {
+        if let old = convCurrent {
+            convRetired.append(old)
+            while convRetired.count > Self.convGraveyardDepth {
+                convRetired.removeFirst()
+            }
+        }
+        convCurrent = state
+        convProblem = problem
+        let slot = state.map { Unmanaged.passUnretained($0) }
+        os_unfair_lock_lock(lock)
+        convSlot = slot
+        os_unfair_lock_unlock(lock)
+    }
+
     // MARK: Level metering
 
     /// Accumulated by the render thread, drained once a second by the UI.
@@ -470,11 +553,19 @@ final class StageProcessor {
     /// the stage really running", readable from the control thread.
     private var diagChannels: Int32 = 0
     private var diagStageRan: Bool = false
+    private var diagBlockFrames: Int32 = 0
     // Source L/R correlation accumulators (pre-stage): mono content defeats
     // width and crossfeed by design, and the UI should say so, not shrug.
     private var corrLR: Double = 0
     private var corrLL: Double = 0
     private var corrRR: Double = 0
+
+    var observedBlockFrames: Int {
+        os_unfair_lock_lock(meterLock)
+        let frames = Int(diagBlockFrames)
+        os_unfair_lock_unlock(meterLock)
+        return frames
+    }
 
     func renderDiagnostics() -> (channels: Int, stageRan: Bool) {
         os_unfair_lock_lock(meterLock)
@@ -691,7 +782,21 @@ final class StageProcessor {
         loudHiZ1L = 0; loudHiZ2L = 0; loudHiZ1R = 0; loudHiZ2R = 0
         loudEngaged = false
         nightEnv = 0.05
+        convEngaged = false
     }
+
+    static let convScratchFrames = 8192
+    private var convEngaged = false
+    private let convScratchL: UnsafeMutablePointer<Float> = {
+        let p = UnsafeMutablePointer<Float>.allocate(capacity: convScratchFrames)
+        p.initialize(repeating: 0, count: convScratchFrames)
+        return p
+    }()
+    private let convScratchR: UnsafeMutablePointer<Float> = {
+        let p = UnsafeMutablePointer<Float>.allocate(capacity: convScratchFrames)
+        p.initialize(repeating: 0, count: convScratchFrames)
+        return p
+    }()
 
     private var inRefs: [(ptr: UnsafeMutablePointer<Float>, stride: Int, frames: Int)] = {
         var a = [(ptr: UnsafeMutablePointer<Float>, stride: Int, frames: Int)]()
@@ -709,7 +814,9 @@ final class StageProcessor {
                 output: UnsafeMutablePointer<AudioBufferList>) {
         os_unfair_lock_lock(lock)
         let cfg = config
+        let slot = convSlot
         os_unfair_lock_unlock(lock)
+        let conv = slot?.takeUnretainedValue()
 
         // A new epoch means prepare() ran (engine start, rate change): the
         // rings hold audio timed for another rate. Wipe them HERE, on the
@@ -840,7 +947,7 @@ final class StageProcessor {
                 resetStageState()
                 stageEngaged = true
             }
-            renderStage(cfg.stage)
+            renderStage(cfg.stage, conv: conv)
         } else {
             stageEngaged = false
         }
@@ -858,6 +965,7 @@ final class StageProcessor {
         os_unfair_lock_lock(meterLock)
         diagChannels = Int32(inRefs.count)
         diagStageRan = stageRan
+        diagBlockFrames = Int32(clamping: inRefs.first?.frames ?? 0)
         corrLR += cLR; corrLL += cLL; corrRR += cRR
         os_unfair_lock_unlock(meterLock)
 
@@ -901,7 +1009,7 @@ final class StageProcessor {
     /// interaural crossfeed, and sparse early reflections. In place on the
     /// first two channels; identical L/R content passes width untouched
     /// (its side channel is zero), which keeps mono material honest.
-    private func renderStage(_ p: StageParams) {
+    private func renderStage(_ p: StageParams, conv: ConvolverState?) {
         let l = inRefs[0], r = inRefs[1]
         let frames = min(l.frames, r.frames)
         let crossMask = Self.crossBufSize - 1
@@ -924,8 +1032,8 @@ final class StageProcessor {
         let loudRunning = loudEngaged
         let glide = p.loudGlide
 
-        for _ in 0..<frames {
-            var L = pl.pointee, R = pr.pointee
+        func front(_ inL: Float, _ inR: Float) -> (Float, Float) {
+            var L = inL, R = inR
 
             // Tapped apps can and do emit NaN/Inf samples (a buggy plugin, a
             // WebAudio page). Every recursion below — the crossfeed LPs, the
@@ -1088,6 +1196,11 @@ final class StageProcessor {
 
             L *= p.balanceGainL
             R *= p.balanceGainR
+            return (L, R)
+        }
+
+        func back(_ inL: Float, _ inR: Float) -> (Float, Float) {
+            var L = inL, R = inR
 
             if loudRunning {
                 loudWet += glide * (loudWetTarget - loudWet)
@@ -1127,10 +1240,45 @@ final class StageProcessor {
             R = softClipADAA(xr, prev: adaaPrevR)
             adaaPrevL = xl
             adaaPrevR = xr
-            pl.pointee = L
-            pr.pointee = R
-            pl += l.stride
-            pr += r.stride
+            return (L, R)
+        }
+
+        let convolving = p.convWet > 0 && frames <= Self.convScratchFrames
+            && (conv?.accepts(frames: frames) ?? false)
+        if convolving, let conv {
+            if !convEngaged {
+                conv.reset()
+                convEngaged = true
+            }
+            var ql = pl, qr = pr
+            for i in 0..<frames {
+                let (a, b) = front(ql.pointee, qr.pointee)
+                convScratchL[i] = a
+                convScratchR[i] = b
+                ql += l.stride
+                qr += r.stride
+            }
+            conv.render(left: convScratchL, right: convScratchR,
+                        frames: frames, wet: p.convWet)
+            ql = pl
+            qr = pr
+            for i in 0..<frames {
+                let (a, b) = back(convScratchL[i], convScratchR[i])
+                ql.pointee = a
+                qr.pointee = b
+                ql += l.stride
+                qr += r.stride
+            }
+        } else {
+            convEngaged = false
+            for _ in 0..<frames {
+                let (a, b) = front(pl.pointee, pr.pointee)
+                let (c, d) = back(a, b)
+                pl.pointee = c
+                pr.pointee = d
+                pl += l.stride
+                pr += r.stride
+            }
         }
 
         // input goes silent, which costs real CPU on Intel (no FTZ is set on

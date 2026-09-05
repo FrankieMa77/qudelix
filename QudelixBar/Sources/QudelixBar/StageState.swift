@@ -24,6 +24,21 @@ final class StageState: ObservableObject {
     @Published private(set) var stage = StageSettings()
     @Published private(set) var levelTracking = false
 
+    @Published private(set) var impulseInfo: ImpulseInfo?
+    @Published private(set) var impulseStatus: StageProcessor.ImpulseStatus = .off
+    @Published private(set) var impulseBusy = false
+    private var loadedImpulseName: String?
+
+    var impulseInPath: Bool {
+        guard case .ready = impulseStatus else { return false }
+        return stage.hasImpulse && stage.impulseMixValue > 0
+    }
+
+    var impulseProblem: String? {
+        if case .refused(let message) = impulseStatus { return message }
+        return nil
+    }
+
     @Published private(set) var callActive = false
     private(set) var callActiveLive = false
 
@@ -215,6 +230,7 @@ final class StageState: ObservableObject {
         }
         watcher.start()
         outputsChanged()
+        sweepImpulses()
         startMetering()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             self?.watcher.refreshNow()
@@ -229,6 +245,7 @@ final class StageState: ObservableObject {
         if stage.enabled != wasEnabled { onStatusChange?() }
         if let uid = outputUID { stageByDevice[uid] = stage }
         engine.processor.applyStage(stage)
+        syncImpulse()
         reconcile()
         scheduleSave()
     }
@@ -385,6 +402,7 @@ final class StageState: ObservableObject {
             engine.holdForCall(output: device)
         } else if !engine.isRunning, let desired, let device {
             engine.processor.applyStage(stage)
+            syncImpulse()
             engine.start(output: device, mode: desired)
         }
     }
@@ -442,6 +460,7 @@ final class StageState: ObservableObject {
                 if !deviceStage.audiblyEquals(stage) || deviceStage.enabled != stage.enabled {
                     stage = deviceStage
                     engine.processor.applyStage(stage)
+                    syncImpulse()
                     onStatusChange?()
                 }
             }
@@ -459,6 +478,123 @@ final class StageState: ObservableObject {
         }
         refreshCallState()
         reconcile()
+    }
+
+    func installImpulse(_ url: URL, editedFor uid: String?) {
+        guard uid == outputUID else {
+            DebugLog.shared.log("impulse install dropped: output device changed")
+            return
+        }
+        guard !impulseBusy else { return }
+        impulseBusy = true
+        let rate = engine.runningSampleRate
+            ?? watcher.defaultOutput?.sampleRate ?? 48000
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let outcome: Result<ImpulseResponse, Error>
+            do {
+                let response = try IRLibrary.install(source: url)
+                response.prime(at: AudioOutputs.plausibleRate(rate))
+                outcome = .success(response)
+            } catch {
+                outcome = .failure(error)
+            }
+            await MainActor.run { self?.finishInstall(outcome, editedFor: uid) }
+        }
+    }
+
+    private func finishInstall(_ outcome: Result<ImpulseResponse, Error>,
+                               editedFor uid: String?) {
+        impulseBusy = false
+        switch outcome {
+        case .success(let response):
+            guard uid == outputUID else {
+                IRLibrary.remove(name: response.fileName)
+                return
+            }
+            adopt(response)
+            var next = stage
+            next.impulseFile = response.fileName
+            next.enabled = true
+            setStage(next, editedFor: uid)
+            sweepImpulses()
+        case .failure(let error):
+            let message = (error as? ImpulseError)?.message
+                ?? error.localizedDescription
+            impulseStatus = .refused(SafeText.scrubbed(message, limit: 300))
+            DebugLog.shared.log("impulse install refused: \(message)")
+        }
+    }
+
+    func removeImpulse(editedFor uid: String?) {
+        let name = stage.impulseFile
+        var next = stage
+        next.impulseFile = nil
+        next.impulseMix = nil
+        setStage(next, editedFor: uid)
+        if let name, !stageByDevice.values.contains(where: { $0.impulseFile == name }) {
+            IRLibrary.remove(name: name)
+        }
+        sweepImpulses()
+    }
+
+    func setImpulseMix(_ mix: Double, editedFor uid: String?) {
+        guard stage.hasImpulse else { return }
+        var next = stage
+        next.impulseMix = mix
+        setStage(next, editedFor: uid)
+    }
+
+    private func adopt(_ response: ImpulseResponse?) {
+        engine.processor.setImpulse(response)
+        impulseInfo = response.map(ImpulseInfo.init)
+        loadedImpulseName = response?.fileName
+        impulseStatus = engine.processor.impulseStatus
+    }
+
+    private func syncImpulse() {
+        let wanted = stage.impulseFile
+        guard wanted != loadedImpulseName else { return }
+        loadedImpulseName = wanted
+        guard let wanted else {
+            adopt(nil)
+            return
+        }
+        let rate = engine.runningSampleRate
+            ?? watcher.defaultOutput?.sampleRate ?? 48000
+        impulseBusy = true
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let outcome: Result<ImpulseResponse, Error>
+            do {
+                let response = try IRLibrary.load(name: wanted)
+                response.prime(at: AudioOutputs.plausibleRate(rate))
+                outcome = .success(response)
+            } catch {
+                outcome = .failure(error)
+            }
+            await MainActor.run { self?.finishLoad(outcome, named: wanted) }
+        }
+    }
+
+    private func finishLoad(_ outcome: Result<ImpulseResponse, Error>, named: String) {
+        impulseBusy = false
+        guard loadedImpulseName == named else { return }
+        switch outcome {
+        case .success(let response):
+            adopt(response)
+        case .failure(let error):
+            let message = (error as? ImpulseError)?.message
+                ?? error.localizedDescription
+            engine.processor.setImpulse(nil)
+            impulseInfo = nil
+            impulseStatus = .refused(SafeText.scrubbed(message, limit: 300))
+        }
+    }
+
+    private func sweepImpulses() {
+        guard !persistenceDisabled else { return }
+        var referenced = Set(stageByDevice.values.compactMap(\.impulseFile))
+        if let current = stage.impulseFile { referenced.insert(current) }
+        IRLibrary.sweep(keeping: referenced)
     }
 
     // MARK: - Persistence
@@ -500,6 +636,13 @@ final class StageState: ObservableObject {
         self.loudnessShelfDb = loudnessShelfDb
         qualityVerdict = verdict
         qualityVerdictLive = verdict
+    }
+
+    func previewSetImpulse(_ response: ImpulseResponse?,
+                           status: StageProcessor.ImpulseStatus) {
+        impulseInfo = response.map(ImpulseInfo.init)
+        impulseStatus = status
+        loadedImpulseName = response?.fileName
     }
 
     func previewPublishLevel(_ db: Double?) {
@@ -562,6 +705,19 @@ final class StageState: ObservableObject {
         return String(format: "loud=%.1f/%.1f", loudnessTargetDb, loudnessShelfDb)
     }
 
+    private var impulseDiag: String {
+        switch impulseStatus {
+        case .off:
+            return "ir=off"
+        case .refused:
+            return "ir=refused"
+        case .ready(let name, let partitions, let taps, let hop, _):
+            return String(format: "ir=%@/%dx%d/%dtaps/mix%.2f",
+                          SafeText.scrubbed(name, limit: 24), partitions, hop,
+                          taps, stage.impulseMixValue)
+        }
+    }
+
     private var earDiag: String {
         let lufs = shortTerm.lufs.map { String(format: "%.1f", $0) } ?? "nil"
         let anchor: String
@@ -611,7 +767,7 @@ final class StageState: ObservableObject {
                          stage.crossLowTrimValue, stage.crossMidTrimValue,
                          stage.crossHighTrimValue, stage.balanceDbValue,
                          stage.alignMsValue)
-                + limiterDiag + " " + loudDiag + " "
+                + limiterDiag + " " + loudDiag + " " + impulseDiag + " "
                 + "quality=\(qualityVerdictLive.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
                 + earDiag)
             if engine.isRunning || content != lastDiagContent {
@@ -668,6 +824,7 @@ final class StageState: ObservableObject {
         }
 
         updateLimiterTelemetry()
+        refreshImpulseStatus()
         qualityTick()
         updateEarLevel()
         updateLoudness()
@@ -700,6 +857,16 @@ final class StageState: ObservableObject {
             meterTicksSinceSave = 0
             scheduleSave()
         }
+    }
+
+    private func refreshImpulseStatus() {
+        engine.processor.refreshImpulseLayout()
+        let next = engine.processor.impulseStatus
+        if next == .off {
+            if !stage.hasImpulse, impulseStatus != .off { impulseStatus = .off }
+            return
+        }
+        if next != impulseStatus { impulseStatus = next }
     }
 
     private func updateLimiterTelemetry() {
