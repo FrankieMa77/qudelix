@@ -50,7 +50,8 @@ enum UIPreview {
                 let root = PopoverView()
                     .environmentObject(controller)
                     .environmentObject(stage)
-                    .environmentObject(ProfileRules())
+                    .environmentObject(profilesMock(pane))
+                    .environmentObject(libraryMock(pane))
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
@@ -92,7 +93,7 @@ enum UIPreview {
                             BandInspector(selected: .constant(0))
                             EqEditorView(editingBand: .constant(nil))
                         }, controller, stage, blind)
-                    case "presets":
+                    case "presets", "presets-busy":
                         reportPaneFit(pane, PresetsView(), controller, stage, blind)
                     case "import":
                         reportPaneFit(pane, ImportView(), controller, stage, blind)
@@ -213,7 +214,8 @@ enum UIPreview {
         let root = content
             .environmentObject(controller)
             .environmentObject(stage)
-            .environmentObject(ProfileRules())
+            .environmentObject(profilesMock(pane))
+            .environmentObject(libraryMock(pane))
             .environmentObject(ABTuner())
             .environmentObject(ToneTester())
             .environmentObject(blind)
@@ -235,7 +237,8 @@ enum UIPreview {
                 let view = PopoverView()
                     .environmentObject(controller)
                     .environmentObject(stage)
-                    .environmentObject(ProfileRules())
+                    .environmentObject(profilesMock(pane))
+                    .environmentObject(libraryMock(pane))
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
@@ -259,6 +262,7 @@ enum UIPreview {
     private static func mocks() -> [(String, QudelixController, StageState, BlindTuner)] {
         [("eq", make(.equalizer), stageMock(), BlindTuner()),
          ("presets", make(.presets), stageMock(), BlindTuner()),
+         ("presets-busy", presetsBusy(), stageMock(), BlindTuner()),
          ("import", make(.importing), stageMock(), BlindTuner()),
          ("tune", make(.tune), stageMock(), BlindTuner()),
          ("shape", make(.tune), stageMock(), shapeMock()),
@@ -292,6 +296,62 @@ enum UIPreview {
     @MainActor
     private static func shapeRefusedMock() -> BlindTuner {
         BlindTuner.previewShape { _ in .preferA }
+    }
+
+    @MainActor
+    private static func profilesMock(_ pane: String) -> ProfileRules {
+        let r = ProfileRules()
+        let suggestion = pane == "presets-busy"
+            ? ProfileRules.Suggestion(outputUID: "mock-qudelix",
+                                      outputName: "Qudelix-5K USB DAC",
+                                      presetIndex: 2, presetLabel: "Alder AR-5")
+            : nil
+        r.previewSet(rules: [ProfileRule(outputUID: "mock-qudelix",
+                                         outputName: "Qudelix-5K USB DAC",
+                                         presetIndex: 2, eqGroupRaw: 0,
+                                         confirmed: true, automatic: true)],
+                     currentOutputUID: "mock-qudelix",
+                     currentOutputName: "Qudelix-5K USB DAC",
+                     suggestion: suggestion)
+        return r
+    }
+
+    @MainActor
+    private static func presetsBusy() -> QudelixController {
+        let c = make(.presets)
+        c.activePreset = nil
+        return c
+    }
+
+    @MainActor
+    private static func libraryMock(_ pane: String) -> PresetLibrary {
+        let library = PresetLibrary()
+        guard pane == "presets" || pane == "presets-busy" else { return library }
+        let ten = QxEqGroup.user.defaultFreqs.map {
+            QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
+        }
+        let twenty = QxEqGroup.b20.defaultFreqs.map {
+            QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
+        }
+        library.previewSet(presets: [
+            LibraryPreset(name: "Alder AR-5 · Harman", group: .user,
+                          bands: ten, preGain: -6.1, sourceName: "Alder AR-5"),
+            LibraryPreset(name: "Late night", scope: .output(uid: "mock-qudelix",
+                                                             name: "Qudelix-5K USB DAC"),
+                          group: .user, bands: ten, preGain: -2.0),
+            LibraryPreset(name: "Studio reference", group: .b20,
+                          bands: twenty, preGain: -5.5),
+            LibraryPreset(name: "Desk speakers", scope: .output(uid: "mock-speakers",
+                                                                name: "MacBook Pro Speakers"),
+                          group: .user, bands: ten, preGain: 0),
+        ], headphoneName: "Alder AR-5",
+           message: pane == "presets-busy"
+            ? "\u{201C}Studio reference\u{201D} was made for the 20-band EQ and the "
+              + "device is in 10-band mode. Those are two separate banks with different "
+              + "numbers of bands, so this curve is not stretched to fit — switch the "
+              + "device to 20-band mode to use it."
+            : nil)
+        return library
     }
 
     @MainActor

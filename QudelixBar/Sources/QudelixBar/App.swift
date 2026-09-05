@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let controller: QudelixController
         let stageState: StageState
         let profileRules: ProfileRules
+        let presetLibrary: PresetLibrary
         let abTuner: ABTuner
         let toneTester: ToneTester
         let blindTuner: BlindTuner
@@ -90,6 +91,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         w.profileRules.currentEqGroupRaw = w.controller.eqGroup.rawValue
         w.profileRules.start()
+
+        w.presetLibrary.currentCurve = { [weak controller = w.controller] in
+            guard let controller, controller.canWriteNow, !controller.bands.isEmpty
+            else { return nil }
+            return PresetLibrary.LiveCurve(bands: controller.bands,
+                                           preGain: controller.preGain,
+                                           group: controller.eqGroup,
+                                           sourceName: controller.currentSourceName)
+        }
+        w.presetLibrary.onApply = { [weak controller = w.controller] preset in
+            controller?.applyLibraryPreset(preset) ?? false
+        }
+        w.presetLibrary.start()
 
         w.controller.$eqGroup
             .removeDuplicates()
@@ -282,6 +296,7 @@ struct QudelixBarApp: App {
     @StateObject private var controller: QudelixController
     @StateObject private var stageState: StageState
     @StateObject private var profileRules: ProfileRules
+    @StateObject private var presetLibrary: PresetLibrary
     @StateObject private var a2dpGuard: A2dpGuard
     @StateObject private var abTuner: ABTuner
     @StateObject private var toneTester: ToneTester
@@ -294,6 +309,7 @@ struct QudelixBarApp: App {
         let controller = QudelixController()
         let stageState = StageState()
         let profileRules = ProfileRules()
+        let presetLibrary = PresetLibrary()
         let a2dpGuard = A2dpGuard()
         let abTuner = ABTuner()
         let toneTester = ToneTester()
@@ -304,6 +320,7 @@ struct QudelixBarApp: App {
                 .environmentObject(controller)
                 .environmentObject(stageState)
                 .environmentObject(profileRules)
+                .environmentObject(presetLibrary)
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
@@ -311,6 +328,7 @@ struct QudelixBarApp: App {
         AppDelegate.makeStatusUI = {
             AppDelegate.Wiring(content: content, controller: controller,
                                stageState: stageState, profileRules: profileRules,
+                               presetLibrary: presetLibrary,
                                abTuner: abTuner, toneTester: toneTester,
                                blindTuner: blindTuner, a2dpGuard: a2dpGuard)
         }
@@ -318,6 +336,7 @@ struct QudelixBarApp: App {
         _controller = StateObject(wrappedValue: controller)
         _stageState = StateObject(wrappedValue: stageState)
         _profileRules = StateObject(wrappedValue: profileRules)
+        _presetLibrary = StateObject(wrappedValue: presetLibrary)
         _a2dpGuard = StateObject(wrappedValue: a2dpGuard)
         _abTuner = StateObject(wrappedValue: abTuner)
         _toneTester = StateObject(wrappedValue: toneTester)
