@@ -947,27 +947,15 @@ struct BandInspector: View {
     static let qCeiling = 10.0
 
     var body: some View {
-        Group {
-            if let i = selected, controller.bands.indices.contains(i),
-               i < controller.bandCount {
-                detail(i, controller.bands[i])
-            } else {
-                VStack(spacing: 1) {
-                    Text("Click a point on the curve to edit that band here")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Text("Double-click one to take it back to nothing.")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                }
+        if let i = selected, controller.bands.indices.contains(i),
+           i < controller.bandCount {
+            detail(i, controller.bands[i])
+                .frame(height: Self.height)
                 .frame(maxWidth: .infinity)
-            }
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                .opacity(controller.eqEnabled ? 1 : 0.45)
+                .disabled(!controller.eqEnabled)
         }
-        .frame(height: Self.height)
-        .frame(maxWidth: .infinity)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
-        .opacity(controller.eqEnabled ? 1 : 0.45)
-        .disabled(!controller.eqEnabled)
     }
 
     @ViewBuilder
