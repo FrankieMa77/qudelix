@@ -54,6 +54,7 @@ enum SignalPath {
         // Row 1: Source
         var detectQuality = true
         var engineRunning = false
+        var callHold = false
         var qualityVerdict: QualityAnalyzer.Verdict?
         /// Few-word reason the engine isn't running, when it was asked to and
         /// couldn't. nil when nothing is wrong — an engine that is merely
@@ -115,6 +116,11 @@ enum SignalPath {
                       indicator: .unknown)
         }
         guard i.engineRunning else {
+            if i.callHold {
+                return Row(id: "source", name: name,
+                          state: "paused for a call — measuring resumes when it ends",
+                          indicator: .unknown)
+            }
             // A stopped engine has two very different causes, and "engine
             // off" alone left the commonest one — the recording permission
             // never granted — looking like a setting nobody switched on.
@@ -269,7 +275,8 @@ enum SignalPath {
             // "(metering off)" named a switch, which is wrong whenever the
             // engine was asked to run and couldn't; the Source row above
             // carries the reason.
-            parts.append("level not measured (engine off)")
+            parts.append(i.callHold ? "level not measured (paused for a call)"
+                                    : "level not measured (engine off)")
         } else if let db = i.currentLevelDb {
             parts.append(String(format: "%.0f dBFS", db))
         } else {
@@ -323,6 +330,7 @@ struct SignalPathView: View {
             deviceConnected: connected,
             detectQuality: stageState.detectQuality,
             engineRunning: stageState.engine.isRunning,
+            callHold: stageState.engine.callHold,
             qualityVerdict: stageState.qualityVerdict,
             engineProblem: stageState.engineFailure?.summary,
             mixerRateHz: stageState.watcher.defaultOutput?.sampleRate,

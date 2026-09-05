@@ -63,6 +63,7 @@ final class QudelixController: ObservableObject {
     @Published var batteryCare: Bool?
     @Published var sampleRate: String?
     @Published var inputSource: String?
+    @Published var activeCall: Bool?
     @Published var receivingReports = false   // true once the active link answers
 
     // Volume (dB). 60 dB window; max is 0 dB (or +6 in 2 Vrms mode).
@@ -663,6 +664,7 @@ final class QudelixController: ObservableObject {
         batteryCare = nil
         sampleRate = nil
         inputSource = nil
+        activeCall = nil
         muted = false
         activePreset = nil
         presetNames = [:]
@@ -985,6 +987,7 @@ final class QudelixController: ObservableObject {
                              deviceSaysLow: batteryLow ?? false)
         if let sr = state.sampleRateLabel, sr != sampleRate { sampleRate = sr }
         if let src = state.inputSourceLabel, src != inputSource { inputSource = src }
+        if let call = state.activeCall, call != activeCall { activeCall = call }
         // Only meaningful on a Bluetooth link; over USB the device keeps
         // reporting whatever it last negotiated, which would be a lie in the
         // header.

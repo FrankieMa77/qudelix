@@ -64,6 +64,28 @@ final class SignalPathTests: XCTestCase {
         XCTAssertFalse(row.state.contains("dialogue"))
     }
 
+    func testAHeldEngineSaysItIsPausedRatherThanOff() {
+        let inputs = SignalPath.Inputs(deviceConnected: true, engineRunning: false,
+                                       callHold: true)
+        let source = row("source", inputs)
+        XCTAssertTrue(source.state.contains("paused for a call"), source.state)
+        XCTAssertFalse(source.state.contains("engine off"), source.state)
+        let output = row("output", inputs)
+        XCTAssertTrue(output.state.contains("paused for a call"), output.state)
+        XCTAssertFalse(output.state.contains("engine off"), output.state)
+    }
+
+    func testWithoutAHoldTheRowsStillSayEngineOff() {
+        let inputs = SignalPath.Inputs(deviceConnected: true, engineRunning: false)
+        XCTAssertTrue(row("source", inputs).state.contains("engine off"))
+        XCTAssertTrue(row("output", inputs).state.contains("engine off"))
+    }
+
+    func testAHoldLeavesTheThisAppRowClaimingNothing() {
+        let row = row("app", .init(engineRunning: false, callHold: true, engineMode: nil))
+        XCTAssertEqual(row.indicator, .passthrough)
+    }
+
     // MARK: - Qudelix EQ (row 4)
 
     func testEqOffReportsOffAndPassthrough() {

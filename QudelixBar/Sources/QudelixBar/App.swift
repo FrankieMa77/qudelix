@@ -59,6 +59,10 @@ struct QudelixBarApp: App {
                 if !started {
                     started = true
                     controller.start()
+                    stageState.deviceCallState = { [weak controller] in
+                        guard let controller else { return nil }
+                        return (controller.activeCall, controller.inputSource)
+                    }
                     stageState.start()
 
                     // The rules engine decides *what* should happen and this
@@ -114,6 +118,9 @@ struct QudelixBarApp: App {
             .onChange(of: controller.eqGroup) { _, group in
                 profileRules.currentEqGroupRaw = group.rawValue
             }
+            .onChange(of: deviceOnCall) { _, _ in
+                stageState.checkCallNow()
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -121,6 +128,12 @@ struct QudelixBarApp: App {
     private var connected: Bool {
         if case .connected = controller.connection { return true }
         return false
+    }
+
+    private var deviceOnCall: Bool {
+        StageState.callIsActive(outputOnCall: false,
+                                deviceActiveCall: controller.activeCall,
+                                deviceInputSource: controller.inputSource)
     }
 
     private var menuIcon: String {

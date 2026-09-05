@@ -6,6 +6,7 @@ struct AudioOutput: Identifiable, Hashable {
     let uid: String
     let name: String
     let sampleRate: Double
+    var isBluetooth = false
 }
 
 /// Read-only queries against the Core Audio object tree, for the Mac-side
@@ -20,7 +21,8 @@ enum AudioOutputs {
             else { return nil }
             return AudioOutput(id: id, uid: uid,
                                name: QudelixController.displayName(name),
-                               sampleRate: nominalRate(id))
+                               sampleRate: nominalRate(id),
+                               isBluetooth: isBluetoothTransport(id))
         }
     }
 
@@ -118,6 +120,90 @@ enum AudioOutputs {
         isPlausibleRate(rate) ? rate : fallbackRate
     }
 
+    static let callModeCeilingHz: Double = 16000
+
+    static func defaultInputID() -> AudioDeviceID? {
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = address(kAudioHardwarePropertyDefaultInputDevice)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &id) == noErr,
+              id != 0 else { return nil }
+        return id
+    }
+
+    @discardableResult
+    static func setDefaultInput(_ id: AudioDeviceID) -> Bool {
+        var id = id
+        var addr = address(kAudioHardwarePropertyDefaultInputDevice)
+        return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                          &addr, 0, nil,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size),
+                                          &id) == noErr
+    }
+
+    static func deviceName(_ id: AudioDeviceID) -> String? {
+        stringProperty(id, kAudioObjectPropertyName)
+    }
+
+    static func isBluetooth(_ id: AudioDeviceID) -> Bool {
+        isBluetoothTransport(id)
+    }
+
+    static func inputChannelCount(_ id: AudioDeviceID) -> Int {
+        channelCount(id, scope: kAudioObjectPropertyScopeInput)
+    }
+
+    static func builtInMicID() -> AudioDeviceID? {
+        deviceIDs().first { id in
+            inputChannelCount(id) > 0
+                && transportType(id) == kAudioDeviceTransportTypeBuiltIn
+        }
+    }
+
+    static func isRunningSomewhere(_ id: AudioDeviceID) -> Bool {
+        var addr = address(kAudioDevicePropertyDeviceIsRunningSomewhere)
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &running) == noErr,
+              size == UInt32(MemoryLayout<UInt32>.size)
+        else { return false }
+        return running != 0
+    }
+
+    static func inputSiblingUID(forOutputUID uid: String) -> String? {
+        let suffix = ":output"
+        guard uid.hasSuffix(suffix) else { return nil }
+        return String(uid.dropLast(suffix.count)) + ":input"
+    }
+
+    static func inputSibling(ofOutputUID uid: String, name: String) -> AudioDeviceID? {
+        let siblingUID = inputSiblingUID(forOutputUID: uid)
+        var sameName: AudioDeviceID?
+        var nameIsAmbiguous = false
+        for id in deviceIDs() where inputChannelCount(id) > 0 {
+            guard let candidate: String = stringProperty(id, kAudioDevicePropertyDeviceUID)
+            else { continue }
+            if let siblingUID, candidate == siblingUID { return id }
+            if isBluetoothTransport(id),
+               stringProperty(id, kAudioObjectPropertyName) == name {
+                nameIsAmbiguous = sameName != nil
+                sameName = id
+            }
+        }
+        return nameIsAmbiguous ? nil : sameName
+    }
+
+    static func callModeActive(outputID: AudioDeviceID) -> Bool {
+        guard isBluetoothTransport(outputID) else { return false }
+        if nominalRate(outputID) <= callModeCeilingHz { return true }
+        guard let uid: String = stringProperty(outputID, kAudioDevicePropertyDeviceUID),
+              let name: String = stringProperty(outputID, kAudioObjectPropertyName),
+              let mic = inputSibling(ofOutputUID: uid, name: name)
+        else { return false }
+        return isRunningSomewhere(mic)
+    }
+
     // MARK: Plumbing
 
     private static func address(_ selector: AudioObjectPropertySelector,
@@ -140,9 +226,29 @@ enum AudioOutputs {
         return ids
     }
 
+    private static func transportType(_ id: AudioDeviceID) -> UInt32 {
+        var addr = address(kAudioDevicePropertyTransportType)
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &transport) == noErr,
+              size == UInt32(MemoryLayout<UInt32>.size)
+        else { return 0 }
+        return transport
+    }
+
+    private static func isBluetoothTransport(_ id: AudioDeviceID) -> Bool {
+        let transport = transportType(id)
+        return transport == kAudioDeviceTransportTypeBluetooth
+            || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
     private static func outputChannelCount(_ id: AudioDeviceID) -> Int {
-        var addr = address(kAudioDevicePropertyStreamConfiguration,
-                           scope: kAudioObjectPropertyScopeOutput)
+        channelCount(id, scope: kAudioObjectPropertyScopeOutput)
+    }
+
+    private static func channelCount(_ id: AudioDeviceID,
+                                     scope: AudioObjectPropertyScope) -> Int {
+        var addr = address(kAudioDevicePropertyStreamConfiguration, scope: scope)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
               size > 0 else { return 0 }
