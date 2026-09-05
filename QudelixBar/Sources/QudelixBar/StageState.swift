@@ -42,6 +42,10 @@ final class StageState: ObservableObject {
     private var lastAutoSwitch = Date.distantPast
     /// The rate the user last picked by hand; lossy content returns here.
     private var manualRateHz: Double?
+    /// Read-only view of that baseline, so the line narrating the automation
+    /// can resolve the same target the automation would rather than guess at
+    /// one of its own.
+    var manualRate: Double? { manualRateHz }
     /// The rate the automation last set, nil once the user overrides it —
     /// the UI marks the rate as auto-chosen while this matches reality.
     @Published private(set) var autoSetRate: Double?
@@ -77,16 +81,21 @@ final class StageState: ObservableObject {
     /// at the new rate; the delayed refresh picks up the HAL's async apply.
     /// `manual: true` records the choice as the user's baseline — the rate
     /// lossy content returns to when auto-switching is on.
-    func setNominalRate(_ rate: Double, for device: AudioOutput, manual: Bool = false) {
+    ///
+    /// Returns whether the HAL took the rate, which the automation needs: a
+    /// refused set must not be recorded as one the device made.
+    @discardableResult
+    func setNominalRate(_ rate: Double, for device: AudioOutput, manual: Bool = false) -> Bool {
         if manual {
             manualRateHz = rate
             autoSetRate = nil       // the user's hand overrides the automation
             scheduleSave()
         }
-        AudioOutputs.setNominalRate(device.id, rate)
+        let accepted = AudioOutputs.setNominalRate(device.id, rate)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.watcher.refreshNow()
         }
+        return accepted
     }
 
     init() {
@@ -103,8 +112,7 @@ final class StageState: ObservableObject {
             levelTracking = saved.levelTracking
             detectQuality = saved.detectQuality ?? true
             autoRate = saved.autoRate ?? true
-            if let rate = saved.manualRateHz, rate.isFinite,
-               (8000...768_000).contains(rate) {
+            if let rate = saved.manualRateHz, AudioOutputs.isPlausibleRate(rate) {
                 manualRateHz = rate
             }
             // The file is user-writable: clamp what comes off it so a
@@ -174,14 +182,32 @@ final class StageState: ObservableObject {
     func setDetectQuality(_ on: Bool) {
         detectQuality = on
         if !on {
-            qualityVerdict = nil
-            verdictDeviceUID = nil
-            rawVerdict = nil
-            rawVerdictStreak = 0
-            verdictStableSince = nil
+            clearVerdict()
+            // The rate the spectra were captured at goes with them. Left
+            // behind, switching detection back on at the same rate skips the
+            // reset branch and feeds the analyzer against a baseline from
+            // whatever was playing before.
+            qualityRate = nil
         }
         reconcile()
         scheduleSave()
+    }
+
+    /// Drop the published verdict and everything the hysteresis holds behind
+    /// it. A verdict is only ever evidence about the audio that was playing
+    /// when it was measured; when that audio goes away — detection off, the
+    /// engine stops, the device changes, a rate change nobody here asked for
+    /// — keeping it lets a stale measurement outlive its source and go on
+    /// voting in the automation and claiming things in the signal path.
+    private func clearVerdict() {
+        // Guarded, because the engine-down path calls this every second: an
+        // unconditional assign of nil onto nil still republishes, and every
+        // view observing this object redraws for it.
+        if qualityVerdict != nil { qualityVerdict = nil }
+        verdictDeviceUID = nil
+        rawVerdict = nil
+        rawVerdictStreak = 0
+        verdictStableSince = nil
     }
 
     func setAutoRate(_ on: Bool) {
@@ -346,7 +372,15 @@ final class StageState: ObservableObject {
 
     private var diagTicks = 0
     private var lastDiagContent = ""
+    /// Identical ticks dropped since the last written line, reported with the
+    /// next one — a gap in the heartbeat is then never ambiguous between
+    /// "nothing changed" and "the app stopped ticking".
+    private var diagSuppressed = 0
     private static let diagFormatter = ISO8601DateFormatter()
+    /// The smoothing state behind `sourceCorrelation`. Kept here rather than
+    /// read back out of the published property, which is only refreshed when
+    /// the value moves enough to be worth a redraw.
+    private var correlationSmoothed: Double?
 
     private func meterTick() {
         // Heartbeat for field debugging, running or not: engine state, the
@@ -365,8 +399,13 @@ final class StageState: ObservableObject {
                 + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room)) "
                 + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug)")
             if engine.isRunning || content != lastDiagContent {
+                let repeats = diagSuppressed
+                diagSuppressed = 0
                 lastDiagContent = content
-                let line = Self.diagFormatter.string(from: Date()) + " " + content + "\n"
+                let suffix = repeats > 0
+                    ? " (+\(repeats) identical ticks suppressed)" : ""
+                let line = Self.diagFormatter.string(from: Date()) + " "
+                    + content + suffix + "\n"
                 let url = StageStateFile.directory.appendingPathComponent("diag.txt")
                 // Append, keep the tail: the history between two snapshots is
                 // exactly what a "worked then, broken now" hunt needs.
@@ -383,29 +422,55 @@ final class StageState: ObservableObject {
                     try? FileManager.default.setAttributes(
                         [.posixPermissions: 0o600], ofItemAtPath: url.path)
                 }
+            } else {
+                diagSuppressed += 1
             }
         }
 
         guard engine.isRunning else {
             if currentLevelDb != nil { currentLevelDb = nil }
             if sourceCorrelation != nil { sourceCorrelation = nil }
+            correlationSmoothed = nil
+            // The engine going down is the audio going away, and a verdict
+            // describes audio. Left standing, it survives the stop and votes
+            // in the automation the moment the engine comes back — before a
+            // single sample of whatever is playing now has been measured.
+            // The rate goes with it, so the restart takes the reset branch
+            // and the analyzer starts from nothing rather than max-holding
+            // the new stream against the old one's peaks.
+            clearVerdict()
+            qualityRate = nil
             return
         }
         if let corr = engine.processor.drainSourceCorrelation() {
             // Light smoothing so a quiet moment doesn't flicker the notice.
-            sourceCorrelation = 0.7 * (sourceCorrelation ?? corr) + 0.3 * corr
+            let smoothed = 0.7 * (correlationSmoothed ?? corr) + 0.3 * corr
+            correlationSmoothed = smoothed
+            // An exponential average never lands on the same number twice, so
+            // publishing it unconditionally redraws every observer of this
+            // object once a second forever. Past the delta the notice could
+            // possibly react to, and not before.
+            if sourceCorrelation == nil || abs(smoothed - (sourceCorrelation ?? 0)) > 0.001 {
+                sourceCorrelation = smoothed
+            }
         }
 
         qualityTick()
 
         let (sumSquares, frames) = engine.processor.drainMeter()
         guard frames > 0 else {
-            currentLevelDb = nil
+            if currentLevelDb != nil { currentLevelDb = nil }
             return
         }
         let power = sumSquares / Double(frames)
+        // Belt to the render-side scrub's braces: a non-finite power must
+        // never reach the exposure history — one infinity in an energy sum
+        // and the state can never be JSON-encoded, so nothing saves again for
+        // the rest of the session.
+        guard power.isFinite else { return }
         let db = power > 0 ? 10 * log10(power) : -120
-        currentLevelDb = max(db, -80)
+        let level = max(db, -80)
+        if currentLevelDb != level { currentLevelDb = level }
 
         let updated = Self.exposureAfterTick(exposureDays, db: db, power: power,
                                              tracking: levelTracking, today: Self.dayKey())
@@ -501,30 +566,47 @@ final class StageState: ObservableObject {
     private var qualityDeviceUID: String?
 
     private func qualityTick() {
-        guard detectQuality else { return }
-        // Rate changed (including by our own switch): half-accumulated
-        // spectra belong to the old rate.
-        if engine.runningSampleRate != qualityRate {
-            qualityRate = engine.runningSampleRate
+        // Muted means a tone test owns the pipeline: render stops feeding the
+        // spectrum ring before the mute, so every sample the analyzer could
+        // still reach is pre-mute audio. Judging it max-holds the same frozen
+        // window onto itself until an accidental verdict goes stable, the
+        // verdict switches the USB rate, and the restart that follows clears
+        // the mute out from under the test. Sit the whole session out.
+        guard detectQuality, engine.isRunning,
+              !engine.processor.isMutedNow else { return }
+
+        // Read once, and used for both the comparison below and the
+        // classification at the bottom: re-reading after the drain classifies
+        // this window's samples against the next window's rate.
+        let rate = engine.runningSampleRate
+
+        if rate != qualityRate {
+            // A rate change nobody here asked for — a call, Audio MIDI Setup,
+            // the user's own hand — is a foreign event, and the standing
+            // verdict describes audio from before it. When the change is ours
+            // the new rate is the one the automation set, and the verdict
+            // survives deliberately: our own switches cause most changes, and
+            // blanking it every time would flicker the pane.
+            if qualityRate != nil, rate != autoSetRate { clearVerdict() }
+            qualityRate = rate
             analyzer.reset()
             qualityWindowsFed = 0
+            // The partial streak was measured at the old rate too; a couple
+            // of votes carried across the change decide the next verdict on
+            // spectra that no longer mean what they meant.
+            rawVerdict = nil
+            rawVerdictStreak = 0
         }
         // The engine moved to another device, which is a different kind of
         // break: the standing verdict describes a stream we have stopped
-        // listening to. A rate change leaves the verdict alone on purpose
-        // (our own switches cause most of them, and blanking it would flicker
-        // the pane), but a device change has to retire it — otherwise the
-        // speakers' verdict is still on screen, and still voting, after the
-        // Mac switches its output to the 5K.
+        // listening to, and it has to be retired — otherwise the speakers'
+        // verdict is still on screen, and still voting, after the Mac
+        // switches its output to the 5K.
         if engine.runningDeviceUID != qualityDeviceUID {
             qualityDeviceUID = engine.runningDeviceUID
             analyzer.reset()
             qualityWindowsFed = 0
-            qualityVerdict = nil
-            verdictDeviceUID = nil
-            rawVerdict = nil
-            rawVerdictStreak = 0
-            verdictStableSince = nil
+            clearVerdict()
         }
         let samples = engine.processor.drainSpectrumSamples(QualityAnalyzer.fftSize)
         guard samples.count >= QualityAnalyzer.fftSize else { return }
@@ -533,8 +615,7 @@ final class StageState: ObservableObject {
         guard qualityWindowsFed >= 3 else { return }
         qualityWindowsFed = 0
 
-        guard let rate = engine.runningSampleRate,
-              let raw = analyzer.classify(sampleRate: rate) else { return }
+        guard let rate, let raw = analyzer.classify(sampleRate: rate) else { return }
 
         // Boundary jitter guard: the same physical cliff measures a few
         // hundred Hz differently between rounds, and near the 20.25 kHz
@@ -596,13 +677,19 @@ final class StageState: ObservableObject {
             scheduleSave()
         }
 
+        // The throttle counts the attempt either way, but `autoSetRate` may
+        // only record a set the HAL accepted: a refused one would claim a
+        // rate the device never took, and the "was this rate change ours?"
+        // test keyed on it would then misread the next genuinely foreign
+        // change as our own and keep a verdict it should have dropped.
         lastAutoSwitch = now
-        autoSetRate = target
         DebugLog.shared.log(String(format:
             "stream quality %@ — switching USB rate to %g kHz",
             qualityVerdict?.isLosslessClass == true ? "lossless-class" : "lossy",
             target / 1000))
-        setNominalRate(target, for: device)
+        if setNominalRate(target, for: device) {
+            autoSetRate = target
+        }
     }
 
     /// The rate the 5K should be moved to, or nil for "leave it alone" — the
@@ -630,24 +717,39 @@ final class StageState: ObservableObject {
               let device,
               let verdictDeviceUID, device.uid == verdictDeviceUID,
               let verdict,
-              let lossless = verdict.isLosslessClass,
               let stable = secondsStable, stable >= 10,
-              secondsSinceLastSwitch >= 45
+              secondsSinceLastSwitch >= 45,
+              let target = rateForVerdict(verdict, availableRates: availableRates,
+                                          manualRateHz: manualRateHz,
+                                          deviceRate: device.sampleRate)
         else { return nil }
-
-        let target: Double
-        if case .hiRes = verdict, availableRates.contains(96000) {
-            // Content proves it extends past the 44.1 family: worth 96.
-            target = 96000
-        } else if lossless {
-            // The bit-perfect path for the dominant lossless case (44.1).
-            target = 44100
-        } else {
-            // Lossy: back to whatever the user chose by hand.
-            target = manualRateHz ?? device.sampleRate
-        }
         guard availableRates.contains(target), device.sampleRate != target else { return nil }
         return target
+    }
+
+    /// Where a verdict points, with none of the timing or device-identity
+    /// conditions around it — the arithmetic alone. Split out so the line
+    /// that narrates the automation resolves the same rate the automation
+    /// acts on, instead of naming one of its own; the two can then never
+    /// disagree about where a device is headed. nil = this verdict moves
+    /// nothing.
+    static func rateForVerdict(_ verdict: QualityAnalyzer.Verdict,
+                               availableRates: [Double],
+                               manualRateHz: Double?,
+                               deviceRate: Double) -> Double? {
+        guard let lossless = verdict.isLosslessClass else { return nil }
+        if case .hiRes = verdict {
+            // Content proven past the 44.1 family: the highest rate at or
+            // above 88.2 the output offers. Falling through to the lossless
+            // branch here would DOWNSAMPLE audio just measured as hi-res, and
+            // skip 88.2 outright on a device pinned to it — so an output with
+            // nothing that high sits the switch out instead.
+            return availableRates.filter { $0 >= 88200 }.max()
+        }
+        // The bit-perfect path for the dominant lossless case (44.1).
+        if lossless { return 44100 }
+        // Lossy: back to whatever the user chose by hand.
+        return manualRateHz ?? deviceRate
     }
 
     private static let dayFormatter: DateFormatter = {

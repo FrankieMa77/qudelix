@@ -121,10 +121,15 @@ final class QualityAnalyzer {
         windowsAveraged += 1
     }
 
-    /// Drop any half-accumulated spectra — for rate changes, where mixing
-    /// windows from two rates mislabels every bin frequency.
+    /// Drop everything accumulated so far. The max-hold spectrum has no
+    /// meaning apart from the rate its samples were captured at — a bin is
+    /// only a frequency once the rate names it — so a rate change invalidates
+    /// the window outright rather than merely ageing it. The held levels go
+    /// with the counter: leaving them behind lets the first window after a
+    /// reset be max-held against peaks measured before it. Control thread.
     func reset() {
         windowsAveraged = 0
+        for i in averagedDb.indices { averagedDb[i] = -160 }
     }
 
     /// The last classification's raw numbers, for diagnostics.
@@ -134,7 +139,10 @@ final class QualityAnalyzer {
     /// Returns nil when nothing was fed.
     func classify(sampleRate: Double) -> Verdict? {
         defer { windowsAveraged = 0 }
-        guard windowsAveraged > 0, sampleRate > 0 else { return nil }
+        // Not merely > 0: an infinity makes `topHz` infinite below, and the
+        // cell scan that walks up to it never reaches its bound — on the main
+        // thread, which is the app hanging rather than misreporting.
+        guard windowsAveraged > 0, AudioOutputs.isPlausibleRate(sampleRate) else { return nil }
 
         let binHz = sampleRate / Double(Self.fftSize)
         func bin(_ hz: Double) -> Int {

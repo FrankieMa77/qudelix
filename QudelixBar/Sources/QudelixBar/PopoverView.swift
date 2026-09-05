@@ -389,16 +389,42 @@ struct VolumeControl: View {
 /// playback bit-perfect. Hidden when the 5K's audio isn't on USB.
 struct UsbAudioRow: View {
     @EnvironmentObject var stageState: StageState
+
+    var body: some View {
+        // The row proper takes the device as a value, so its rate cache can
+        // be seeded at construction; this wrapper is what notices the device
+        // arriving and going away, and it keeps that observation off the
+        // popover as a whole.
+        if let device = stageState.qudelixOutput {
+            UsbAudioRateRow(device: device)
+        }
+    }
+}
+
+private struct UsbAudioRateRow: View {
+    let device: AudioOutput
+    @EnvironmentObject var stageState: StageState
     @EnvironmentObject var controller: QudelixController
     // Cached: both are mach round-trips into coreaudiod, and this body
     // re-evaluates on every publish (once a second with the meter running).
     // Refreshed when the row appears and when the device identity changes.
-    @State private var availableRates: [Double] = []
+    @State private var availableRates: [Double]
     @State private var bitDepth: Int?
 
+    /// Seeded here, not by `onAppear` alone: the first body pass runs before
+    /// it, and the list has to be right on that pass. A hard-coded guess at
+    /// the usual four rates was wrong for exactly the device this row exists
+    /// for — a 5K pinned to one rate over USB offers only that one, and the
+    /// picker rendered four segments whose selection matched no tag. The rate
+    /// the device is running at is the one rate it certainly offers, so
+    /// starting from it is honest until the real list lands.
+    init(device: AudioOutput) {
+        self.device = device
+        _availableRates = State(initialValue: [device.sampleRate])
+    }
+
     var body: some View {
-        if let device = stageState.qudelixOutput {
-            VStack(spacing: 5) {
+        VStack(spacing: 5) {
             HStack(spacing: 8) {
                 Text("USB audio")
                     .font(.system(size: 10))
@@ -482,18 +508,16 @@ struct UsbAudioRow: View {
                     .lineLimit(1)
                 Spacer()
             }
-            }
-            .onAppear {
-                stageState.watcher.refreshNow()
-                refreshDeviceFacts(device.id)
-            }
-            .onChange(of: device.id) { _, id in refreshDeviceFacts(id) }
         }
+        .onAppear {
+            stageState.watcher.refreshNow()
+            refreshDeviceFacts(device.id)
+        }
+        .onChange(of: device.id) { _, id in refreshDeviceFacts(id) }
     }
 
     private func ratePicker(_ device: AudioOutput) -> some View {
-        let rates: [Double] = availableRates.isEmpty
-            ? [44100, 48000, 88200, 96000] : availableRates
+        let rates = availableRates.isEmpty ? [device.sampleRate] : availableRates
         let binding = Binding<Double>(
             get: { device.sampleRate },
             // manual: the user's own pick is the baseline that auto rate
@@ -525,8 +549,18 @@ struct UsbAudioRow: View {
         // the full explanation is two clicks away.
         if let failure = stageState.engineFailure { return failure.summary }
         guard stageState.engine.isRunning else { return "waiting for audio" }
-        switch stageState.qualityVerdict {
-        case nil: return "listening to what's playing…"
+        // Switching is suspended for as long as the Soundstage is inserted:
+        // the Mac resamples on that path anyway, so a rate change would buy
+        // nothing and cost an audible blip. Detection keeps running, so the
+        // verdict below is still worth reading — the line just has to stop
+        // promising a switch that is not coming.
+        if stageState.stage.enabled {
+            return "Soundstage is on — holding the rate while the Mac processes"
+        }
+        guard let verdict = stageState.qualityVerdict else {
+            return "listening to what's playing…"
+        }
+        switch verdict {
         case .tooQuiet, .noTreble: return "can't judge this material — holding"
         case .natural: return "master rolls off naturally — holding"
         case .lossy(let k):
@@ -534,11 +568,27 @@ struct UsbAudioRow: View {
         case .lossyHigh(let k):
             return String(format: "borderline cliff (%.1f kHz) — holding", k)
         case .losslessLike, .hiRes:
-            if stageState.autoSetRate == current, current == 44100 {
-                return "lossless — set 44.1 kHz automatically"
+            // The same target the automation itself resolves, so this line
+            // can never promise a switch that will not come. It used to name
+            // 44.1 outright and say "switching shortly…" forever whenever
+            // 44.1 wasn't on offer — which is the normal state of a 5K pinned
+            // to a single rate over USB.
+            guard let target = StageState.rateForVerdict(
+                    verdict, availableRates: availableRates,
+                    manualRateHz: stageState.manualRate, deviceRate: current) else {
+                return "hi-res — holding, the 5K isn't offering a "
+                     + "high-resolution rate over USB"
             }
-            if current == 44100 { return "lossless — 44.1 kHz already right" }
-            return "lossless — switching shortly…"
+            if current == target {
+                return stageState.autoSetRate == current
+                    ? "lossless — set \(Self.kHz(target)) kHz automatically"
+                    : "lossless — \(Self.kHz(target)) kHz already matched"
+            }
+            if !availableRates.contains(target) {
+                return "lossless — holding, \(Self.kHz(target)) kHz "
+                     + "isn't offered over USB"
+            }
+            return "lossless — switching to \(Self.kHz(target)) kHz shortly…"
         }
     }
 

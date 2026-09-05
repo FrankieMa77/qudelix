@@ -200,7 +200,11 @@ final class StageProcessor {
     /// render thread wipe them on its next cycle. Nothing here touches
     /// render-side memory directly.
     func prepare(sampleRate: Double) {
-        self.sampleRate = max(8000, sampleRate)
+        // Everything below multiplies this into a buffer length, and
+        // `Int(seconds * rate)` traps rather than clamps on an infinity, so
+        // the clamp has to reject the impossible rather than just raise the
+        // floor: `max(8000, .infinity)` is still infinity.
+        self.sampleRate = AudioOutputs.plausibleRate(sampleRate)
         epoch &+= 1
         // The spectrum ring holds samples timed for the OLD rate; an FFT
         // window mixing both mislabels every bin frequency. Unlike the DSP
@@ -208,24 +212,49 @@ final class StageProcessor {
         os_unfair_lock_lock(specLock)
         specWritten = 0
         specWriteIdx = 0
+        specTotalWritten = 0
+        specDrainedTotal = 0
         os_unfair_lock_unlock(specLock)
+        // The energy behind the meter was accumulated on the previous device
+        // at the previous rate; carrying it into the first second of the new
+        // one reports a level nothing played.
+        os_unfair_lock_lock(meterLock)
+        meterSumSquares = 0
+        meterFrames = 0
+        corrLR = 0; corrLL = 0; corrRR = 0
+        os_unfair_lock_unlock(meterLock)
         redesign()
     }
 
     /// Update the Soundstage. The new design swaps in atomically.
+    ///
+    /// Guarded, like the two switches below it: a slider drag calls this at
+    /// UI frame rate, and a redesign that lands a byte-identical Config is
+    /// a lock round trip and a full filter design for the same sound.
     func applyStage(_ settings: StageSettings) {
-        stageSettings = settings.clamped()
+        let next = settings.clamped()
+        // `audiblyEquals`, not `==`: the geometry fields are optionals whose
+        // nil means a default, and the design reads only the resolved values,
+        // so two settings that compare unequal can design the same filters.
+        guard !next.audiblyEquals(stageSettings) else { return }
+        stageSettings = next
         redesign()
     }
 
     /// Silence the output entirely (a tone session needs a quiet channel).
     func setMuted(_ muted: Bool) {
+        guard muted != self.muted else { return }
         self.muted = muted
         redesign()
     }
 
+    /// Control-side view of the mute, so the analyzer can sit out a tone
+    /// session instead of judging the frozen ring behind it.
+    var isMutedNow: Bool { muted }
+
     /// Meter without touching the audio path (Level tracking on its own).
     func setMonitorOnly(_ monitor: Bool) {
+        guard monitor != monitorOnly else { return }
         monitorOnly = monitor
         redesign()
     }
@@ -367,22 +396,44 @@ final class StageProcessor {
     private var specRing = [Float](repeating: 0, count: specRingSize)
     private var specWriteIdx = 0
     private var specWritten = 0
+    /// Samples ever written, and the count at the last successful drain. A
+    /// drain that finds nothing new between them hands back nothing: the
+    /// window is a peek at the most recent audio, and re-handing the same
+    /// tail every tick — a silent gap, or a tone test's mute freezing the
+    /// ring — makes the analyzer re-judge audio it already classified, and
+    /// max-hold it onto itself until an accidental verdict goes stable.
+    private var specTotalWritten = 0
+    private var specDrainedTotal = 0
 
     /// Copy out the most recent `count` samples in playback order. Returns
-    /// empty until enough audio has passed since the last prepare().
+    /// empty until enough fresh audio has passed since the last drain.
     func drainSpectrumSamples(_ count: Int) -> [Float] {
         let n = min(count, Self.specRingSize)
+        guard n > 0 else { return [] }
         // Allocated BEFORE the lock: the render thread blocks on this lock,
         // and a malloc slow path is the one unbounded thing in here.
         var out = [Float](repeating: 0, count: n)
         os_unfair_lock_lock(specLock)
         defer { os_unfair_lock_unlock(specLock) }
         guard specWritten >= n else { return [] }
+        guard specTotalWritten - specDrainedTotal >= n else { return [] }
+        specDrainedTotal = specTotalWritten
         let mask = Self.specRingSize - 1
-        var idx = (specWriteIdx - n) & mask
-        for i in 0..<n {
-            out[i] = specRing[idx]
-            idx = (idx + 1) & mask
+        let start = (specWriteIdx - n) & mask
+        // Two block copies, not `n` bounds-checked element reads: the render
+        // thread takes this same lock every callback, so whatever this holds
+        // it for is time an IO cycle can spend waiting. The window is
+        // contiguous on each side of the wrap, so two runs always describe
+        // it, and `out` is uniquely referenced — the stores are in place.
+        let firstRun = min(n, Self.specRingSize - start)
+        out.withUnsafeMutableBufferPointer { dst in
+            specRing.withUnsafeBufferPointer { src in
+                guard let d = dst.baseAddress, let s = src.baseAddress else { return }
+                d.update(from: s + start, count: firstRun)
+                if firstRun < n {
+                    (d + firstRun).update(from: s, count: n - firstRun)
+                }
+            }
         }
         return out
     }
@@ -487,8 +538,19 @@ final class StageProcessor {
         }
 
         // Locate each input channel; the stage filters them in place.
+        //
+        // Counted from the END of the list, never from the front. The
+        // aggregate is built over the default output, and its input list is
+        // the tap's buffer preceded by whatever input streams the output
+        // device itself presents — an interface, headset or dock with
+        // microphone inputs contributes those, and they belong to nobody
+        // here. One tap means one consumed buffer, and taking the last is
+        // what leaves the rest alone; taking the first mixes a microphone
+        // into the output and meters it as if it were the music.
+        let consumed = min(1, inList.count)
         inRefs.removeAll(keepingCapacity: true)
-        for buf in inList {
+        for i in (inList.count - consumed)..<inList.count {
+            let buf = inList[i]
             guard let raw = buf.mData, buf.mNumberChannels > 0 else { continue }
             let chans = Int(buf.mNumberChannels)
             let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
@@ -531,6 +593,7 @@ final class StageProcessor {
                 p += first.stride
             }
             specWritten = min(specWritten + first.frames, Self.specRingSize)
+            specTotalWritten += first.frames
             os_unfair_lock_unlock(specLock)
         }
 
@@ -699,8 +762,15 @@ final class StageProcessor {
             tailLPR += 0.35 * ((wr + outR * p.tailFeedback) - tailLPR)
             tailBufL[tailIdxL] = tailLPL
             tailBufR[tailIdxR] = tailLPR
-            tailIdxL = (tailIdxL + 1) % p.tailLenL
-            tailIdxR = (tailIdxR + 1) % p.tailLenR
+            // Compare-and-reset, not a modulo: the tail lengths are odd
+            // sample counts rather than powers of two, so `%` is a real
+            // integer division — tens of cycles, twice a frame, on the render
+            // thread. The guard above already put the index inside the loop,
+            // so a single increment can only ever reach the length itself.
+            tailIdxL += 1
+            if tailIdxL >= p.tailLenL { tailIdxL = 0 }
+            tailIdxR += 1
+            if tailIdxR >= p.tailLenR { tailIdxR = 0 }
 
             if p.roomWet > 0 {
                 L += (wl + outL * 0.6) * p.roomWet
@@ -730,8 +800,16 @@ final class StageProcessor {
             // saturation above, so theatrical levels survive the widening.
             // Anti-aliased, and per channel: the shaper's memory is the
             // previous sample of the same signal, so L and R carry their own.
-            let xl = L * p.trim
-            let xr = R * p.trim
+            // The scrub at the door catches what arrived non-finite; this one
+            // catches what the stage itself can produce — width on a pair
+            // near the float ceiling, a room tail summing to infinity. A
+            // memoryless shaper would merely pass such a sample through, but
+            // the anti-aliased one keeps it as `prev` and hands back NaN for
+            // every sample after it, so it stops here.
+            var xl = L * p.trim
+            var xr = R * p.trim
+            if !xl.isFinite { xl = 0 }
+            if !xr.isFinite { xr = 0 }
             L = softClipADAA(xl, prev: adaaPrevL)
             R = softClipADAA(xr, prev: adaaPrevR)
             adaaPrevL = xl
@@ -742,16 +820,36 @@ final class StageProcessor {
             pr += r.stride
         }
 
-        // The one-pole states decay through the denormal band after the
+        // Every recursion here decays through the denormal band after the
         // input goes silent, which costs real CPU on Intel (no FTZ is set on
         // the HAL thread). Flushing the scalars once per buffer keeps the
-        // spike bounded to a single cycle.
+        // spike bounded to a single cycle — the biquad states and the night
+        // envelope included, which is where a quiet passage lands hardest:
+        // they are the slowest-decaying of the lot.
+        //
+        // The rings — crossDelay, roomBuf, tailBuf — are deliberately not
+        // swept: they are delay lines, not recursions, and they refill from
+        // these states, so zeroing the one-poles empties them within one tail
+        // length on their own. Sweeping ~50k floats every block to shorten
+        // that would cost more every block than it saves in the one block it
+        // saves anything. `adaaPrev` is the previous input, not an
+        // accumulator, and takes no penalty of its own.
+        //
+        // The thresholds sit far below anything audible (−400 dBFS for the
+        // Float states, −600 dBFS for the Double ones), and comparisons take
+        // no subnormal penalty, so this is cheap even in the case it exists
+        // for and changes nothing at all above them.
         if abs(crossLPl) < 1e-20 { crossLPl = 0 }
         if abs(crossLPr) < 1e-20 { crossLPr = 0 }
         if abs(roomLPStateL) < 1e-20 { roomLPStateL = 0 }
         if abs(roomLPStateR) < 1e-20 { roomLPStateR = 0 }
         if abs(tailLPL) < 1e-20 { tailLPL = 0 }
         if abs(tailLPR) < 1e-20 { tailLPR = 0 }
+        if abs(sideShelfZ1) < 1e-30 { sideShelfZ1 = 0 }
+        if abs(sideShelfZ2) < 1e-30 { sideShelfZ2 = 0 }
+        if abs(dialogueZ1) < 1e-30 { dialogueZ1 = 0 }
+        if abs(dialogueZ2) < 1e-30 { dialogueZ2 = 0 }
+        if abs(nightEnv) < 1e-30 { nightEnv = 0 }
     }
 
     /// Padé tanh approximation: transparent at normal levels, saturating
