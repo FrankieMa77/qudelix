@@ -989,6 +989,11 @@ struct FooterBar: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
 
+            Text(verbatim: AboutView.versionLine)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .fixedSize()
+
             Spacer()
 
             // The Bluetooth device is remembered on first connection so nothing
