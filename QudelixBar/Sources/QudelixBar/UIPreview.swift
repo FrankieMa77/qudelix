@@ -237,6 +237,7 @@ enum UIPreview {
         let s = StageState()
         var stage = StageSettings.movie
         stage.enabled = running
+        stage.limiter = running
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: running ? -21 : nil)
         s.watcher.previewSetDevices(
@@ -255,11 +256,13 @@ enum UIPreview {
     @MainActor
     private static func levelMock() -> StageState {
         let s = stageMock()
-        var stage = StageSettings()
-        stage.enabled = false
+        var stage = StageSettings.music
+        stage.enabled = true
+        stage.limiter = true
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: -23, levelTracking: true,
                      verdict: .losslessLike(cutoffKHz: 21.9),
+                     limiterGainReductionDb: 2.4,
                      earLevel: .estimated(78), earAnchor: .qudelix(-24))
         s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
         return s

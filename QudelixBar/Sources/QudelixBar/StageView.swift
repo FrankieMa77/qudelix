@@ -148,6 +148,8 @@ struct StageView: View {
             balanceSection(uid)
                 .opacity(stageState.stage.enabled ? 1 : 0.55)
 
+            limiterSection(uid)
+
             if stageState.stage.enabled, let corr = stageState.sourceCorrelation,
                corr > 0.985 {
                 HStack(alignment: .top, spacing: 5) {
@@ -290,6 +292,54 @@ struct StageView: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private func limiterSection(_ uid: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(
+                get: { stageState.stage.limiterValue },
+                set: { on in
+                    var s = stageState.stage
+                    s.limiter = on
+                    stageState.setStage(s, editedFor: uid)
+                })) {
+                Text("True-peak limiter")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!stageState.stage.enabled)
+            Text(limiterNote)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
+    private var limiterNote: String {
+        guard stageState.stage.enabled else {
+            return "Unavailable while Soundstage is off — with the stage off "
+                + "this app is not in the audio path at all, so it has no "
+                + "output of its own to protect."
+        }
+        return String(format: "Protects the Soundstage's own output at −1 dBTP, "
+                      + "counting the peaks that land between samples — the "
+                      + "ones a lossy encoder clips on. Adds %d samples of "
+                      + "latency: %.1f ms at %g kHz. It does nothing while "
+                      + "Soundstage is off.",
+                      StageProcessor.limLookahead, limiterLatencyMs,
+                      limiterRateHz / 1000)
+    }
+
+    private var limiterRateHz: Double {
+        let rate = stageState.engine.runningSampleRate
+            ?? stageState.watcher.defaultOutput?.sampleRate ?? 48000
+        return AudioOutputs.plausibleRate(rate)
+    }
+
+    private var limiterLatencyMs: Double {
+        Double(StageProcessor.limLookahead) / limiterRateHz * 1000
     }
 
     private var levelDisplay: String {

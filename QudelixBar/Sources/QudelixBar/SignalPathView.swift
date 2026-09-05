@@ -226,6 +226,7 @@ enum SignalPath {
         if s.dialogue > 0 { parts.append("dialogue") }
         if s.room > 0 { parts.append("room") }
         if s.balanceDbValue != 0 || s.alignMsValue != 0 { parts.append("balance") }
+        if s.limiterValue { parts.append("true-peak limiter") }
         let detail = parts.isEmpty ? "processing the stereo mix"
                                    : parts.joined(separator: ", ") + " active"
         return "Soundstage inserted — " + detail

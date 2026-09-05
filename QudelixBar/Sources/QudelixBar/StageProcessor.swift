@@ -197,6 +197,9 @@ final class StageProcessor {
         /// Mild static headroom; the soft clipper catches the rare peaks so
         /// loudness doesn't have to be sacrificed to the worst case.
         var trim: Float = 1
+        var limiterOn = false
+        var limitCeiling: Float = 0.891_250_9
+        var limRelease: Float = 0.000_26
     }
 
     static let maxChannels = 32
@@ -263,6 +266,7 @@ final class StageProcessor {
         loudSumSquares = 0
         loudFrames = 0
         corrLR = 0; corrLL = 0; corrRR = 0
+        limMinGain = 1
         os_unfair_lock_unlock(meterLock)
         redesign()
     }
@@ -368,6 +372,8 @@ final class StageProcessor {
         // the rare true peak, so the stage doesn't buy safety with loudness.
         let excess = max(0, p.sideGain - 1) * 0.35 + p.roomWet * 0.3
         p.trim = 1 / (1 + excess * 0.5)
+        p.limiterOn = s.limiterValue
+        p.limRelease = Float(1 - exp(-1 / (0.08 * sampleRate)))
         return p
     }
 
@@ -400,6 +406,7 @@ final class StageProcessor {
     private var meterFrames: Int = 0
     private var loudSumSquares: Double = 0
     private var loudFrames: Int = 0
+    private var limMinGain: Float = 1
 
     /// What the last render cycle actually saw — the ground truth for "is
     /// the stage really running", readable from the control thread.
@@ -436,6 +443,14 @@ final class StageProcessor {
         meterSumSquares = 0
         meterFrames = 0
         return result
+    }
+
+    func drainLimiterFloor() -> Float {
+        os_unfair_lock_lock(meterLock)
+        defer { os_unfair_lock_unlock(meterLock) }
+        let floor = limMinGain
+        limMinGain = 1
+        return floor
     }
 
     func drainLoudnessMeter() -> (sumSquares: Double, frames: Int) {
@@ -541,6 +556,42 @@ final class StageProcessor {
     // engage open with a burst until the attack catches up.
     private var nightEnv: Double = 0.05
 
+    static let limRingSize = 128
+    static let limLookahead = 64
+    private var limDelay = [Float](repeating: 0, count: maxChannels * limRingSize)
+    private var limIdx = 0
+    private let tpPhase1 = StageProcessor.sincPhase(0.25)
+    private let tpPhase2 = StageProcessor.sincPhase(0.5)
+    private let tpPhase3 = StageProcessor.sincPhase(0.75)
+    private var tpHistL = [Float](repeating: 0, count: 8)
+    private var tpHistR = [Float](repeating: 0, count: 8)
+    private var limBlockMax = [Float](repeating: 0, count: 8)
+    private var limBlockIdx = 0
+    private var limSampleInBlock = 0
+    private var limCurBlockMax: Float = 0
+    private var limGain: Float = 1
+    private var limEngaged = false
+
+    static func sincPhase(_ frac: Double) -> [Float] {
+        var taps = [Double](repeating: 0, count: 8)
+        let center = 3.0 + frac
+        for n in 0..<8 {
+            let x = Double(n) - center
+            let sinc = x == 0 ? 1 : sin(.pi * x) / (.pi * x)
+            let window = 0.5 - 0.5 * cos(2 * .pi * (Double(n) + 0.5) / 8)
+            taps[n] = sinc * window
+        }
+        let sum = taps.reduce(0, +)
+        return taps.map { Float($0 / sum) }
+    }
+
+    private func resetLimiterState() {
+        for i in limDelay.indices { limDelay[i] = 0 }
+        for i in 0..<8 { tpHistL[i] = 0; tpHistR[i] = 0; limBlockMax[i] = 0 }
+        limIdx = 0; limBlockIdx = 0; limSampleInBlock = 0
+        limCurBlockMax = 0; limGain = 1
+    }
+
     private var kState = [Double](repeating: 0, count: 8)
     private var kEngaged = false
 
@@ -594,8 +645,10 @@ final class StageProcessor {
         if cfg.epoch != renderEpoch {
             renderEpoch = cfg.epoch
             resetStageState()
+            resetLimiterState()
             stageEngaged = false
             kEngaged = false
+            limEngaged = false
         }
 
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
@@ -634,6 +687,7 @@ final class StageProcessor {
             os_unfair_lock_unlock(meterLock)
             stageEngaged = false
             kEngaged = false
+            limEngaged = false
             return
         }
 
@@ -682,6 +736,17 @@ final class StageProcessor {
             renderStage(cfg.stage)
         } else {
             stageEngaged = false
+        }
+
+        if cfg.stage.limiterOn && !cfg.monitorOnly {
+            if !limEngaged {
+                resetLimiterState()
+                limEngaged = true
+            }
+            renderLimiter(ceiling: cfg.stage.limitCeiling,
+                          release: cfg.stage.limRelease)
+        } else {
+            limEngaged = false
         }
         os_unfair_lock_lock(meterLock)
         diagChannels = Int32(inRefs.count)
@@ -973,6 +1038,88 @@ final class StageProcessor {
         if abs(dialogueZ1) < 1e-30 { dialogueZ1 = 0 }
         if abs(dialogueZ2) < 1e-30 { dialogueZ2 = 0 }
         if abs(nightEnv) < 1e-30 { nightEnv = 0 }
+    }
+
+    private func renderLimiter(ceiling: Float, release: Float) {
+        let channels = min(inRefs.count, Self.maxChannels)
+        guard channels > 0 else { return }
+        var frames = inRefs[0].frames
+        for c in 1..<channels { frames = min(frames, inRefs[c].frames) }
+        let mask = Self.limRingSize - 1
+        var localMinGain = limGain
+
+        for f in 0..<frames {
+            var xl = inRefs[0].ptr[f * inRefs[0].stride]
+            if !xl.isFinite { xl = 0 }
+            var xr = xl
+            if channels >= 2 {
+                xr = inRefs[1].ptr[f * inRefs[1].stride]
+                if !xr.isFinite { xr = 0 }
+            }
+            var tp = max(abs(xl), abs(xr))
+            if channels > 2 {
+                for c in 2..<channels {
+                    let v = inRefs[c].ptr[f * inRefs[c].stride]
+                    if v.isFinite { tp = max(tp, abs(v)) }
+                }
+            }
+            for i in 0..<7 {
+                tpHistL[i] = tpHistL[i + 1]
+                tpHistR[i] = tpHistR[i + 1]
+            }
+            tpHistL[7] = xl
+            tpHistR[7] = xr
+            var i1: Float = 0, i2: Float = 0, i3: Float = 0
+            var j1: Float = 0, j2: Float = 0, j3: Float = 0
+            for i in 0..<8 {
+                i1 += tpHistL[i] * tpPhase1[i]; j1 += tpHistR[i] * tpPhase1[i]
+                i2 += tpHistL[i] * tpPhase2[i]; j2 += tpHistR[i] * tpPhase2[i]
+                i3 += tpHistL[i] * tpPhase3[i]; j3 += tpHistR[i] * tpPhase3[i]
+            }
+            tp = max(tp, max(abs(i1), max(abs(i2), abs(i3))))
+            tp = max(tp, max(abs(j1), max(abs(j2), abs(j3))))
+
+            limCurBlockMax = max(limCurBlockMax, tp)
+            limSampleInBlock += 1
+            if limSampleInBlock == 8 {
+                limBlockMax[limBlockIdx] = limCurBlockMax
+                limBlockIdx = (limBlockIdx + 1) & 7
+                limCurBlockMax = 0
+                limSampleInBlock = 0
+            }
+            var windowPeak = limCurBlockMax
+            for i in 0..<8 { windowPeak = max(windowPeak, limBlockMax[i]) }
+
+            let target: Float = windowPeak > ceiling ? ceiling / windowPeak : 1
+            if target < limGain {
+                limGain += (target - limGain) * 0.5
+            } else {
+                limGain += (target - limGain) * release
+            }
+            localMinGain = min(localMinGain, limGain)
+
+            let read = (limIdx - Self.limLookahead) & mask
+            for c in 0..<channels {
+                let ring = c * Self.limRingSize
+                let idx = f * inRefs[c].stride
+                var x = inRefs[c].ptr[idx]
+                if !x.isFinite { x = 0 }
+                inRefs[c].ptr[idx] = limDelay[ring + read] * limGain
+                limDelay[ring + limIdx] = x
+            }
+            limIdx = (limIdx + 1) & mask
+        }
+
+        for i in 0..<8 {
+            if abs(tpHistL[i]) < 1e-20 { tpHistL[i] = 0 }
+            if abs(tpHistR[i]) < 1e-20 { tpHistR[i] = 0 }
+            if limBlockMax[i] < 1e-20 { limBlockMax[i] = 0 }
+        }
+        if limCurBlockMax < 1e-20 { limCurBlockMax = 0 }
+
+        os_unfair_lock_lock(meterLock)
+        limMinGain = min(limMinGain, localMinGain)
+        os_unfair_lock_unlock(meterLock)
     }
 
     @inline(__always)

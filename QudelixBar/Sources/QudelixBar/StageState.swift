@@ -68,6 +68,7 @@ final class StageState: ObservableObject {
     /// Smoothed L/R correlation of what's playing: ~1 means mono content,
     /// which width and crossfeed cannot widen — the UI says so.
     @Published private(set) var sourceCorrelation: Double?
+    @Published private(set) var limiterGainReductionDb: Double = 0
 
     @Published private(set) var earLevel: EarLevelEstimate = .unavailable
     @Published private(set) var earLevelAverageDb: Double?
@@ -438,6 +439,7 @@ final class StageState: ObservableObject {
                     currentDb: Double?, correlation: Double? = nil,
                     levelTracking: Bool = false,
                     verdict: QualityAnalyzer.Verdict? = nil,
+                    limiterGainReductionDb: Double = 0,
                     earLevel: EarLevelEstimate = .unavailable,
                     earAnchor: EarVolumeAnchor? = nil,
                     earCalibrationDb: Double = EarLevel.defaultCalibrationDb) {
@@ -450,6 +452,7 @@ final class StageState: ObservableObject {
         currentLevelDb = currentDb
         sourceCorrelation = correlation
         self.levelTracking = levelTracking
+        self.limiterGainReductionDb = limiterGainReductionDb
         qualityVerdict = verdict
     }
     #else
@@ -492,6 +495,11 @@ final class StageState: ObservableObject {
     private var correlationSmoothed: Double?
 
     private var callTicks = 0
+
+    private var limiterDiag: String {
+        guard stage.limiterValue else { return "lim=off" }
+        return String(format: "lim=-%.1fdB", limiterGainReductionDb)
+    }
 
     private var earDiag: String {
         let lufs = shortTerm.lufs.map { String(format: "%.1f", $0) } ?? "nil"
@@ -542,6 +550,7 @@ final class StageState: ObservableObject {
                          stage.crossLowTrimValue, stage.crossMidTrimValue,
                          stage.crossHighTrimValue, stage.balanceDbValue,
                          stage.alignMsValue)
+                + limiterDiag + " "
                 + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
                 + earDiag)
             if engine.isRunning || content != lastDiagContent {
@@ -574,6 +583,7 @@ final class StageState: ObservableObject {
         guard engine.isRunning else {
             if currentLevelDb != nil { currentLevelDb = nil }
             if sourceCorrelation != nil { sourceCorrelation = nil }
+            if limiterGainReductionDb != 0 { limiterGainReductionDb = 0 }
             correlationSmoothed = nil
             clearEarLevel()
             clearVerdict()
@@ -589,6 +599,7 @@ final class StageState: ObservableObject {
             }
         }
 
+        updateLimiterTelemetry()
         qualityTick()
         updateEarLevel()
 
@@ -615,6 +626,13 @@ final class StageState: ObservableObject {
             meterTicksSinceSave = 0
             scheduleSave()
         }
+    }
+
+    private func updateLimiterTelemetry() {
+        let floor = engine.processor.drainLimiterFloor()
+        let reduction = floor.isFinite && floor > 0 && floor < 0.999
+            ? -20 * log10(Double(floor)) : 0
+        if limiterGainReductionDb != reduction { limiterGainReductionDb = reduction }
     }
 
     private func updateEarLevel() {

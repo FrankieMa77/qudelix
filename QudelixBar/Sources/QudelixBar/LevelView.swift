@@ -51,6 +51,8 @@ struct LevelView: View {
 
             meter
 
+            limiterRow
+
             earLevelSection
 
             Divider()
@@ -71,6 +73,31 @@ struct LevelView: View {
 
             exposureSection
         }
+    }
+
+    @ViewBuilder
+    private var limiterRow: some View {
+        if stageState.stage.limiterValue, stageState.stage.enabled,
+           stageState.engine.isRunning, stageState.engine.mode == .insert {
+            HStack(spacing: 6) {
+                Text("True-peak limiter")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text(limiterText)
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(stageState.limiterGainReductionDb > 0.1
+                                     ? AnyShapeStyle(.orange)
+                                     : AnyShapeStyle(.tertiary))
+                Spacer()
+            }
+            .help("How far the limiter is pulling the Soundstage's output "
+                  + "down this second to hold −1 dBTP.")
+        }
+    }
+
+    private var limiterText: String {
+        let db = stageState.limiterGainReductionDb
+        return db > 0.1 ? String(format: "−%.1f dB", db) : "idle"
     }
 
     private var earLevelSection: some View {
