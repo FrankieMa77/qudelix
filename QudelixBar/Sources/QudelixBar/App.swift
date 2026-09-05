@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let stageState: StageState
         let profileRules: ProfileRules
         let presetLibrary: PresetLibrary
+        let appAssignments: AppAssignments
         let headphoneSuggestions: HeadphoneSuggestions
         let aiStudio: AIPresetStudio
         let abTuner: ABTuner
@@ -115,6 +116,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         w.presetLibrary.start()
 
+        w.appAssignments.libraryPresets = { [weak library = w.presetLibrary] in
+            library?.presets ?? []
+        }
+        w.appAssignments.persistAssignments = { [weak library = w.presetLibrary] next in
+            library?.setAppAssignments(next)
+        }
+        w.appAssignments.persistEnabled = { [weak stageState = w.stageState] on in
+            stageState?.setPerAppEQ(on)
+        }
+        w.appAssignments.onChange = { [weak stageState = w.stageState] in
+            stageState?.appAssignmentsChanged()
+        }
+        w.stageState.activeAssignments = { [weak assignments = w.appAssignments] in
+            assignments?.activeAssignments ?? []
+        }
+        w.stageState.onProcessListRefresh = { [weak assignments = w.appAssignments] in
+            assignments?.refreshRunning()
+        }
+        w.appAssignments.start(assignments: w.presetLibrary.appAssignments,
+                               enabled: w.stageState.perAppEQ)
+        w.stageState.appAssignmentsChanged()
+
         w.headphoneSuggestions.limits = { [weak controller = w.controller] in
             .qudelix(bandCount: controller?.bandCount ?? QxEqGroup.user.bandCount)
         }
@@ -137,6 +160,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             s?.diagSummary ?? "suggest=none"
         }
         w.headphoneSuggestions.start()
+
+        w.presetLibrary.$presets
+            .removeDuplicates { $0.map(\.id) == $1.map(\.id) }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak assignments = w.appAssignments] _ in
+                MainActor.assumeIsolated { assignments?.onChange() }
+            }
+            .store(in: &sources)
 
         w.controller.$eqGroup
             .removeDuplicates()
@@ -330,6 +361,7 @@ struct QudelixBarApp: App {
     @StateObject private var stageState: StageState
     @StateObject private var profileRules: ProfileRules
     @StateObject private var presetLibrary: PresetLibrary
+    @StateObject private var appAssignments: AppAssignments
     @StateObject private var headphoneSuggestions: HeadphoneSuggestions
     @StateObject private var aiStudio: AIPresetStudio
     @StateObject private var a2dpGuard: A2dpGuard
@@ -345,6 +377,7 @@ struct QudelixBarApp: App {
         let stageState = StageState()
         let profileRules = ProfileRules()
         let presetLibrary = PresetLibrary()
+        let appAssignments = AppAssignments()
         let headphoneSuggestions = HeadphoneSuggestions(library: presetLibrary)
         let aiStudio = AIPresetStudio()
         let a2dpGuard = A2dpGuard()
@@ -358,6 +391,7 @@ struct QudelixBarApp: App {
                 .environmentObject(stageState)
                 .environmentObject(profileRules)
                 .environmentObject(presetLibrary)
+                .environmentObject(appAssignments)
                 .environmentObject(headphoneSuggestions)
                 .environmentObject(aiStudio)
                 .environmentObject(abTuner)
@@ -368,6 +402,7 @@ struct QudelixBarApp: App {
             AppDelegate.Wiring(content: content, controller: controller,
                                stageState: stageState, profileRules: profileRules,
                                presetLibrary: presetLibrary,
+                               appAssignments: appAssignments,
                                headphoneSuggestions: headphoneSuggestions,
                                aiStudio: aiStudio,
                                abTuner: abTuner, toneTester: toneTester,
@@ -378,6 +413,7 @@ struct QudelixBarApp: App {
         _stageState = StateObject(wrappedValue: stageState)
         _profileRules = StateObject(wrappedValue: profileRules)
         _presetLibrary = StateObject(wrappedValue: presetLibrary)
+        _appAssignments = StateObject(wrappedValue: appAssignments)
         _headphoneSuggestions = StateObject(wrappedValue: headphoneSuggestions)
         _aiStudio = StateObject(wrappedValue: aiStudio)
         _a2dpGuard = StateObject(wrappedValue: a2dpGuard)

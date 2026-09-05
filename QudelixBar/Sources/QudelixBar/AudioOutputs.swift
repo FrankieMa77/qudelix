@@ -110,6 +110,52 @@ enum AudioOutputs {
         return object
     }
 
+    static func audioProcesses() -> [RunningAudioProcess] {
+        guard #available(macOS 14.2, *) else { return [] }
+        var out: [RunningAudioProcess] = []
+        for object in processObjectList() {
+            guard let bundle: String = stringProperty(object, kAudioProcessPropertyBundleID),
+                  !bundle.isEmpty else { continue }
+            out.append(RunningAudioProcess(
+                bundleID: AppAssignments.clampedBundleID(bundle),
+                pid: processPID(object),
+                object: object,
+                playing: isRunningOutput(object)))
+        }
+        return out
+    }
+
+    private static func processPID(_ object: AudioObjectID) -> pid_t {
+        var addr = address(kAudioProcessPropertyPID)
+        var pid: pid_t = -1
+        var size = UInt32(MemoryLayout<pid_t>.size)
+        guard AudioObjectGetPropertyData(object, &addr, 0, nil, &size, &pid) == noErr
+        else { return -1 }
+        return pid
+    }
+
+    private static func isRunningOutput(_ object: AudioObjectID) -> Bool {
+        var addr = address(kAudioProcessPropertyIsRunningOutput)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(object, &addr, 0, nil, &size, &value) == noErr
+        else { return false }
+        return value != 0
+    }
+
+    private static func processObjectList() -> [AudioObjectID] {
+        var addr = address(kAudioHardwarePropertyProcessObjectList)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var objects = [AudioObjectID](repeating: 0,
+                                      count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &objects) == noErr
+        else { return [] }
+        return objects
+    }
+
     static func outputVolume(_ id: AudioDeviceID) -> Float? {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,

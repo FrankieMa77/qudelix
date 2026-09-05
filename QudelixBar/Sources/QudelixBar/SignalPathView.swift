@@ -79,6 +79,7 @@ enum SignalPath {
         var engineMode: StageEngine.Mode?
         var stage = StageSettings()
         var impulseActive = false
+        var perAppCount = 0
 
         var bassGuardActive = false
 
@@ -208,11 +209,22 @@ enum SignalPath {
                       state: "not in the path — metering only, audio untouched",
                       indicator: .passthrough)
         case .insert:
-            return Row(id: "app", name: name,
-                      state: stageDescription(i.stage, impulse: i.impulseActive,
-                                              guarding: i.bassGuardActive),
+            return Row(id: "app", name: name, state: insertDescription(i),
                       indicator: .altering)
         }
+    }
+
+    static func perAppLabel(_ count: Int) -> String {
+        "per-app EQ (\(count) app\(count == 1 ? "" : "s"))"
+    }
+
+    private static func insertDescription(_ i: Inputs) -> String {
+        let apps = i.perAppCount > 0 ? perAppLabel(i.perAppCount) : nil
+        let stage = stageDescription(i.stage, impulse: i.impulseActive,
+                                     guarding: i.bassGuardActive)
+        guard i.stage.enabled || i.impulseActive else { return apps ?? stage }
+        guard let apps else { return stage }
+        return stage + " · " + apps
     }
 
     /// What the Stage is actually doing, named rather than just "on" — the
@@ -349,6 +361,7 @@ struct SignalPathView: View {
             engineMode: stageState.engine.isRunning ? stageState.engine.mode : nil,
             stage: stageState.stage,
             impulseActive: stageState.impulseInPath,
+            perAppCount: stageState.perAppActiveCount,
             bassGuardActive: stageState.stage.bassGuardValue
                 && !stageState.bassGuardInert,
             eqEnabled: controller.eqEnabled,

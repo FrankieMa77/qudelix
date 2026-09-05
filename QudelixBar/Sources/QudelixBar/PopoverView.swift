@@ -1156,10 +1156,13 @@ struct PresetsView: View {
                     }
                 }
             }
-            .frame(height: 88)
+            .frame(height: 64)
 
             Divider()
             PresetLibraryView()
+
+            Divider()
+            AppsSection()
 
             Divider()
             AIPresetSection()

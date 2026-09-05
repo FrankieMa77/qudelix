@@ -20,7 +20,7 @@ struct PresetLibraryView: View {
     private var mine: [LibraryPreset] { library.visible(for: outputUID) }
     private var others: [LibraryPreset] { library.otherOutputs(for: outputUID) }
 
-    static let scrollHeight: CGFloat = 112
+    static let scrollHeight: CGFloat = 90
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

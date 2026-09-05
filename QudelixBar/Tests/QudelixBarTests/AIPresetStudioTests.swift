@@ -986,6 +986,7 @@ final class AIPresetStudioTests: XCTestCase {
                 .environmentObject(StageState())
                 .environmentObject(ProfileRules())
                 .environmentObject(library)
+                .environmentObject(AppAssignments())
                 .environmentObject(studio)
                 .environmentObject(HeadphoneSuggestions(library: library))
                 .environmentObject(ABTuner())

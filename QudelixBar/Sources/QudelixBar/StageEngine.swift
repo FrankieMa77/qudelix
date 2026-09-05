@@ -52,7 +52,17 @@ final class StageEngine: ObservableObject {
 
     let processor = StageProcessor()
 
-    private var tapID = AudioObjectID(kAudioObjectUnknown)
+    struct AppTapEntry: Equatable {
+        var bundleID: String
+        var objects: [AudioObjectID]
+        var chain: AppCurve
+    }
+
+    var appTapPlan: [AppTapEntry] = []
+    var followProcessList = false
+    private(set) var activeAppTaps: [String] = []
+
+    private var tapIDs: [AudioObjectID] = []
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
     /// The device the engine is currently attached to.
@@ -138,6 +148,7 @@ final class StageEngine: ObservableObject {
     }
 
     private func tearDownPipeline() {
+        unwatchProcessList()
         if let procID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -147,13 +158,15 @@ final class StageEngine: ObservableObject {
             AudioHardwareDestroyAggregateDevice(aggregateID)
             aggregateID = AudioObjectID(kAudioObjectUnknown)
         }
-        if tapID != kAudioObjectUnknown {
+        if !tapIDs.isEmpty {
             // A tap can only exist on 14.2+, so the guard can't skip a live one.
             if #available(macOS 14.2, *) {
-                AudioHardwareDestroyProcessTap(tapID)
+                for id in tapIDs { AudioHardwareDestroyProcessTap(id) }
             }
-            tapID = AudioObjectID(kAudioObjectUnknown)
+            tapIDs.removeAll()
         }
+        activeAppTaps = []
+        processor.applyAppChains([])
         // The mute belongs to a tone session, but sessions can die with
         // their engine (device vanished). A stopped engine must never leave
         // a mute armed for the next start.
@@ -179,13 +192,37 @@ final class StageEngine: ObservableObject {
                 summary: "can't exclude this app from the tap")
         }
 
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [own])
+        var excluded: [AudioObjectID] = [own]
+        var subTaps: [[String: Any]] = []
+        var built: [AppTapEntry] = []
+        if mode == .insert {
+            for (index, entry) in appTapPlan.prefix(AppAssignments.maxAssignments)
+                .enumerated() where !entry.objects.isEmpty {
+                let appDesc = CATapDescription(stereoMixdownOfProcesses: entry.objects)
+                appDesc.name = "Qudelix app tap \(index + 1)"
+                appDesc.isPrivate = true
+                appDesc.muteBehavior = .mutedWhenTapped
+                var id = AudioObjectID(kAudioObjectUnknown)
+                guard AudioHardwareCreateProcessTap(appDesc, &id) == noErr,
+                      id != kAudioObjectUnknown else { continue }
+                tapIDs.append(id)
+                subTaps.append([kAudioSubTapUIDKey: appDesc.uuid.uuidString,
+                                kAudioSubTapDriftCompensationKey: 1])
+                built.append(entry)
+                excluded.append(contentsOf: entry.objects)
+            }
+        }
+
+        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
         desc.name = "Qudelix stage tap"
         desc.isPrivate = true
         desc.muteBehavior = mode == .insert ? .mutedWhenTapped : .unmuted
 
-        try check(AudioHardwareCreateProcessTap(desc, &tapID),
+        var catchAllID = AudioObjectID(kAudioObjectUnknown)
+        try check(AudioHardwareCreateProcessTap(desc, &catchAllID),
                   "Creating the system audio tap")
+        tapIDs.append(catchAllID)
+        activeAppTaps = built.map(\.bundleID)
 
         // Design the stage at the rate the device is actually clocked at,
         // read fresh — the watcher's cached value can predate a rate change.
@@ -193,6 +230,7 @@ final class StageEngine: ObservableObject {
         runningSampleRate = rate
         processor.prepare(sampleRate: rate)
         processor.setMonitorOnly(mode == .monitor)
+        processor.applyAppChains(built.map(\.chain))
 
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Qudelix Stage Engine",
@@ -202,7 +240,7 @@ final class StageEngine: ObservableObject {
             kAudioAggregateDeviceSubDeviceListKey: [
                 [kAudioSubDeviceUIDKey: device.uid]
             ],
-            kAudioAggregateDeviceTapListKey: [
+            kAudioAggregateDeviceTapListKey: subTaps + [
                 [kAudioSubTapUIDKey: desc.uuid.uuidString,
                  kAudioSubTapDriftCompensationKey: 1]
             ],
@@ -220,6 +258,84 @@ final class StageEngine: ObservableObject {
         try check(AudioDeviceStart(aggregateID, procID), "Starting audio")
 
         watchCallSignals(of: device)
+        if followProcessList { watchProcessList() }
+    }
+
+    var onProcessListChange: (() -> Void)?
+
+    static let processListQuiet: TimeInterval = 1
+
+    private var processListener: AudioObjectPropertyListenerBlock?
+    private var pendingProcessListChange: DispatchWorkItem?
+
+    private static func processListAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+    }
+
+    private func watchProcessList() {
+        unwatchProcessList()
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.scheduleProcessListChange() }
+        }
+        var addr = Self.processListAddress()
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                            &addr, .main, block)
+        processListener = block
+    }
+
+    private func unwatchProcessList() {
+        pendingProcessListChange?.cancel()
+        pendingProcessListChange = nil
+        guard let block = processListener else { return }
+        var addr = Self.processListAddress()
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                               &addr, .main, block)
+        processListener = nil
+    }
+
+    private func scheduleProcessListChange() {
+        pendingProcessListChange?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingProcessListChange = nil
+            self?.onProcessListChange?()
+        }
+        pendingProcessListChange = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.processListQuiet,
+                                      execute: work)
+    }
+
+    nonisolated static func tapPlan(assignments: [ResolvedAssignment],
+                                    runningProcesses: [RunningAudioProcess],
+                                    selfPID: pid_t,
+                                    limit: Int = AppAssignments.maxAssignments)
+        -> [AppTapEntry] {
+        var wanted: [String: LibraryPreset] = [:]
+        for entry in assignments {
+            guard let preset = entry.preset, wanted[entry.bundleID] == nil else { continue }
+            wanted[entry.bundleID] = preset
+        }
+        guard !wanted.isEmpty, limit > 0 else { return [] }
+        var grouped: [String: Set<AudioObjectID>] = [:]
+        for process in runningProcesses {
+            guard process.pid != selfPID, wanted[process.bundleID] != nil else { continue }
+            grouped[process.bundleID, default: []].insert(process.object)
+        }
+        var out: [AppTapEntry] = []
+        for bundleID in grouped.keys.sorted() {
+            guard let preset = wanted[bundleID] else { continue }
+            let objects = Array(grouped[bundleID, default: []].sorted()
+                .prefix(AppAssignments.maxProcessObjectsPerApp))
+            guard !objects.isEmpty else { continue }
+            out.append(AppTapEntry(
+                bundleID: bundleID, objects: objects,
+                chain: AppCurve(bundleID: bundleID, preGain: preset.preGain,
+                                bands: preset.bands)))
+            if out.count == limit { break }
+        }
+        return out
     }
 
     var onDeviceConfigurationChange: (() -> Void)?

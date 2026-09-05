@@ -314,14 +314,41 @@ It is evidence, not proof, and the wording says which:
 switches that keep a system audio tap open. Untick it and the detector stops;
 what that leaves running is set out below.
 
+## Per-app EQ
+
+The 5K applies one curve to everything it is sent. Under **Presets → Per-app
+EQ** you can give a single app a second curve of its own, applied on the Mac
+before the audio ever reaches the device — so a podcast player can run a
+speech-shaped preset while music keeps the curve on the 5K, with no switching
+by hand.
+
+The section lists whatever is playing right now, plus anything you have already
+assigned. Pick a preset from your library for a row, or leave it on **Default**,
+which means no Mac-side curve at all. Up to eight apps can be assigned at once.
+Any library preset can be used here, whichever of the device's two EQ banks it
+was saved for: this chain runs on the Mac and has its own band count, so it is
+never stretched to fit.
+
+Two things follow from where it runs. It stacks: an app's curve is applied
+first, and the 5K's own EQ still runs afterwards on the result. And it has to
+be heard to work, so switching it on with an app assigned inserts the engine
+into the audio path (the same path the Stage uses) even with the Stage itself
+off. Switch it off, or leave nothing assigned, and the engine goes back to
+whatever the other switches asked for.
+
 ## The audio tap
 
-Three things in this app work on the Mac's own audio rather than on the 5K:
-the Stage, the listening-level meter, and stream-quality detection. All three
-are fed by one mechanism — a macOS process tap, created **global**, which
-captures the output of every process on the machine except this app (excluded
-so it cannot hear itself). It needs macOS 14.2 or later, and macOS asks once
-for the System Audio Recording permission.
+Four things in this app work on the Mac's own audio rather than on the 5K:
+the Stage, per-app EQ, the listening-level meter, and stream-quality detection.
+All of them are fed by one mechanism — a macOS process tap, created **global**,
+which captures the output of every process on the machine except this app
+(excluded so it cannot hear itself). It needs macOS 14.2 or later, and macOS
+asks once for the System Audio Recording permission.
+
+With apps assigned there is one further tap per assigned app, covering just
+that app's processes, and the global one then excludes them so nothing is heard
+twice. A per-app tap that cannot be created is skipped rather than fatal: its
+app simply keeps playing through the global tap with no curve of its own.
 
 **Stream-quality detection is on by default, so the tap is created at launch**
 unless you turn it off. That is also when the permission is asked for — at
@@ -329,15 +356,16 @@ first launch, rather than the first time you open the Stage. The audio is
 analysed a block at a time in memory and written nowhere; what survives a
 block is a verdict and a cutoff frequency.
 
-Three switches decide whether a tap exists at all:
+Four switches decide whether a tap exists at all:
 
 | Switch | Where | Default | Effect |
 |---|---|---|---|
 | **Stage** | Stage tab | off | processes the audio on its way out |
+| **Per-app EQ** | Presets tab | **on**, idle until an app is assigned | processes the audio on its way out |
 | **Track listening levels** | Level tab | off | listens only |
 | **Detect stream quality** | Level tab | **on** | listens only |
 
-With all three off, the whole engine is torn down, tap included, and the app
+With all four off, the whole engine is torn down, taps included, and the app
 goes back to being a pure remote control for the 5K.
 
 ## Build from source
@@ -397,10 +425,10 @@ no third-party dependencies.
 
   | File | What is in it |
   |---|---|
-  | `stage.json` | Soundstage settings per output device, the 14-day listening totals, and the Level and quality toggles |
+  | `stage.json` | Soundstage settings per output device, the 14-day listening totals, and the Level, quality and per-app EQ toggles |
   | `profiles.json` | Your output-device-to-preset pairings |
   | `last-eq.json` | The last EQ curve seen on the device, one per EQ group, what produced it, and which device it came from |
-  | `presets.json` | The preset library kept on this Mac, and the headphone name you typed |
+  | `presets.json` | The preset library kept on this Mac, the headphone name you typed, and which app is assigned which curve |
   | `ai-research.json` | What the AI preset studio has researched, keyed by headphone name — the description it got back, and the measurement it was anchored to. Up to 64 headphones, no key material, nothing about you |
   | `diag.txt` | The last 200 lines of an engine heartbeat, for bug reports. It records which phase the studio is in — `ai=idle`, `ai=researching`, `ai=designing` — and never what was asked or answered |
 

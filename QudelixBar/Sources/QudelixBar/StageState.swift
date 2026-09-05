@@ -23,6 +23,10 @@ final class StageState: ObservableObject {
     /// The current output device's stage, backed by the per-device map.
     @Published private(set) var stage = StageSettings()
     @Published private(set) var levelTracking = false
+    @Published private(set) var perAppEQ = true
+
+    var activeAssignments: (() -> [ResolvedAssignment])?
+    var onProcessListRefresh: (() -> Void)?
 
     @Published private(set) var impulseInfo: ImpulseInfo?
     @Published private(set) var impulseStatus: StageProcessor.ImpulseStatus = .off
@@ -120,7 +124,10 @@ final class StageState: ObservableObject {
 
     func setUIVisible(_ visible: Bool) {
         uiVisible = visible
-        if visible { flushMirrors() }
+        if visible {
+            flushMirrors()
+            onProcessListRefresh?()
+        }
     }
 
     private func mirror<T: Equatable>(_ value: T,
@@ -196,6 +203,7 @@ final class StageState: ObservableObject {
             if let raw = saved.a2dpGuard, A2dpGuard.Mode(rawValue: raw) != nil {
                 a2dpGuardModeRaw = raw
             }
+            perAppEQ = saved.perAppEQ ?? true
             if let calibrations = saved.earCalibrationByDevice {
                 earCalibrationByDevice = Dictionary(uniqueKeysWithValues:
                     calibrations.sorted { $0.key < $1.key }
@@ -224,6 +232,10 @@ final class StageState: ObservableObject {
         guard !started else { return }
         started = true
         watcher.onChange = { [weak self] in self?.outputsChanged() }
+        engine.onProcessListChange = { [weak self] in
+            self?.onProcessListRefresh?()
+            self?.applyAssignmentChange()
+        }
         engine.onDeviceConfigurationChange = { [weak self] in
             guard let self else { return }
             self.refreshCallState()
@@ -310,6 +322,64 @@ final class StageState: ObservableObject {
         if earAnchor != nil { earAnchor = nil }
     }
 
+    func setPerAppEQ(_ on: Bool) {
+        guard on != perAppEQ else { return }
+        perAppEQ = on
+        appAssignmentsChanged()
+        scheduleSave()
+    }
+
+    var perAppActiveCount: Int {
+        engine.isRunning ? engine.activeAppTaps.count : 0
+    }
+
+    var assignedAppCount: Int { activeAssignments?().count ?? 0 }
+
+    private var wantsPerAppEQ: Bool {
+        perAppEQ && !(activeAssignments?().isEmpty ?? true)
+    }
+
+    private func desiredTapPlan() -> [StageEngine.AppTapEntry] {
+        guard wantsPerAppEQ, let resolved = activeAssignments?() else { return [] }
+        return StageEngine.tapPlan(assignments: resolved,
+                                   runningProcesses: AudioOutputs.audioProcesses(),
+                                   selfPID: getpid())
+    }
+
+    static let assignmentRebuildQuiet: TimeInterval = 0.4
+    private var pendingAssignmentRebuild: DispatchWorkItem?
+
+    func appAssignmentsChanged() {
+        guard started else { return }
+        pendingAssignmentRebuild?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingAssignmentRebuild = nil
+            self?.applyAssignmentChange()
+        }
+        pendingAssignmentRebuild = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.assignmentRebuildQuiet,
+                                      execute: work)
+        onStatusChange?()
+    }
+
+    private func applyAssignmentChange() {
+        guard started else { return }
+        let plan = desiredTapPlan()
+        let wanted = plan.map(\.bundleID)
+        engine.appTapPlan = plan
+        engine.followProcessList = wantsPerAppEQ
+        if engine.isRunning, engine.mode == .insert, engine.activeAppTaps == wanted {
+            engine.processor.applyAppChains(plan.map(\.chain))
+            return
+        }
+        if engine.isRunning, engine.activeAppTaps != wanted { engine.stop() }
+        reconcile()
+    }
+
+    nonisolated static func perAppDiag(taps: Int, assigned: Int) -> String {
+        "apps=\(max(taps, 0))/\(max(assigned, 0))"
+    }
+
     func setLevelTracking(_ on: Bool) {
         levelTracking = on
         reconcile()
@@ -360,10 +430,18 @@ final class StageState: ObservableObject {
 
     // MARK: - Engine lifecycle
 
-    private var wantedMode: StageEngine.Mode? {
-        if stage.enabled { return .insert }
+    nonisolated static func wantedMode(stageEnabled: Bool, perAppEQ: Bool,
+                                       levelTracking: Bool,
+                                       detectQuality: Bool) -> StageEngine.Mode? {
+        if stageEnabled { return .insert }
+        if perAppEQ { return .insert }
         if levelTracking || detectQuality { return .monitor }
         return nil
+    }
+
+    private var wantedMode: StageEngine.Mode? {
+        Self.wantedMode(stageEnabled: stage.enabled, perAppEQ: wantsPerAppEQ,
+                        levelTracking: levelTracking, detectQuality: detectQuality)
     }
 
     private var desiredMode: StageEngine.Mode? {
@@ -388,6 +466,8 @@ final class StageState: ObservableObject {
     /// The one place that decides whether the engine should run, and on what.
     /// Called after every edit and every device event; safe to call twice.
     private func reconcile() {
+        engine.followProcessList = wantsPerAppEQ
+        if !engine.isRunning { engine.appTapPlan = desiredTapPlan() }
         let device = watcher.defaultOutput
         let hold = callActiveLive && wantedMode != nil && device != nil
         let desired = desiredMode
@@ -683,7 +763,8 @@ final class StageState: ObservableObject {
             autoRate: autoRate,
             manualRateHz: manualRateHz,
             a2dpGuard: a2dpGuardModeRaw,
-            earCalibrationByDevice: earCalibrationByDevice))
+            earCalibrationByDevice: earCalibrationByDevice,
+            perAppEQ: perAppEQ))
     }
 
     // MARK: - Metering
@@ -764,7 +845,12 @@ final class StageState: ObservableObject {
         if callTicks >= 60 {
             callTicks = 0
             refreshCallState()
-            reconcile()
+            if wantsPerAppEQ {
+                onProcessListRefresh?()
+                applyAssignmentChange()
+            } else {
+                reconcile()
+            }
         }
 
         // Heartbeat for field debugging, running or not: engine state, the
@@ -790,6 +876,8 @@ final class StageState: ObservableObject {
                          stage.crossLowTrimValue, stage.crossMidTrimValue,
                          stage.crossHighTrimValue, stage.balanceDbValue,
                          stage.alignMsValue)
+                + Self.perAppDiag(taps: engine.activeAppTaps.count,
+                                  assigned: assignedAppCount) + " "
                 + limiterDiag + " " + loudDiag + " " + bassDiag + " "
                 + impulseDiag + " "
                 + "quality=\(qualityVerdictLive.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "

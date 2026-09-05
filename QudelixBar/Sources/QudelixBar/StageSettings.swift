@@ -194,6 +194,7 @@ struct PersistedStageState: Codable {
     var manualRateHz: Double?
     var a2dpGuard: String?
     var earCalibrationByDevice: [String: Double]?
+    var perAppEQ: Bool?
 }
 
 /// Reads for user-writable state files. `Data(contentsOf:)` follows a

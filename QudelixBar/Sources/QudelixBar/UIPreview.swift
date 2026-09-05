@@ -52,6 +52,7 @@ enum UIPreview {
                     .environmentObject(stage)
                     .environmentObject(profilesMock(pane))
                     .environmentObject(libraryMock(pane))
+                    .environmentObject(appsMock(pane))
                     .environmentObject(suggestionsMock(pane))
                     .environmentObject(studioMock(pane))
                     .environmentObject(ABTuner())
@@ -95,7 +96,8 @@ enum UIPreview {
                             BandInspector(selected: .constant(0))
                             EqEditorView(editingBand: .constant(nil))
                         }, controller, stage, blind)
-                    case "presets", "presets-busy", "suggest", "presets-ai":
+                    case "presets", "presets-busy", "suggest", "presets-ai",
+                         "presets-apps":
                         reportPaneFit(pane, PresetsView(), controller, stage, blind)
                     case "import":
                         reportPaneFit(pane, ImportView(), controller, stage, blind)
@@ -218,6 +220,7 @@ enum UIPreview {
             .environmentObject(stage)
             .environmentObject(profilesMock(pane))
             .environmentObject(libraryMock(pane))
+            .environmentObject(appsMock(pane))
             .environmentObject(suggestionsMock(pane))
             .environmentObject(studioMock(pane))
             .environmentObject(ABTuner())
@@ -243,6 +246,7 @@ enum UIPreview {
                     .environmentObject(stage)
                     .environmentObject(profilesMock(pane))
                     .environmentObject(libraryMock(pane))
+                    .environmentObject(appsMock(pane))
                     .environmentObject(suggestionsMock(pane))
                     .environmentObject(studioMock(pane))
                     .environmentObject(ABTuner())
@@ -270,6 +274,7 @@ enum UIPreview {
          ("presets", make(.presets), stageMock(), BlindTuner()),
          ("presets-busy", presetsBusy(), stageMock(), BlindTuner()),
          ("presets-ai", make(.presets), stageMock(), BlindTuner()),
+         ("presets-apps", make(.presets), stageMock(), BlindTuner()),
          ("import", make(.importing), stageMock(), BlindTuner()),
          ("tune", make(.tune), stageMock(), BlindTuner()),
          ("shape", make(.tune), stageMock(), shapeMock()),
@@ -359,7 +364,8 @@ enum UIPreview {
     @MainActor
     private static func libraryMock(_ pane: String) -> PresetLibrary {
         let library = PresetLibrary()
-        guard pane == "presets" || pane == "presets-busy" || pane == "suggest" || pane == "presets-ai"
+        guard pane == "presets" || pane == "presets-busy" || pane == "suggest"
+                || pane == "presets-ai" || pane == "presets-apps"
         else { return library }
         let ten = QxEqGroup.user.defaultFreqs.map {
             QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
@@ -386,6 +392,39 @@ enum UIPreview {
               + "device to 20-band mode to use it."
             : nil)
         return library
+    }
+
+    @MainActor
+    private static func appsMock(_ pane: String) -> AppAssignments {
+        let apps = AppAssignments()
+        let library = libraryMock(pane)
+        apps.libraryPresets = { library.presets }
+        guard pane == "presets-apps" else {
+            apps.previewSet(assignments: [], enabled: true)
+            return apps
+        }
+        apps.previewExpanded = true
+        let harman = library.presets.first { $0.name.contains("Harman") }?.id
+        let studio = library.presets.first { $0.name.contains("Studio") }?.id
+        apps.previewSet(
+            assignments: [
+                AppAssignment(bundleID: "com.spotify.client", displayName: "Spotify",
+                              presetID: harman),
+                AppAssignment(bundleID: "com.apple.Music", displayName: "Music",
+                              presetID: studio),
+                AppAssignment(bundleID: "com.gone.player", displayName: "Old Player",
+                              presetID: UUID()),
+            ],
+            enabled: true,
+            running: [
+                RunningAudioProcess(bundleID: "com.spotify.client", pid: 501,
+                                    object: 11, playing: true),
+                RunningAudioProcess(bundleID: "com.apple.Safari", pid: 502,
+                                    object: 12, playing: true),
+                RunningAudioProcess(bundleID: "com.apple.Music", pid: 503,
+                                    object: 13, playing: false),
+            ])
+        return apps
     }
 
     @MainActor

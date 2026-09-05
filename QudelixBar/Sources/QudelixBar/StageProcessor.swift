@@ -143,6 +143,48 @@ struct BiquadSection {
     }
 }
 
+struct AppCurve: Equatable {
+    var bundleID: String
+    var preGain: Double
+    var bands: [QxEqBandValue]
+}
+
+final class AppChainTable {
+    let count: Int
+    let preGain: UnsafeMutablePointer<Float>
+    let sections: UnsafeMutablePointer<Int32>
+    let coeffs: UnsafeMutablePointer<Double>
+
+    init(count: Int) {
+        let apps = StageProcessor.maxAssignedApps
+        self.count = min(max(count, 0), apps)
+        preGain = UnsafeMutablePointer<Float>.allocate(capacity: apps)
+        preGain.initialize(repeating: 1, count: apps)
+        sections = UnsafeMutablePointer<Int32>.allocate(capacity: apps)
+        sections.initialize(repeating: 0, count: apps)
+        let slots = apps * StageProcessor.maxAppSections * 5
+        coeffs = UnsafeMutablePointer<Double>.allocate(capacity: slots)
+        coeffs.initialize(repeating: 0, count: slots)
+    }
+
+    deinit {
+        preGain.deallocate()
+        sections.deallocate()
+        coeffs.deallocate()
+    }
+
+    func set(_ section: BiquadSection, app: Int, index: Int) {
+        guard app >= 0, app < StageProcessor.maxAssignedApps,
+              index >= 0, index < StageProcessor.maxAppSections else { return }
+        let base = coeffs + (app * StageProcessor.maxAppSections + index) * 5
+        base[0] = section.b0
+        base[1] = section.b1
+        base[2] = section.b2
+        base[3] = section.a1
+        base[4] = section.a2
+    }
+}
+
 /// The realtime DSP core behind the Stage and Level features: the Soundstage
 /// chain plus the level meter, applied to whatever passes through the render
 /// callback.
@@ -173,6 +215,9 @@ final class StageProcessor {
         var stage = StageParams()
         var kShelf = BiquadSection.passthrough
         var kHighpass = BiquadSection.passthrough
+        var perAppStreams: Int32 = 1
+        var perAppActive = false
+        var perAppEpoch: UInt64 = 0
     }
 
     /// One early reflection. Fixed shape, not an array: keeping StageParams
@@ -276,6 +321,8 @@ final class StageProcessor {
         specLock.deallocate()
         convScratchL.deallocate()
         convScratchR.deallocate()
+        appZ.deallocate()
+        mixBus.deallocate()
     }
 
     private var sampleRate: Double = 48000
@@ -324,7 +371,11 @@ final class StageProcessor {
         guardMaxRedDb = 0
         os_unfair_lock_unlock(meterLock)
         rebuildImpulse(block: wantedBlockFrames)
-        redesign()
+        if !appCurves.isEmpty {
+            rebuildAppChains()
+        } else {
+            redesign()
+        }
     }
 
     /// Update the Soundstage. The new design swaps in atomically.
@@ -511,11 +562,98 @@ final class StageProcessor {
         next.stage = designStage()
         next.kShelf = kShelfDesign
         next.kHighpass = kHighpassDesign
+        next.perAppActive = !appCurves.isEmpty && appChainCurrent != nil
+        next.perAppStreams = next.perAppActive
+            ? Int32(min(appCurves.count + 1, Self.maxTapStreams)) : 1
+        next.perAppEpoch = perAppEpoch
+        let chains = appChainCurrent.map { Unmanaged.passUnretained($0) }
         // Config is POD (asserted in init), so this swap is a plain copy:
         // nothing is retained or released on either side of the lock.
         os_unfair_lock_lock(lock)
         config = next
+        appChainSlot = chains
         os_unfair_lock_unlock(lock)
+    }
+
+    static let maxAssignedApps = 8
+    static let maxAppSections = 20
+    static let maxTapStreams = 9
+    static let mixBusFrames = 8192
+    static let appChainGraveyardDepth = 4
+
+    private var appCurves: [AppCurve] = []
+    private var appChainCurrent: AppChainTable?
+    private var appChainRetired: [AppChainTable] = []
+    private var appChainSlot: Unmanaged<AppChainTable>?
+    private var perAppEpoch: UInt64 = 0
+
+    var assignedAppCount: Int { appCurves.count }
+
+    func applyAppChains(_ curves: [AppCurve]) {
+        let next = Array(curves.prefix(Self.maxAssignedApps))
+        guard next != appCurves else { return }
+        appCurves = next
+        rebuildAppChains()
+    }
+
+    private func rebuildAppChains() {
+        guard !appCurves.isEmpty else {
+            publishAppChains(nil)
+            return
+        }
+        let table = AppChainTable(count: appCurves.count)
+        for (app, curve) in appCurves.enumerated() {
+            let clamped = curve.preGain.isFinite
+                ? min(max(curve.preGain, -Self.maxAppPreGainDb), Self.maxAppPreGainDb) : 0
+            table.preGain[app] = Float(pow(10, clamped / 20))
+            var used = 0
+            for band in curve.bands.prefix(Self.maxAppSections) {
+                guard let section = Self.appSection(band, sampleRate: sampleRate)
+                else { continue }
+                table.set(section, app: app, index: used)
+                used += 1
+            }
+            table.sections[app] = Int32(used)
+        }
+        publishAppChains(table)
+    }
+
+    static let maxAppPreGainDb: Double = 24
+
+    static func appSection(_ band: QxEqBandValue, sampleRate: Double) -> BiquadSection? {
+        let clean = PresetLibraryFile.clamped(band)
+        let freq = Double(clean.freq)
+        let gain = clean.gain
+        let q = clean.q
+        switch clean.filter {
+        case .bypass:
+            return nil
+        case .peak:
+            guard abs(gain) > 0.001 else { return nil }
+            return .peak(freq: freq, gainDb: gain, q: q, sampleRate: sampleRate)
+        case .lowShelf:
+            guard abs(gain) > 0.001 else { return nil }
+            return .lowShelf(freq: freq, gainDb: gain, q: q, sampleRate: sampleRate)
+        case .highShelf:
+            guard abs(gain) > 0.001 else { return nil }
+            return .highShelf(freq: freq, gainDb: gain, q: q, sampleRate: sampleRate)
+        case .lpf:
+            return .lowPass(freq: freq, q: q, sampleRate: sampleRate)
+        case .hpf:
+            return .highPass(freq: freq, q: q, sampleRate: sampleRate)
+        }
+    }
+
+    private func publishAppChains(_ table: AppChainTable?) {
+        if let old = appChainCurrent {
+            appChainRetired.append(old)
+            while appChainRetired.count > Self.appChainGraveyardDepth {
+                appChainRetired.removeFirst()
+            }
+        }
+        appChainCurrent = table
+        perAppEpoch &+= 1
+        redesign()
     }
 
     static let defaultBlockFrames = 512
@@ -876,6 +1014,24 @@ final class StageProcessor {
         return p
     }()
 
+    static let appStateSlots = maxAssignedApps * maxAppSections * 4
+    private var perAppEngaged = false
+    private var renderPerAppEpoch: UInt64 = 0
+    private let appZ: UnsafeMutablePointer<Double> = {
+        let p = UnsafeMutablePointer<Double>.allocate(capacity: appStateSlots)
+        p.initialize(repeating: 0, count: appStateSlots)
+        return p
+    }()
+    private let mixBus: UnsafeMutablePointer<Float> = {
+        let p = UnsafeMutablePointer<Float>.allocate(capacity: mixBusFrames * 2)
+        p.initialize(repeating: 0, count: mixBusFrames * 2)
+        return p
+    }()
+
+    private func resetAppChainState() {
+        appZ.update(repeating: 0, count: Self.appStateSlots)
+    }
+
     private var inRefs: [(ptr: UnsafeMutablePointer<Float>, stride: Int, frames: Int)] = {
         var a = [(ptr: UnsafeMutablePointer<Float>, stride: Int, frames: Int)]()
         a.reserveCapacity(maxChannels)
@@ -893,8 +1049,10 @@ final class StageProcessor {
         os_unfair_lock_lock(lock)
         let cfg = config
         let slot = convSlot
+        let chainSlot = appChainSlot
         os_unfair_lock_unlock(lock)
         let conv = slot?.takeUnretainedValue()
+        let chains = chainSlot?.takeUnretainedValue()
 
         // A new epoch means prepare() ran (engine start, rate change): the
         // rings hold audio timed for another rate. Wipe them HERE, on the
@@ -903,9 +1061,16 @@ final class StageProcessor {
             renderEpoch = cfg.epoch
             resetStageState()
             resetLimiterState()
+            resetAppChainState()
             stageEngaged = false
             kEngaged = false
             limEngaged = false
+            perAppEngaged = false
+        }
+        if cfg.perAppEpoch != renderPerAppEpoch {
+            renderPerAppEpoch = cfg.perAppEpoch
+            resetAppChainState()
+            perAppEngaged = false
         }
 
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
@@ -916,20 +1081,21 @@ final class StageProcessor {
         }
 
         // Locate each input channel; the stage filters them in place.
-        let consumed = min(1, inList.count)
+        let wantedStreams = cfg.perAppActive && !cfg.monitorOnly
+            ? min(Int(cfg.perAppStreams), Self.maxTapStreams) : 1
+        let consumed = min(max(wantedStreams, 1), inList.count)
         inRefs.removeAll(keepingCapacity: true)
-        for i in (inList.count - consumed)..<inList.count {
-            let buf = inList[i]
-            guard let raw = buf.mData, buf.mNumberChannels > 0 else { continue }
-            let chans = Int(buf.mNumberChannels)
-            let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
-            let data = raw.assumingMemoryBound(to: Float.self)
-            // Bounded, not filtered. `for … where` still walks the whole
-            // range, so a buffer reporting an absurd channel count would spin
-            // billions of iterations on the realtime thread.
-            for c in 0..<min(chans, max(0, Self.maxChannels - inRefs.count)) {
-                inRefs.append((ptr: data + c, stride: chans, frames: frames))
+        if consumed > 1 {
+            if !perAppEngaged {
+                resetAppChainState()
+                perAppEngaged = true
             }
+            mixPerAppStreams(inList, consumed: consumed,
+                             blockFrames: Self.outputBlockFrames(outList),
+                             chains: chains)
+        } else {
+            perAppEngaged = false
+            collectInputChannels(inList, consumed: consumed)
         }
 
         // Muted: leave the zeroed output as-is. The tap keeps running so the
@@ -1081,6 +1247,103 @@ final class StageProcessor {
         // last input channel (mono tap → both earpieces) rather than staying
         // silent.
         copyOut(outList)
+    }
+
+    private func collectInputChannels(_ inList: UnsafeMutableAudioBufferListPointer,
+                                      consumed: Int) {
+        for i in (inList.count - consumed)..<inList.count {
+            let buf = inList[i]
+            guard let raw = buf.mData, buf.mNumberChannels > 0 else { continue }
+            let chans = Int(buf.mNumberChannels)
+            let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+            let data = raw.assumingMemoryBound(to: Float.self)
+            for c in 0..<min(chans, max(0, Self.maxChannels - inRefs.count)) {
+                inRefs.append((ptr: data + c, stride: chans, frames: frames))
+            }
+        }
+    }
+
+    private static func outputBlockFrames(
+        _ outList: UnsafeMutableAudioBufferListPointer) -> Int {
+        for buf in outList {
+            guard buf.mData != nil, buf.mNumberChannels > 0 else { continue }
+            let chans = Int(buf.mNumberChannels)
+            return Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+        }
+        return 0
+    }
+
+    private func mixPerAppStreams(_ inList: UnsafeMutableAudioBufferListPointer,
+                                  consumed: Int, blockFrames: Int,
+                                  chains: AppChainTable?) {
+        let frames = min(max(blockFrames, 0), Self.mixBusFrames)
+        guard frames > 0 else { return }
+        mixBus.update(repeating: 0, count: frames * 2)
+
+        let first = inList.count - consumed
+        let chained = min(consumed - 1, chains?.count ?? 0)
+        for stream in 0..<consumed {
+            let buf = inList[first + stream]
+            guard let raw = buf.mData, buf.mNumberChannels > 0,
+                  buf.mNumberChannels <= UInt32(Self.maxChannels) else { continue }
+            let chans = Int(buf.mNumberChannels)
+            let claimed = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+            let n = min(frames, claimed)
+            guard n > 0 else { continue }
+            let data = raw.assumingMemoryBound(to: Float.self)
+            let right = chans >= 2 ? 1 : 0
+            if stream < chained, let chains {
+                renderAppChain(chains, app: stream, source: data, stride: chans,
+                               right: right, frames: n)
+            } else {
+                for f in 0..<n {
+                    var l = data[f * chans]
+                    var r = data[f * chans + right]
+                    if !l.isFinite { l = 0 }
+                    if !r.isFinite { r = 0 }
+                    mixBus[f * 2] += l
+                    mixBus[f * 2 + 1] += r
+                }
+            }
+        }
+        inRefs.append((ptr: mixBus, stride: 2, frames: frames))
+        inRefs.append((ptr: mixBus + 1, stride: 2, frames: frames))
+    }
+
+    private func renderAppChain(_ chains: AppChainTable, app: Int,
+                                source: UnsafeMutablePointer<Float>, stride: Int,
+                                right: Int, frames: Int) {
+        let gain = Double(chains.preGain[app])
+        let sections = min(Int(chains.sections[app]), Self.maxAppSections)
+        let coeffs = chains.coeffs + app * Self.maxAppSections * 5
+        let z = appZ + app * Self.maxAppSections * 4
+        for f in 0..<frames {
+            var l = Double(source[f * stride])
+            var r = Double(source[f * stride + right])
+            if !l.isFinite { l = 0 }
+            if !r.isFinite { r = 0 }
+            l *= gain
+            r *= gain
+            for s in 0..<sections {
+                let c = coeffs + s * 5
+                let zs = z + s * 4
+                let yl = c[0] * l + zs[0]
+                zs[0] = c[1] * l - c[3] * yl + zs[1]
+                zs[1] = c[2] * l - c[4] * yl
+                l = yl
+                let yr = c[0] * r + zs[2]
+                zs[2] = c[1] * r - c[3] * yr + zs[3]
+                zs[3] = c[2] * r - c[4] * yr
+                r = yr
+            }
+            if !l.isFinite { l = 0 }
+            if !r.isFinite { r = 0 }
+            mixBus[f * 2] += Float(l)
+            mixBus[f * 2 + 1] += Float(r)
+        }
+        for i in 0..<(sections * 4) where !z[i].isFinite || abs(z[i]) < 1e-30 {
+            z[i] = 0
+        }
     }
 
     /// The Soundstage: mid/side width with a mid-only dialogue lift,

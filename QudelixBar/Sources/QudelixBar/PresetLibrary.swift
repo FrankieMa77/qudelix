@@ -100,14 +100,16 @@ struct PresetLibraryDocument: Equatable {
     var headphoneName: String
     var suggestedHeadphones: [String]
     var presets: [LibraryPreset]
+    var appAssignments: [AppAssignment]
 
     init(schemaVersion: Int = PresetLibraryFile.currentSchemaVersion,
          headphoneName: String = "", suggestedHeadphones: [String] = [],
-         presets: [LibraryPreset] = []) {
+         presets: [LibraryPreset] = [], appAssignments: [AppAssignment] = []) {
         self.schemaVersion = schemaVersion
         self.headphoneName = headphoneName
         self.suggestedHeadphones = suggestedHeadphones
         self.presets = presets
+        self.appAssignments = appAssignments
     }
 }
 
@@ -119,6 +121,7 @@ private struct FailableDecodable<T: Decodable>: Decodable {
 extension PresetLibraryDocument: Codable {
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, headphoneName, suggestedHeadphones, presets
+        case appAssignments
     }
 
     init(from decoder: Decoder) throws {
@@ -130,6 +133,9 @@ extension PresetLibraryDocument: Codable {
             let rows = (try? c.decode([FailableDecodable<LibraryPreset>].self,
                                       forKey: .presets)) ?? []
             presets = rows.compactMap(\.value)
+            let assigned = (try? c.decode([FailableDecodable<AppAssignment>].self,
+                                          forKey: .appAssignments)) ?? []
+            appAssignments = assigned.compactMap(\.value)
             return
         }
         let rows = try decoder.singleValueContainer()
@@ -138,6 +144,7 @@ extension PresetLibraryDocument: Codable {
         headphoneName = ""
         suggestedHeadphones = []
         presets = rows.compactMap(\.value)
+        appAssignments = []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -146,6 +153,7 @@ extension PresetLibraryDocument: Codable {
         try c.encode(headphoneName, forKey: .headphoneName)
         try c.encode(suggestedHeadphones, forKey: .suggestedHeadphones)
         try c.encode(presets, forKey: .presets)
+        try c.encode(appAssignments, forKey: .appAssignments)
     }
 }
 
@@ -208,7 +216,8 @@ enum PresetLibraryFile {
             headphoneName: QudelixController.displayName(document.headphoneName,
                                                          limit: maxNameLength),
             suggestedHeadphones: trimmedSuggestions(document.suggestedHeadphones),
-            presets: out)
+            presets: out,
+            appAssignments: AppAssignments.sanitized(document.appAssignments))
     }
 
     static func trimmedSuggestions(_ raw: [String]) -> [String] {
@@ -250,6 +259,7 @@ final class PresetLibrary: ObservableObject {
     }
 
     @Published private(set) var presets: [LibraryPreset] = []
+    @Published private(set) var appAssignments: [AppAssignment] = []
     @Published private(set) var headphoneName = ""
     @Published private(set) var suggestedHeadphones: [String] = []
     @Published private(set) var lastMessage: String?
@@ -272,8 +282,16 @@ final class PresetLibrary: ObservableObject {
             return
         }
         presets = document.presets
+        appAssignments = document.appAssignments
         headphoneName = document.headphoneName
         suggestedHeadphones = document.suggestedHeadphones
+    }
+
+    func setAppAssignments(_ next: [AppAssignment]) {
+        let clean = AppAssignments.sanitized(next)
+        guard clean != appAssignments else { return }
+        appAssignments = clean
+        persist()
     }
 
     var currentGroup: QxEqGroup? { currentCurve?()?.group }
@@ -500,14 +518,17 @@ final class PresetLibrary: ObservableObject {
         PresetLibraryFile.save(
             PresetLibraryDocument(headphoneName: headphoneName,
                                   suggestedHeadphones: suggestedHeadphones,
-                                  presets: presets),
+                                  presets: presets,
+                                  appAssignments: appAssignments),
             to: fileURL)
     }
 
     #if DEBUG
     func previewSet(presets: [LibraryPreset], headphoneName: String = "",
-                    suggestedHeadphones: [String] = [], message: String? = nil) {
+                    suggestedHeadphones: [String] = [], message: String? = nil,
+                    appAssignments: [AppAssignment] = []) {
         self.presets = presets
+        self.appAssignments = AppAssignments.sanitized(appAssignments)
         self.headphoneName = headphoneName
         self.suggestedHeadphones = suggestedHeadphones
         lastMessage = message
