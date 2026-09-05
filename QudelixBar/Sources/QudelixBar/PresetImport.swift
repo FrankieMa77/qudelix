@@ -125,11 +125,15 @@ enum PinnedHTTP {
                                             "api.github.com"]
 
     private final class HostPinnedRedirects: NSObject, URLSessionTaskDelegate {
+        let hosts: Set<String>
+
+        init(hosts: Set<String>) { self.hosts = hosts }
+
         func urlSession(_ session: URLSession, task: URLSessionTask,
                         willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest,
                         completionHandler: @escaping (URLRequest?) -> Void) {
-            guard let host = request.url?.host, PinnedHTTP.allowedHosts.contains(host),
+            guard let host = request.url?.host, hosts.contains(host),
                   request.url?.scheme == "https" else {
                 completionHandler(nil)
                 return
@@ -138,7 +142,7 @@ enum PinnedHTTP {
         }
     }
 
-    private static let redirectPolicy = HostPinnedRedirects()
+    private static let redirectPolicy = HostPinnedRedirects(hosts: allowedHosts)
 
     /// One shared session. A computed property would build a fresh `URLSession`
     /// per fetch, and a session retains itself until it is invalidated — which
@@ -151,9 +155,10 @@ enum PinnedHTTP {
         return URLSession(configuration: cfg, delegate: redirectPolicy, delegateQueue: nil)
     }()
 
-    /// Build a request only for a host on the list, over TLS.
-    static func request(_ url: URL, accept: String) throws -> URLRequest {
-        guard url.scheme == "https", let host = url.host, allowedHosts.contains(host) else {
+    static func request(_ url: URL, accept: String,
+                        allowing hosts: Set<String>) throws -> URLRequest {
+        guard url.scheme == "https", let host = url.host,
+              hosts.contains(host), allowedHosts.contains(host) else {
             throw URLError(.badURL)
         }
         var req = URLRequest(url: url)
@@ -170,8 +175,14 @@ enum PinnedHTTP {
     /// size check on its result only rejects a body already sitting in memory.
     /// Streaming lets us stop reading — and cancel — the moment a response runs
     /// past what the payload could plausibly be.
-    static func fetch(_ request: URLRequest, limit: Int) async throws -> Data {
-        let (stream, response) = try await session.bytes(for: request)
+    static func fetch(_ request: URLRequest, limit: Int,
+                      allowing hosts: Set<String>) async throws -> Data {
+        guard request.url?.scheme == "https", let host = request.url?.host,
+              hosts.contains(host), allowedHosts.contains(host) else {
+            throw URLError(.badURL)
+        }
+        let policy = HostPinnedRedirects(hosts: hosts)
+        let (stream, response) = try await session.bytes(for: request, delegate: policy)
         guard let http = response as? HTTPURLResponse else {
             stream.task.cancel()
             throw URLError(.badServerResponse)
@@ -287,7 +298,8 @@ final class AutoEqIndex: ObservableObject {
     nonisolated static let host = "raw.githubusercontent.com"
 
     nonisolated static func fetch(_ url: URL, limit: Int) async throws -> Data {
-        try await PinnedHTTP.fetch(PinnedHTTP.request(url, accept: "text/plain"), limit: limit)
+        try await PinnedHTTP.fetch(PinnedHTTP.request(url, accept: "text/plain", allowing: [host]),
+                                   limit: limit, allowing: [host])
     }
 
     #if DEBUG
@@ -404,7 +416,8 @@ extension AutoEqIndex: CorrectionSource {
 
     func correction(for candidate: CorrectionCandidate,
                     shapedFor limits: DeviceEQLimits,
-                    options: CorrectionOptions) async throws -> CorrectionResult {
+                    options rawOptions: CorrectionOptions) async throws -> CorrectionResult {
+        let options = rawOptions.quantized()
         let entry = AutoEqEntry(title: candidate.title, source: candidate.source,
                                 path: candidate.token)
         let file: ParametricEQFile

@@ -61,6 +61,7 @@ enum UpdateCheck {
         case failed(String)
     }
 
+    static let host = "api.github.com"
     static let releasesURL = URL(string: "https://github.com/FrankieMa77/qudelix/releases/latest")
     private static let latestAPI =
         URL(string: "https://api.github.com/repos/FrankieMa77/qudelix/releases/latest")
@@ -74,15 +75,16 @@ enum UpdateCheck {
         guard let running = AppVersion(current) else { return .unreadable }
         guard let url = latestAPI else { return .failed("bad URL") }
         do {
-            let request = try PinnedHTTP.request(url, accept: "application/vnd.github+json")
-            let data = try await PinnedHTTP.fetch(request, limit: maxBytes)
+            let request = try PinnedHTTP.request(url, accept: "application/vnd.github+json",
+                                                 allowing: [host])
+            let data = try await PinnedHTTP.fetch(request, limit: maxBytes, allowing: [host])
             guard let tag = try? JSONDecoder().decode(LatestRelease.self, from: data).tag_name,
                   let latest = AppVersion(tag) else { return .unreadable }
             return latest > running ? .available(latest)
                                    : .upToDate(latest: latest, running: running)
         } catch {
             return .failed(AutoEqService.describe(
-                AutoEqService.mapped(error, host: "api.github.com")))
+                AutoEqService.mapped(error, host: host)))
         }
     }
 

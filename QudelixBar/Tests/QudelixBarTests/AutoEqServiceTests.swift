@@ -141,6 +141,44 @@ final class AutoEqServiceTests: XCTestCase {
         XCTAssertEqual(tuned["tilt"] as? Double, -0.5)
     }
 
+    func testPersonalizationSnapsToTheStepsTheSlidersTake() {
+        let snapped = CorrectionOptions(bassBoostGain: 3.24, tilt: -0.223).quantized()
+        XCTAssertEqual(snapped.bassBoostGain, 3.0)
+        XCTAssertEqual(snapped.tilt, -0.2)
+    }
+
+    func testPersonalizationIsClampedAndNonsenseReadsAsNone() {
+        let wild = CorrectionOptions(bassBoostGain: 400, tilt: -99).quantized()
+        XCTAssertEqual(wild.bassBoostGain, CorrectionOptions.bassRange.upperBound)
+        XCTAssertEqual(wild.tilt, CorrectionOptions.tiltRange.lowerBound)
+
+        let nonsense = CorrectionOptions(bassBoostGain: .nan, tilt: .infinity,
+                                         maxCorrectionHz: .nan).quantized()
+        XCTAssertEqual(nonsense.bassBoostGain, 0)
+        XCTAssertEqual(nonsense.tilt, 0)
+        XCTAssertNil(nonsense.maxCorrectionHz)
+    }
+
+    func testQuantizingLeavesTheDefaultsAtZeroAndOffTheRequest() throws {
+        let neutral = CorrectionOptions().quantized()
+        XCTAssertEqual(neutral.bassBoostGain, 0)
+        XCTAssertEqual(neutral.tilt, 0)
+        let root = try json(body(bandCount: 10, options: neutral))
+        XCTAssertNil(root["bass_boost_gain"])
+        XCTAssertNil(root["tilt"])
+    }
+
+    func testTheCeilingIsKeyedInWholeHz() {
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+        func key(_ hz: Double) -> String {
+            AutoEqService.cacheKey(model: "m", source: "s", rig: "r", target: "t",
+                                   limits: limits,
+                                   options: CorrectionOptions(maxCorrectionHz: hz))
+        }
+        XCTAssertEqual(key(16000.2), key(16000.4))
+        XCTAssertNotEqual(key(16000), key(15000))
+    }
+
     // MARK: - Frequency ceiling
 
     /// The ceiling is a request parameter: the optimizer fits inside it and
@@ -612,17 +650,35 @@ final class AutoEqServiceTests: XCTestCase {
 
     // MARK: - Catalogue and target choice
 
-    func testParseEntriesKeepsRigsVerbatimAndToleratesNull() throws {
+    func testParseEntriesKeepsRigsVerbatim() throws {
         let data = """
-        {"Sennheiser HD 800":[{"form":"over-ear","rig":"GRAS 45BC ","source":"oratory1990"}],
-         "Some IEM":[{"form":"in-ear","rig":null,"source":"crinacle"}]}
+        {"Sennheiser HD 800":[{"form":"over-ear","rig":"GRAS 45BC ","source":"oratory1990"}]}
         """.data(using: .utf8)!
         let models = try AutoEqService.parseEntries(data)
-        XCTAssertEqual(models.count, 2)
         let hd800 = try XCTUnwrap(models.first { $0.name == "Sennheiser HD 800" })
         XCTAssertEqual(hd800.measurements.first?.rig, "GRAS 45BC ")
-        let iem = try XCTUnwrap(models.first { $0.name == "Some IEM" })
-        XCTAssertNil(iem.measurements.first?.rig)
+    }
+
+    func testMeasurementsWithoutARigAreNotOffered() throws {
+        let data = """
+        {"Sennheiser HD 800":[{"form":"over-ear","rig":"GRAS 45BC ","source":"oratory1990"},
+                              {"form":"over-ear","rig":null,"source":"someone"}],
+         "Rigless Only":[{"form":"in-ear","rig":null,"source":"crinacle"},
+                         {"form":"in-ear","rig":"","source":"crinacle"}]}
+        """.data(using: .utf8)!
+        let models = try AutoEqService.parseEntries(data)
+        XCTAssertEqual(models.map(\.name), ["Sennheiser HD 800"])
+        XCTAssertEqual(models.first?.measurements.map(\.rig), ["GRAS 45BC "])
+    }
+
+    func testTargetReferencesMayStillOmitTheirRig() throws {
+        let data = """
+        [{"label":"Harman over-ear 2018","recommended":[],
+          "compatible":[{"source":"oratory1990","form":"over-ear"}]}]
+        """.data(using: .utf8)!
+        let targets = try AutoEqService.parseTargets(data)
+        XCTAssertEqual(targets.first?.compatible.count, 1)
+        XCTAssertNil(targets.first?.compatible.first?.rig)
     }
 
     func testFarMoreFiltersThanTheModeHoldsAreCappedAndCounted() throws {
@@ -640,6 +696,75 @@ final class AutoEqServiceTests: XCTestCase {
                                                                limits: limits)
         XCTAssertEqual(file.bands.count, 20)
         XCTAssertFalse(warnings.contains { $0.contains("beyond the") }, "\(warnings)")
+    }
+
+    func testFilterTypesAreMatchedWithoutRegardToCase() throws {
+        let data = """
+        {"parametric_eq":{"filters":[
+          {"type":"low_shelf","fc":105.0,"q":0.7,"gain":5.0},
+          {"type":"Peaking","fc":1000.0,"q":1.0,"gain":-3.0},
+          {"type":"HIGH_SHELF","fc":10000.0,"q":0.7,"gain":-4.0}],"preamp":-2.0}}
+        """.data(using: .utf8)!
+        let (file, warnings, _) = try AutoEqService.correction(
+            from: data, limits: .qudelix(bandCount: 10))
+        XCTAssertEqual(file.bands.map(\.filter), [.lowShelf, .peak, .highShelf])
+        XCTAssertFalse(warnings.contains { $0.contains("unrecognised") }, "\(warnings)")
+    }
+
+    func testAFitThatRoundsAwayToNothingIsAFailureNotAFlatCurve() {
+        let data = """
+        {"parametric_eq":{"filters":[
+          {"type":"PEAKING","fc":1000.0,"q":1.0,"gain":0.02},
+          {"type":"PEAKING","fc":4000.0,"q":1.0,"gain":-0.01}],"preamp":0.0}}
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try AutoEqService.correction(from: data,
+                                                          limits: .qudelix(bandCount: 10))) {
+            guard case CorrectionError.nothingToDo = $0 else {
+                return XCTFail("expected .nothingToDo, got \($0)")
+            }
+        }
+    }
+
+    func testAPassFilterCountsAsSomethingToDo() {
+        XCTAssertTrue(AutoEqService.changesAnything(
+            [QxEqBandValue(filter: .lpf, freq: 8000, gain: 0, q: 0.7)]))
+        XCTAssertFalse(AutoEqService.changesAnything(
+            [QxEqBandValue(filter: .bypass, freq: 1000, gain: 9, q: 1)]))
+    }
+
+    func testAFitMissingARequestedShelfSaysSo() throws {
+        let data = """
+        {"parametric_eq":{"filters":[
+          {"type":"PEAKING","fc":1000.0,"q":1.0,"gain":4.0}],"preamp":-2.0}}
+        """.data(using: .utf8)!
+        let (_, warnings, _) = try AutoEqService.correction(from: data,
+                                                            limits: .qudelix(bandCount: 10))
+        XCTAssertTrue(warnings.contains { $0.contains("no low shelf") }, "\(warnings)")
+        XCTAssertTrue(warnings.contains { $0.contains("no high shelf") }, "\(warnings)")
+    }
+
+    func testATwoBandFitIsNotToldItIsMissingShelves() throws {
+        let data = """
+        {"parametric_eq":{"filters":[
+          {"type":"PEAKING","fc":1000.0,"q":1.0,"gain":4.0}],"preamp":0.0}}
+        """.data(using: .utf8)!
+        let (_, warnings, _) = try AutoEqService.correction(from: data,
+                                                            limits: .qudelix(bandCount: 2))
+        XCTAssertFalse(warnings.contains { $0.contains("shelf") }, "\(warnings)")
+    }
+
+    func testACatalogueReloadKeepsAHandPickedTargetButNotADefault() {
+        let loaded = [AutoEqTarget(label: "Harman over-ear 2018",
+                                   recommended: [], compatible: [])]
+        XCTAssertEqual(AutoEqService.targetSelection("Vanished target",
+                                                     pickedByUser: true, in: loaded),
+                       "Vanished target")
+        XCTAssertNil(AutoEqService.targetSelection("Vanished target",
+                                                   pickedByUser: false, in: loaded))
+        XCTAssertEqual(AutoEqService.targetSelection("Harman over-ear 2018",
+                                                     pickedByUser: false, in: loaded),
+                       "Harman over-ear 2018")
+        XCTAssertNil(AutoEqService.targetSelection(nil, pickedByUser: true, in: loaded))
     }
 
     func testServerDetailIsSanitizedBeforeItIsShown() {
@@ -899,7 +1024,7 @@ final class AutoEqServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testTransientFailureFallsBackToTheLastGoodCorrection() async throws {
+    func testARepeatedShapeIsServedFromTheCacheWithoutASecondRoundTrip() async throws {
         let stub = StubTransport()
         stub.enqueue(.success(fixture(filterCount: 10)))
         stub.enqueue(.failure(URLError(.timedOut)))
@@ -913,15 +1038,52 @@ final class AutoEqServiceTests: XCTestCase {
 
         let first = try await service.correction(for: candidate, shapedFor: limits,
                                                  options: options)
-        XCTAssertTrue(first.warnings.isEmpty)
         XCTAssertTrue(first.provenance.contains("Harman over-ear 2018"))
         XCTAssertTrue(first.provenance.contains("10 bands"))
 
         let second = try await service.correction(for: candidate, shapedFor: limits,
                                                   options: options)
         XCTAssertEqual(second.file.bands, first.file.bands)
-        XCTAssertTrue(second.warnings.contains { $0.contains("reused the last correction") },
-                      "\(second.warnings)")
+        XCTAssertEqual(stub.requests.count, 1, "the second apply should not have gone out")
+    }
+
+    @MainActor
+    func testACachedFitCarriesItsWarningsAndItsScore() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10, preamp: -18)))
+        let service = AutoEqService(transport: stub)
+
+        let candidate = CorrectionCandidate(title: "Sennheiser HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let options = CorrectionOptions(target: "Harman over-ear 2018")
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+
+        let first = try await service.correction(for: candidate, shapedFor: limits,
+                                                 options: options)
+        XCTAssertFalse(first.warnings.isEmpty, "the fixture's pre-gain is beyond the device")
+
+        let second = try await service.correction(for: candidate, shapedFor: limits,
+                                                  options: options)
+        XCTAssertEqual(second.warnings, first.warnings)
+        XCTAssertEqual(second.preference?.score, first.preference?.score)
+    }
+
+    @MainActor
+    func testSliderPositionsWithinAStepAreTheSameRequest() async throws {
+        let stub = StubTransport()
+        stub.enqueue(.success(fixture(filterCount: 10)))
+        let service = AutoEqService(transport: stub)
+
+        let candidate = CorrectionCandidate(title: "HD 800", source: "oratory1990",
+                                            form: "over-ear", rig: "GRAS 45BC ", token: "")
+        let limits = DeviceEQLimits.qudelix(bandCount: 10)
+        for bass in [3.0, 3.04, 2.98, 3.2] {
+            _ = try await service.correction(
+                for: candidate, shapedFor: limits,
+                options: CorrectionOptions(bassBoostGain: bass,
+                                           target: "Harman over-ear 2018"))
+        }
+        XCTAssertEqual(stub.requests.count, 1)
     }
 
     @MainActor
@@ -952,10 +1114,10 @@ final class AutoEqServiceTests: XCTestCase {
 
     // MARK: - The fallback cache
 
-    private func marked(_ preamp: Double) -> ParametricEQFile {
+    private func marked(_ preamp: Double) -> CachedCorrection {
         var file = ParametricEQFile()
         file.preamp = preamp
-        return file
+        return CachedCorrection(file: file)
     }
 
     /// Two of the things in a cache key are continuous sliders, so distinct
@@ -972,7 +1134,7 @@ final class AutoEqServiceTests: XCTestCase {
             XCTAssertNil(cache.value(for: "key\(i)"), "key\(i) should be gone")
         }
         let newest = LastGoodCorrections.capacity + overflow - 1
-        XCTAssertEqual(cache.value(for: "key\(newest)")?.preamp, Double(newest))
+        XCTAssertEqual(cache.value(for: "key\(newest)")?.file.preamp, Double(newest))
     }
 
     /// Least recently *used*, not oldest: the shape someone keeps coming back
@@ -986,7 +1148,7 @@ final class AutoEqServiceTests: XCTestCase {
         cache.store(marked(-1), for: "newcomer")
 
         XCTAssertNil(cache.value(for: "key1"), "the oldest untouched entry is the one to go")
-        XCTAssertEqual(cache.value(for: "key0")?.preamp, 0, "reading key0 renewed it")
+        XCTAssertEqual(cache.value(for: "key0")?.file.preamp, 0, "reading key0 renewed it")
         XCTAssertEqual(cache.count, LastGoodCorrections.capacity)
     }
 
@@ -996,7 +1158,7 @@ final class AutoEqServiceTests: XCTestCase {
         cache.store(marked(1), for: "same")
         cache.store(marked(2), for: "same")
         XCTAssertEqual(cache.count, 1)
-        XCTAssertEqual(cache.value(for: "same")?.preamp, 2)
+        XCTAssertEqual(cache.value(for: "same")?.file.preamp, 2)
     }
 
     /// The service holds that same bounded cache, so a fit far enough back is
@@ -1016,13 +1178,16 @@ final class AutoEqServiceTests: XCTestCase {
         // collection used to grow without end.
         for i in 0...LastGoodCorrections.capacity {
             stub.enqueue(.success(fixture(filterCount: 10)))
-            _ = try await service.correction(for: candidate, shapedFor: limits,
-                                             options: options(bass: Double(i)))
+            _ = try await service.correction(
+                for: candidate, shapedFor: limits,
+                options: options(bass: CorrectionOptions.bassRange.lowerBound
+                                     + Double(i) * CorrectionOptions.bassStep))
         }
         stub.enqueue(.failure(URLError(.timedOut)))
         do {
-            _ = try await service.correction(for: candidate, shapedFor: limits,
-                                             options: options(bass: 0))
+            _ = try await service.correction(
+                for: candidate, shapedFor: limits,
+                options: options(bass: CorrectionOptions.bassRange.lowerBound))
             XCTFail("the first fit should have been evicted, not served back")
         } catch {
             guard case CorrectionError.offline = error else {
