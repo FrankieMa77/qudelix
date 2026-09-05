@@ -37,9 +37,8 @@ enum SessionInterruption: Equatable {
 /// - Binary search per tilt: present two curves either side of the current
 ///   centre, move toward the winner, halve the step. Four rounds takes ±6 dB
 ///   down to ±0.75 dB.
-/// - Every candidate is loudness-matched, and pre-gain is fixed for the whole
-///   session. Without that the listener simply prefers whichever is louder and
-///   the result is meaningless.
+/// - Every candidate is loudness-matched. Without that the listener simply
+///   prefers whichever is louder and the result is meaningless.
 /// - Which side carries the higher setting is randomised per trial, so the
 ///   listener cannot learn the pattern.
 /// - One trial per round presents the same curve twice. Naming a winner there is
@@ -107,7 +106,11 @@ final class ABTuner: ObservableObject {
     private var queue: [String?] = []          // nil = consistency check
     private var curveA: [QxEqBandValue] = []
     private var curveB: [QxEqBandValue] = []
+    private var preGainA: Double = 0
+    private var preGainB: Double = 0
+    private var devicePreGain: Double = 0
     private var highIsA = true
+    private var chance: Chance = .real
 
     // MARK: - Preconditions
 
@@ -195,10 +198,11 @@ final class ABTuner: ObservableObject {
         return EQHeadroom.clamp(min(userPreGain, -max(0, peak)))
     }
 
-    func start(_ c: QudelixController) {
+    func start(_ c: QudelixController, chance: Chance = .real) {
         guard Self.blocker(c) == nil, phase == .idle else { return }
 
         note = nil
+        self.chance = chance
         // One step for the whole session, taken before anything moves.
         c.beginUndoStep("by-ear tuning")
         baseline = c.bands
@@ -210,9 +214,6 @@ final class ABTuner: ObservableObject {
         inaudible = []
         indifferent = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, 0) })
 
-        // One fixed pre-gain for the whole session, low enough that the loudest
-        // tilt cannot clip. Fixed because a pre-gain that moved between options
-        // would be a loudness cue, and loudness beats timbre every time.
         sessionPreGain = Self.safePreGain(for: baseline,
                                           notAbove: baselinePreGain,
                                           plusBoost: Self.tiltCap)
@@ -227,12 +228,12 @@ final class ABTuner: ObservableObject {
         queue = []
         for _ in 1...Self.rounds {
             var block: [String?] = Self.macros.map { $0.name }
-            block.insert(nil, at: Int.random(in: 0...block.count))
+            block.insert(nil, at: chance.index(block.count))
             queue.append(contentsOf: block)
         }
         trialsTotal = queue.count
 
-        c.setPreGain(sessionPreGain, persistToFlash: false, recordUndo: false)
+        devicePreGain = baselinePreGain
         c.setByEarSessionActive(true)
         phase = .running
         nextTrial(c)
@@ -253,7 +254,7 @@ final class ABTuner: ObservableObject {
     func toggleSide(_ c: QudelixController) {
         guard phase == .running, stillValid(c) else { return }
         showingA.toggle()
-        apply(showingA ? curveA : curveB, to: c)
+        pushSide(c)
     }
 
     /// "They sound the same." Halves the step without moving the centre, so
@@ -323,7 +324,7 @@ final class ABTuner: ObservableObject {
             highV[name] = min(centre + step / 2, m.range)
             let lowCurve = curve(lowV)
             let highCurve = curve(highV)
-            highIsA = Bool.random()
+            highIsA = chance.coin()
             curveA = highIsA ? highCurve : lowCurve
             curveB = highIsA ? lowCurve : highCurve
         } else {
@@ -334,11 +335,14 @@ final class ABTuner: ObservableObject {
             currentDetail = "these two may be identical"
             let same = curve(values)
             curveA = same; curveB = same
-            highIsA = Bool.random()
+            highIsA = chance.coin()
         }
 
+        let matched = LevelMatch.matchedPreGains(curveA, curveB, base: sessionPreGain)
+        preGainA = matched.a
+        preGainB = matched.b
         showingA = true
-        apply(curveA, to: c)
+        pushSide(c)
     }
 
     private func finish(_ c: QudelixController) {
@@ -351,7 +355,13 @@ final class ABTuner: ObservableObject {
             inaudible.insert(m.name)
         }
         resultBands = curve(values)
-        apply(resultBands, to: c)
+        curveA = resultBands
+        curveB = resultBands
+        let matched = LevelMatch.matchedPreGains(resultBands, baseline, base: sessionPreGain)
+        preGainA = matched.a
+        preGainB = matched.a
+        showingA = true
+        pushSide(c)
         phase = .finished
     }
 
@@ -397,7 +407,7 @@ final class ABTuner: ObservableObject {
     /// flip, so it does not need many samples to mean something — but anyone can
     /// press the wrong button once in twenty trials, and one observation cannot
     /// separate that slip from a habit. Three can. The session schedules four.
-    static let minChecksToJudge = 3
+    nonisolated static let minChecksToJudge = 3
 
     /// True when the listener repeatedly named a winner between two identical
     /// curves.
@@ -416,7 +426,7 @@ final class ABTuner: ObservableObject {
         Self.consistencyPoor(guesses: sameGuesses, of: sameTrials)
     }
 
-    static func consistencyPoor(guesses: Int, of trials: Int) -> Bool {
+    nonisolated static func consistencyPoor(guesses: Int, of trials: Int) -> Bool {
         trials >= minChecksToJudge && guesses * 2 > trials
     }
 
@@ -436,8 +446,7 @@ final class ABTuner: ObservableObject {
     }
 
     private func restoreBaseline(_ c: QudelixController) {
-        c.setPreGain(baselinePreGain, persistToFlash: false, recordUndo: false)
-        apply(baseline, to: c)
+        push(baseline, preGain: baselinePreGain, to: c)
     }
 
     // MARK: - Curve building
@@ -481,7 +490,6 @@ final class ABTuner: ObservableObject {
                 tilt[i] += amount * Self.weight(m.shape, atHz: baseline[i].freq)
             }
         }
-        // Remove the average so a tilt never changes overall loudness.
         let mean = eligible.map { tilt[$0] }.reduce(0, +) / Double(eligible.count)
         var out = baseline
         for i in eligible {
@@ -503,5 +511,27 @@ final class ABTuner: ObservableObject {
         for (i, b) in bands.enumerated() where i < c.bandCount {
             c.updateBand(i, b, persistToFlash: false, recordUndo: false)
         }
+    }
+
+    private func pushSide(_ c: QudelixController) {
+        push(showingA ? curveA : curveB,
+             preGain: showingA ? preGainA : preGainB, to: c)
+    }
+
+    private func push(_ bands: [QxEqBandValue], preGain: Double,
+                      to c: QudelixController) {
+        if preGain < devicePreGain {
+            writePreGain(preGain, to: c)
+            apply(bands, to: c)
+        } else {
+            apply(bands, to: c)
+            writePreGain(preGain, to: c)
+        }
+    }
+
+    private func writePreGain(_ db: Double, to c: QudelixController) {
+        guard abs(db - devicePreGain) >= 0.05 else { return }
+        c.setPreGain(db, persistToFlash: false, recordUndo: false)
+        devicePreGain = db
     }
 }

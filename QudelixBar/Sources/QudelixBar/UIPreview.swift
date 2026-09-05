@@ -46,13 +46,14 @@ enum UIPreview {
 
         for (name, scheme) in [("light", NSAppearance(named: .aqua)),
                                ("dark", NSAppearance(named: .darkAqua))] {
-            for (pane, controller, stage) in mocks() {
+            for (pane, controller, stage, blind) in mocks() {
                 let root = PopoverView()
                     .environmentObject(controller)
                     .environmentObject(stage)
                     .environmentObject(ProfileRules())
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
+                    .environmentObject(blind)
                     .frame(width: 400)
                     .background(VisualEffectBackground())
 
@@ -87,17 +88,18 @@ enum UIPreview {
                     switch pane {
                     case "eq", "b20":
                         reportPaneFit(pane, EqEditorView(editingBand: .constant(nil)),
-                                      controller, stage)
+                                      controller, stage, blind)
                     case "presets":
-                        reportPaneFit(pane, PresetsView(), controller, stage)
+                        reportPaneFit(pane, PresetsView(), controller, stage, blind)
                     case "import":
-                        reportPaneFit(pane, ImportView(), controller, stage)
-                    case "tune":
-                        reportPaneFit(pane, TuneView(), controller, stage)
+                        reportPaneFit(pane, ImportView(), controller, stage, blind)
+                    case "tune", "shape", "shape-quiet", "shape-refused",
+                         "check", "check-none":
+                        reportPaneFit(pane, TuneView(), controller, stage, blind)
                     case "stage":
-                        reportPaneFit(pane, StageView(), controller, stage)
+                        reportPaneFit(pane, StageView(), controller, stage, blind)
                     case "level":
-                        reportPaneFit(pane, LevelView(), controller, stage)
+                        reportPaneFit(pane, LevelView(), controller, stage, blind)
                     default: break
                     }
                 }
@@ -110,11 +112,15 @@ enum UIPreview {
     @MainActor
     private static func reportPaneFit(_ pane: String, _ content: some View,
                                       _ controller: QudelixController,
-                                      _ stage: StageState) {
+                                      _ stage: StageState,
+                                      _ blind: BlindTuner) {
         let root = content
             .environmentObject(controller)
             .environmentObject(stage)
             .environmentObject(ProfileRules())
+            .environmentObject(ABTuner())
+            .environmentObject(ToneTester())
+            .environmentObject(blind)
             .frame(width: 372)
         let host = NSHostingView(rootView: AnyView(root))
         host.layoutSubtreeIfNeeded()
@@ -129,13 +135,14 @@ enum UIPreview {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         for (name, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
-            for (pane, controller, stage) in mocks() {
+            for (pane, controller, stage, blind) in mocks() {
                 let view = PopoverView()
                     .environmentObject(controller)
                     .environmentObject(stage)
                     .environmentObject(ProfileRules())
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
+                    .environmentObject(blind)
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 
@@ -152,17 +159,41 @@ enum UIPreview {
     }
 
     @MainActor
-    private static func mocks() -> [(String, QudelixController, StageState)] {
-        [("eq", make(.equalizer), stageMock()),
-         ("presets", make(.presets), stageMock()),
-         ("import", make(.importing), stageMock()),
-         ("tune", make(.tune), stageMock()),
-         ("stage", make(.stage), stageMock(running: true)),
-         ("level", make(.level), levelMock()),
-         ("disconnected", disconnected(), stageMock(running: true)),
-         ("unsupported", unsupported(), stageMock()),
-         ("b20", twentyBand(), stageMock()),
-         ("lowbatt", lowBattery(), stageMock())]
+    private static func mocks() -> [(String, QudelixController, StageState, BlindTuner)] {
+        [("eq", make(.equalizer), stageMock(), BlindTuner()),
+         ("presets", make(.presets), stageMock(), BlindTuner()),
+         ("import", make(.importing), stageMock(), BlindTuner()),
+         ("tune", make(.tune), stageMock(), BlindTuner()),
+         ("shape", make(.tune), stageMock(), shapeMock()),
+         ("shape-quiet", make(.tune), stageMock(), shapeQuietMock()),
+         ("shape-refused", make(.tune), stageMock(), shapeRefusedMock()),
+         ("check", make(.tune), stageMock(),
+          BlindTuner.previewBypass(eq: 4, flat: 1, same: 0)),
+         ("check-none", make(.tune), stageMock(),
+          BlindTuner.previewBypass(eq: 2, flat: 2, same: 1)),
+         ("stage", make(.stage), stageMock(running: true), BlindTuner()),
+         ("level", make(.level), levelMock(), BlindTuner()),
+         ("disconnected", disconnected(), stageMock(running: true), BlindTuner()),
+         ("unsupported", unsupported(), stageMock(), BlindTuner()),
+         ("b20", twentyBand(), stageMock(), BlindTuner()),
+         ("lowbatt", lowBattery(), stageMock(), BlindTuner())]
+    }
+
+    @MainActor
+    private static func shapeMock() -> BlindTuner {
+        BlindTuner.previewShape { trial in
+            trial.axis == nil ? .same : (trial.highIsA ? .preferA : .preferB)
+        }
+    }
+
+    @MainActor
+    private static func shapeQuietMock() -> BlindTuner {
+        BlindTuner.previewShape { _ in .same }
+    }
+
+    @MainActor
+    private static func shapeRefusedMock() -> BlindTuner {
+        BlindTuner.previewShape { _ in .preferA }
     }
 
     /// Header treatment at a very low battery: red glyph, warning in the
