@@ -51,6 +51,8 @@ enum UIPreview {
                     .environmentObject(controller)
                     .environmentObject(stage)
                     .environmentObject(ProfileRules())
+                    .environmentObject(ABTuner())
+                    .environmentObject(ToneTester())
                     .frame(width: 400)
                     .background(VisualEffectBackground())
 
@@ -132,6 +134,8 @@ enum UIPreview {
                     .environmentObject(controller)
                     .environmentObject(stage)
                     .environmentObject(ProfileRules())
+                    .environmentObject(ABTuner())
+                    .environmentObject(ToneTester())
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 

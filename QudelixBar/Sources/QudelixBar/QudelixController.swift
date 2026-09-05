@@ -191,6 +191,10 @@ final class QudelixController: ObservableObject {
     @Published private(set) var eqGroup: QxEqGroup = .user
     var bandCount: Int { eqGroup.bandCount }
 
+    @Published private(set) var byEarSessionActive = false
+
+    func setByEarSessionActive(_ active: Bool) { byEarSessionActive = active }
+
     private let hid = HIDTransport()
     private let ble = BLETransport()
 
@@ -1408,12 +1412,12 @@ final class QudelixController: ObservableObject {
     /// wins for the echo window; the next unsolicited report rules again.
     private var eqEnableEditUntil = Date.distantPast
 
-    func setEqEnabled(_ on: Bool) {
+    func setEqEnabled(_ on: Bool, persistToFlash: Bool = true) {
         guard canWriteEq else { return }
         eqEnabled = on
         eqEnableEditUntil = Date().addingTimeInterval(1.5)
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
-        eqEdited()
+        eqEdited(persistToFlash: persistToFlash)
     }
 
     /// What the last setEqMode click asked for, while the device has not yet
@@ -1563,9 +1567,9 @@ final class QudelixController: ObservableObject {
         }
     }
 
-    func setPreGain(_ db: Double, persistToFlash: Bool = true) {
+    func setPreGain(_ db: Double, persistToFlash: Bool = true, recordUndo: Bool = true) {
         guard canWriteEq, db.isFinite else { return }
-        checkpoint("pre-gain")
+        if recordUndo { checkpoint("pre-gain") }
         let clamped = EQHeadroom.clamp(db)
         preGain = clamped
         sendPreGain(Int((clamped * QxScale.gain).rounded()))
