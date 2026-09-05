@@ -61,6 +61,12 @@ struct PopoverView: View {
                     pane = p
                 }
 
+            if micGuard.hijack != nil {
+                micGuardBanner
+                    .padding(.horizontal, 14)
+                    .padding(.top, 14)
+            }
+
             if case .unsupported(let title, let detail) = controller.compatibility, connected {
                 // The notice explains what this app will not do with *this*
                 // device — but Stage and Level run on the Mac and have nothing
@@ -73,7 +79,6 @@ struct PopoverView: View {
                         .frame(maxWidth: .infinity)
                     Divider()
                     VStack(spacing: 14) {
-                        micGuardBanner
                         Picker("", selection: $pane) {
                             ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
                                 Label(p.rawValue, systemImage: p.icon).tag(p)
@@ -123,8 +128,6 @@ struct PopoverView: View {
 
                     UsbAudioRow()
 
-                    micGuardBanner
-
                     Picker("", selection: $pane) {
                         ForEach(Pane.allCases) { p in
                             Label(p.rawValue, systemImage: p.icon).tag(p)
@@ -159,7 +162,6 @@ struct PopoverView: View {
                     // need the device present to be switched off.
                     Divider()
                     VStack(spacing: 14) {
-                        micGuardBanner
                         Picker("", selection: $pane) {
                             ForEach(Pane.allCases.filter { !$0.needsDevice }) { p in
                                 Label(p.rawValue, systemImage: p.icon).tag(p)
