@@ -29,6 +29,15 @@ fi
 
 ./build-app.sh --universal
 
+ARCHS="$(lipo -archs ../Qudelix.app/Contents/MacOS/QudelixBar)"
+for want in arm64 x86_64; do
+  case " $ARCHS " in
+    *" $want "*) ;;
+    *) echo "refusing to package: $want missing from the binary (has: $ARCHS)" >&2
+       exit 1 ;;
+  esac
+done
+
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
