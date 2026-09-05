@@ -24,6 +24,10 @@ final class StageState: ObservableObject {
     @Published private(set) var stage = StageSettings()
     @Published private(set) var levelTracking = false
 
+    @Published private(set) var callActive = false
+
+    var deviceCallState: (() -> (activeCall: Bool?, inputSource: String?)?)?
+
     // Stream-quality detection: spectral analysis of what the tap hears.
     @Published private(set) var detectQuality = true
     @Published private(set) var autoRate = true
@@ -128,14 +132,17 @@ final class StageState: ObservableObject {
         guard !started else { return }
         started = true
         watcher.onChange = { [weak self] in self?.outputsChanged() }
-        // The output's sample rate changed under a running engine: every
-        // coefficient is designed for the old rate, so restart on fresh
-        // device info. The refresh re-enumerates and lands in
-        // outputsChanged → reconcile, which brings the engine back up.
         engine.onDeviceConfigurationChange = { [weak self] in
-            guard let self, self.engine.isRunning else { return }
-            self.engine.stop()
-            self.watcher.refreshNow()
+            guard let self else { return }
+            self.refreshCallState()
+            if self.engine.isRunning, !self.callActive,
+               let device = self.watcher.defaultOutput,
+               AudioOutputs.currentNominalRate(device.id) != self.engine.runningSampleRate {
+                self.engine.stop()
+                self.watcher.refreshNow()
+                return
+            }
+            self.reconcile()
         }
         watcher.start()
         outputsChanged()
@@ -173,13 +180,7 @@ final class StageState: ObservableObject {
 
     func setDetectQuality(_ on: Bool) {
         detectQuality = on
-        if !on {
-            qualityVerdict = nil
-            verdictDeviceUID = nil
-            rawVerdict = nil
-            rawVerdictStreak = 0
-            verdictStableSince = nil
-        }
+        if !on { clearVerdict() }
         reconcile()
         scheduleSave()
     }
@@ -207,10 +208,15 @@ final class StageState: ObservableObject {
 
     // MARK: - Engine lifecycle
 
-    private var desiredMode: StageEngine.Mode? {
+    private var wantedMode: StageEngine.Mode? {
         if stage.enabled { return .insert }
         if levelTracking || detectQuality { return .monitor }
         return nil
+    }
+
+    private var desiredMode: StageEngine.Mode? {
+        guard !callActive else { return nil }
+        return wantedMode
     }
 
     /// Why the engine isn't running, when something asked it to run and it
@@ -231,9 +237,10 @@ final class StageState: ObservableObject {
     /// Called after every edit and every device event; safe to call twice.
     private func reconcile() {
         let device = watcher.defaultOutput
+        let hold = callActive && wantedMode != nil && device != nil
         let desired = desiredMode
 
-        if engine.isRunning {
+        if engine.isRunning, !hold {
             // Restart on any drift: mode changes need a different tap, and a
             // device swap needs a new aggregate. Stopping first is also the
             // recovery path when the output vanished under us.
@@ -242,11 +249,55 @@ final class StageState: ObservableObject {
                 engine.stop()
             }
         }
+        if engine.callHold, !hold { engine.stop() }
 
-        if !engine.isRunning, let desired, let device {
+        if hold, let device {
+            if !engine.callHold {
+                clearVerdict()
+                DebugLog.shared.log("call in progress — stage engine holding")
+            }
+            engine.holdForCall(output: device)
+        } else if !engine.isRunning, let desired, let device {
             engine.processor.applyStage(stage)
             engine.start(output: device, mode: desired)
         }
+    }
+
+    private func refreshCallState() {
+        let device = watcher.defaultOutput
+        let outputOnCall = device.map {
+            $0.isBluetooth && AudioOutputs.callModeActive(outputID: $0.id)
+        } ?? false
+        let reported = deviceCallState?()
+        let active = Self.callIsActive(outputOnCall: outputOnCall,
+                                       deviceActiveCall: reported?.activeCall,
+                                       deviceInputSource: reported?.inputSource)
+        if active != callActive {
+            callActive = active
+            DebugLog.shared.log("call state → \(active ? "on a call" : "clear")")
+        }
+    }
+
+    nonisolated static func callIsActive(outputOnCall: Bool,
+                                         deviceActiveCall: Bool?,
+                                         deviceInputSource: String?) -> Bool {
+        if outputOnCall { return true }
+        if deviceActiveCall == true { return true }
+        return deviceInputSource?.hasPrefix("HFP") ?? false
+    }
+
+    func checkCallNow() {
+        guard started else { return }
+        refreshCallState()
+        reconcile()
+    }
+
+    private func clearVerdict() {
+        qualityVerdict = nil
+        verdictDeviceUID = nil
+        rawVerdict = nil
+        rawVerdictStreak = 0
+        verdictStableSince = nil
     }
 
     /// The last default output seen, to tell a device *change* from a device
@@ -284,6 +335,7 @@ final class StageState: ObservableObject {
            !watcher.devices.contains(where: { $0.uid == running }) {
             engine.stop()
         }
+        refreshCallState()
         reconcile()
     }
 
@@ -348,7 +400,16 @@ final class StageState: ObservableObject {
     private var lastDiagContent = ""
     private static let diagFormatter = ISO8601DateFormatter()
 
+    private var callTicks = 0
+
     private func meterTick() {
+        callTicks += 1
+        if callTicks >= 60 {
+            callTicks = 0
+            refreshCallState()
+            reconcile()
+        }
+
         // Heartbeat for field debugging, running or not: engine state, the
         // status line (start errors land there), and what render last saw.
         // Idle lines are deduplicated (a stopped engine writes one line, not
@@ -360,7 +421,8 @@ final class StageState: ObservableObject {
             // the output device's name, which for Bluetooth is a
             // radio-supplied string — a newline in it forges heartbeat lines.
             let content = DebugLog.sanitized(
-                "running=\(engine.isRunning) status=\"\(engine.status)\" "
+                "running=\(engine.isRunning) call=\(callActive) "
+                + "hold=\(engine.callHold) status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
                 + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room)) "
                 + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug)")
@@ -584,9 +646,12 @@ final class StageState: ObservableObject {
             manualRateHz: manualRateHz,
             autoRate: autoRate,
             stageEnabled: stage.enabled,
+            callActive: callActive,
             secondsStable: verdictStableSince.map { now.timeIntervalSince($0) },
             secondsSinceLastSwitch: now.timeIntervalSince(lastAutoSwitch))
         else { return }
+
+        guard !AudioOutputs.callModeActive(outputID: device.id) else { return }
 
         // First automatic act with no manual baseline yet: the rate we're
         // ABOUT to leave becomes the baseline, or lossy content could never
@@ -624,9 +689,10 @@ final class StageState: ObservableObject {
                                manualRateHz: Double?,
                                autoRate: Bool,
                                stageEnabled: Bool,
+                               callActive: Bool,
                                secondsStable: Double?,
                                secondsSinceLastSwitch: Double) -> Double? {
-        guard autoRate, !stageEnabled,
+        guard autoRate, !stageEnabled, !callActive,
               let device,
               let verdictDeviceUID, device.uid == verdictDeviceUID,
               let verdict,

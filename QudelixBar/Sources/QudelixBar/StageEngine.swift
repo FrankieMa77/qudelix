@@ -39,7 +39,9 @@ final class StageEngine: ObservableObject {
     /// cleared by the next stop or successful start, which is what lets a
     /// surface show the reason without inventing a problem when there is none.
     @Published private(set) var failure: Failure?
+    @Published private(set) var callHold = false
     private(set) var mode: Mode = .insert
+    private(set) var holdingDeviceUID: String?
 
     struct Failure: Equatable {
         /// The full sentence, including what the user can do about it.
@@ -69,6 +71,15 @@ final class StageEngine: ObservableObject {
     func start(output device: AudioOutput, mode: Mode) {
         guard !isRunning else { return }
         self.mode = mode
+        if callHold {
+            unwatchCallSignals()
+            callHold = false
+            holdingDeviceUID = nil
+        }
+        if AudioOutputs.callModeActive(outputID: device.id) {
+            beginHold(on: device)
+            return
+        }
         do {
             try bringUp(device, mode: mode)
             runningDeviceUID = device.uid
@@ -101,7 +112,32 @@ final class StageEngine: ObservableObject {
     #endif
 
     func stop() {
-        unwatchRate()
+        unwatchCallSignals()
+        tearDownPipeline()
+        failure = nil
+        let wasActive = isRunning || callHold
+        isRunning = false
+        callHold = false
+        holdingDeviceUID = nil
+        if wasActive { status = "Off." }
+    }
+
+    func holdForCall(output device: AudioOutput) {
+        guard !callHold || holdingDeviceUID != device.uid else { return }
+        tearDownPipeline()
+        isRunning = false
+        beginHold(on: device)
+    }
+
+    private func beginHold(on device: AudioOutput) {
+        watchCallSignals(of: device)
+        holdingDeviceUID = device.uid
+        callHold = true
+        failure = nil
+        status = "Paused for a call — resumes when the call ends."
+    }
+
+    private func tearDownPipeline() {
         if let procID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -124,15 +160,6 @@ final class StageEngine: ObservableObject {
         processor.setMuted(false)
         runningDeviceUID = nil
         runningSampleRate = nil
-        // A deliberate stop settles whatever went wrong last time: the reason
-        // is about a start that was attempted, and once nothing is asking the
-        // engine to run there is nothing left to complain about. (The failure
-        // path re-records it immediately after calling through here.)
-        failure = nil
-        if isRunning {
-            isRunning = false
-            status = "Off."
-        }
     }
 
     private func bringUp(_ device: AudioOutput, mode: Mode) throws {
@@ -192,39 +219,90 @@ final class StageEngine: ObservableObject {
 
         try check(AudioDeviceStart(aggregateID, procID), "Starting audio")
 
-        watchRate(of: device.id)
+        watchCallSignals(of: device)
     }
 
-    /// Fires when the running output's configuration shifts under the engine
-    /// (a sample-rate change in Audio MIDI Setup, another app renegotiating
-    /// the device). The coefficients are designed for the old rate, so the
-    /// owner should restart the engine.
     var onDeviceConfigurationChange: (() -> Void)?
 
     private var rateListener: (device: AudioDeviceID,
                                block: AudioObjectPropertyListenerBlock)?
+    private var micListener: (device: AudioDeviceID,
+                              block: AudioObjectPropertyListenerBlock)?
+    private var pendingConfigurationChange: DispatchWorkItem?
+    private var configChangeBurstStart: Date?
 
-    private func watchRate(of device: AudioDeviceID) {
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor in self?.onDeviceConfigurationChange?() }
-        }
-        var addr = AudioObjectPropertyAddress(
+    private static func rateAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyNominalSampleRate,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
-        AudioObjectAddPropertyListenerBlock(device, &addr, .main, block)
-        rateListener = (device, block)
     }
 
-    private func unwatchRate() {
-        guard let listener = rateListener else { return }
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
+    private static func runningAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
-        AudioObjectRemovePropertyListenerBlock(listener.device, &addr, .main,
-                                               listener.block)
-        rateListener = nil
+    }
+
+    private func watchCallSignals(of device: AudioOutput) {
+        unwatchCallSignals()
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.scheduleConfigurationChange() }
+        }
+        var rateAddr = Self.rateAddress()
+        AudioObjectAddPropertyListenerBlock(device.id, &rateAddr, .main, block)
+        rateListener = (device.id, block)
+
+        guard device.isBluetooth,
+              let mic = AudioOutputs.inputSibling(ofOutputUID: device.uid,
+                                                  name: device.name)
+        else { return }
+        let micBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.scheduleConfigurationChange() }
+        }
+        var runAddr = Self.runningAddress()
+        AudioObjectAddPropertyListenerBlock(mic, &runAddr, .main, micBlock)
+        micListener = (mic, micBlock)
+    }
+
+    private func unwatchCallSignals() {
+        pendingConfigurationChange?.cancel()
+        pendingConfigurationChange = nil
+        configChangeBurstStart = nil
+        if let listener = rateListener {
+            var addr = Self.rateAddress()
+            AudioObjectRemovePropertyListenerBlock(listener.device, &addr, .main,
+                                                   listener.block)
+            rateListener = nil
+        }
+        if let listener = micListener {
+            var addr = Self.runningAddress()
+            AudioObjectRemovePropertyListenerBlock(listener.device, &addr, .main,
+                                                   listener.block)
+            micListener = nil
+        }
+    }
+
+    private func scheduleConfigurationChange() {
+        let now = Date()
+        let burstStart = configChangeBurstStart ?? now
+        configChangeBurstStart = burstStart
+        let wait = Self.coalesceWait(sinceBurstStart: now.timeIntervalSince(burstStart))
+        pendingConfigurationChange?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingConfigurationChange = nil
+            self?.configChangeBurstStart = nil
+            self?.onDeviceConfigurationChange?()
+        }
+        pendingConfigurationChange = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
+    }
+
+    nonisolated static func coalesceWait(sinceBurstStart: TimeInterval,
+                                         quiet: TimeInterval = 0.4,
+                                         burstCap: TimeInterval = 1.5) -> TimeInterval {
+        min(quiet, max(burstCap - sinceBurstStart, 0))
     }
 
     private func check(_ err: OSStatus, _ what: String) throws {

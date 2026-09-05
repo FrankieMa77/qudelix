@@ -163,8 +163,13 @@ final class StageTrackingTests: XCTestCase {
         XCTAssertNil(StageState.autoRateTarget(
             verdict: .losslessLike(cutoffKHz: 21.9), measuredOn: "some-uid",
             device: nil, availableRates: [44100, 48000], manualRateHz: nil,
-            autoRate: true, stageEnabled: false,
+            autoRate: true, stageEnabled: false, callActive: false,
             secondsStable: 30, secondsSinceLastSwitch: 300))
+    }
+
+    func testRefusesWhileACallIsInProgress() {
+        XCTAssertNil(target(measuredOn: qudelix.uid, callActive: true))
+        XCTAssertEqual(target(measuredOn: qudelix.uid, callActive: false), 44100)
     }
 
     // MARK: - Helpers
@@ -179,6 +184,7 @@ final class StageTrackingTests: XCTestCase {
                         deviceRate: Double = 48000,
                         autoRate: Bool = true,
                         stageEnabled: Bool = false,
+                        callActive: Bool = false,
                         secondsStable: Double? = 30,
                         secondsSinceLastSwitch: Double = 300) -> Double? {
         StageState.autoRateTarget(
@@ -190,6 +196,7 @@ final class StageTrackingTests: XCTestCase {
             manualRateHz: manualRateHz,
             autoRate: autoRate,
             stageEnabled: stageEnabled,
+            callActive: callActive,
             secondsStable: secondsStable,
             secondsSinceLastSwitch: secondsSinceLastSwitch)
     }

@@ -192,6 +192,7 @@ struct PopoverView: View {
 
 struct DeviceHeader: View {
     @EnvironmentObject var controller: QudelixController
+    @EnvironmentObject var stageState: StageState
 
     var body: some View {
         HStack(spacing: 11) {
@@ -248,6 +249,16 @@ struct DeviceHeader: View {
                 .help(batteryHelp(batt))
             }
 
+            if stageState.callActive {
+                Image(systemName: "phone.badge.waveform.fill")
+                    .accessibilityLabel("On a call")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .help("Something is using the headset's microphone, so "
+                          + "Bluetooth has dropped to call mode (HFP) at voice "
+                          + "quality. The muffled sound is the codec, not the EQ.")
+            }
+
             Button { controller.refresh() } label: {
                 Image(systemName: "arrow.clockwise")
                     .accessibilityLabel("Re-read the device")
@@ -258,6 +269,7 @@ struct DeviceHeader: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+        .onAppear { stageState.checkCallNow() }
     }
 
     private var connected: Bool {
@@ -507,6 +519,13 @@ struct UsbAudioRow: View {
         .pickerStyle(.segmented)
         .controlSize(.mini)
         .labelsHidden()
+        .disabled(stageState.callActive)
+        .help(stageState.callActive
+              ? "Paused during your call — while the microphone is in use the "
+                + "rate follows the call, and changing it here would cut the "
+                + "call's audio."
+              : "The rate macOS runs this output at — the same setting as "
+                + "Audio MIDI Setup.")
     }
 
     private func refreshDeviceFacts(_ id: AudioDeviceID) {
@@ -517,6 +536,9 @@ struct UsbAudioRow: View {
     private func autoStatus(current: Double) -> String {
         if !stageState.detectQuality { return "off — the rate stays as you set it" }
         if !stageState.autoRate { return "detecting only — switching is off (Level pane)" }
+        if stageState.callActive {
+            return "paused for your call — detection resumes after it ends"
+        }
         // "Waiting for audio" was said for every reason the engine was not
         // running, including the common one on a fresh install: the system
         // audio permission has not been granted, so it never started and never
