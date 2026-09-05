@@ -798,6 +798,7 @@ struct EqEditorView: View {
             Divider()
 
             bandTable
+                .frame(maxHeight: .infinity, alignment: .top)
                 .opacity(controller.eqEnabled ? 1 : 0.45)
                 .disabled(!controller.eqEnabled)
 
@@ -839,6 +840,7 @@ struct EqEditorView: View {
             .controlSize(.small)
             .font(.system(size: 11))
         }
+        .frame(maxHeight: .infinity)
     }
 
     private var undoButton: some View {
@@ -910,9 +912,6 @@ extension EqEditorView {
         return advice.suggestion == nil ? boost + "; pre-gain covers it." : boost + "."
     }
 
-    /// 10 bands fit inline; 20 would add ~250pt to the window, so the table
-    /// scrolls in that case. The height is definite, not a maximum — a scroll
-    /// view given only a max collapses inside this self-sizing popover.
     @ViewBuilder
     var bandTable: some View {
         let grid = Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 5) {
@@ -929,12 +928,7 @@ extension EqEditorView {
                 BandRow(index: i, editingBand: $editingBand)
             }
         }
-        if controller.bandCount > 10 {
-            ScrollView { grid.padding(.trailing, 4) }
-                .frame(height: 250)
-        } else {
-            grid
-        }
+        ScrollView { grid.padding(.trailing, 4) }
     }
 }
 
