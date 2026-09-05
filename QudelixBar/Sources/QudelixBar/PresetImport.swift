@@ -182,8 +182,10 @@ enum PinnedHTTP {
     /// because the release list is the authoritative answer to "is there a
     /// newer version" — a version file committed in the repository would drift
     /// the first time someone forgot to bump it.
-    static let allowedHosts: Set<String> = ["raw.githubusercontent.com", "autoeq.app",
-                                            "api.github.com"]
+    static let correctionHosts: Set<String> = ["raw.githubusercontent.com", "autoeq.app",
+                                               "api.github.com"]
+
+    static let allowedHosts: Set<String> = correctionHosts.union(AIProvider.hosts)
 
     private final class HostPinnedRedirects: NSObject, URLSessionTaskDelegate {
         let hosts: Set<String>
@@ -203,7 +205,17 @@ enum PinnedHTTP {
         }
     }
 
-    private static let redirectPolicy = HostPinnedRedirects(hosts: allowedHosts)
+    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
+
+    private static let redirectPolicy = HostPinnedRedirects(hosts: correctionHosts)
+    private static let refuseRedirects = NoRedirects()
 
     /// One shared session. A computed property would build a fresh `URLSession`
     /// per fetch, and a session retains itself until it is invalidated — which
@@ -214,6 +226,17 @@ enum PinnedHTTP {
         cfg.timeoutIntervalForRequest = 20
         cfg.timeoutIntervalForResource = 60
         return URLSession(configuration: cfg, delegate: redirectPolicy, delegateQueue: nil)
+    }()
+
+    static let credentialedSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 90
+        cfg.timeoutIntervalForResource = 120
+        cfg.httpShouldSetCookies = false
+        cfg.httpCookieAcceptPolicy = .never
+        cfg.urlCache = nil
+        cfg.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return URLSession(configuration: cfg, delegate: refuseRedirects, delegateQueue: nil)
     }()
 
     static func request(_ url: URL, accept: String,
@@ -238,12 +261,24 @@ enum PinnedHTTP {
     /// past what the payload could plausibly be.
     static func fetch(_ request: URLRequest, limit: Int,
                       allowing hosts: Set<String>) async throws -> Data {
+        try await run(request, limit: limit, allowing: hosts, session: session,
+                      delegate: HostPinnedRedirects(hosts: hosts))
+    }
+
+    static func fetchRefusingRedirects(_ request: URLRequest, limit: Int,
+                                       allowing hosts: Set<String>) async throws -> Data {
+        try await run(request, limit: limit, allowing: hosts,
+                      session: credentialedSession, delegate: refuseRedirects)
+    }
+
+    private static func run(_ request: URLRequest, limit: Int, allowing hosts: Set<String>,
+                            session: URLSession,
+                            delegate: URLSessionTaskDelegate) async throws -> Data {
         guard request.url?.scheme == "https", let host = request.url?.host,
               hosts.contains(host), allowedHosts.contains(host) else {
             throw URLError(.badURL)
         }
-        let policy = HostPinnedRedirects(hosts: hosts)
-        let (stream, response) = try await session.bytes(for: request, delegate: policy)
+        let (stream, response) = try await session.bytes(for: request, delegate: delegate)
         guard let http = response as? HTTPURLResponse else {
             stream.task.cancel()
             throw URLError(.badServerResponse)

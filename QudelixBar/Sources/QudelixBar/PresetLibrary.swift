@@ -307,6 +307,19 @@ final class PresetLibrary: ObservableObject {
     }
 
     @discardableResult
+    func saveCurve(name: String, group: QxEqGroup, bands: [QxEqBandValue],
+                   preGain: Double, sourceName: String? = nil,
+                   scope: LibraryScope = .global) -> LibraryPreset? {
+        guard !bands.isEmpty else {
+            lastMessage = "That preset has no filters in it."
+            return nil
+        }
+        return insert(LibraryPreset(name: name, scope: scope, group: group,
+                                    bands: Array(bands.prefix(group.bandCount)),
+                                    preGain: preGain, sourceName: sourceName))
+    }
+
+    @discardableResult
     func importText(_ text: String, name: String,
                     scope: LibraryScope = .global) -> LibraryPreset? {
         guard let group = currentGroup else {
