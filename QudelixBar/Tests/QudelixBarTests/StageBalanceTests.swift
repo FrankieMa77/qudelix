@@ -74,18 +74,12 @@ final class StageBalanceTests: XCTestCase {
         XCTAssertNotEqual(render(trimmed), render(fullStage()))
     }
 
-    func testLiftingABandAboveUnityChangesTheSound() {
-        var lifted = fullStage()
-        lifted.crossLowTrim = 2
-        XCTAssertNotEqual(render(lifted), render(fullStage()))
-    }
-
     func testTheBandTrimsDoNothingWithCrossfeedAtZero() {
         var plain = fullStage()
         plain.crossfeed = 0
         var trimmed = plain
         trimmed.crossLowTrim = 0
-        trimmed.crossMidTrim = 2
+        trimmed.crossMidTrim = 0.5
         trimmed.crossHighTrim = 0.25
         XCTAssertEqual(render(plain), render(trimmed))
     }
@@ -199,7 +193,7 @@ final class StageBalanceTests: XCTestCase {
         wild.balanceDb = 40
         wild.alignMs = -9
         let c = wild.clamped()
-        XCTAssertEqual(c.crossLowTrimValue, 2)
+        XCTAssertEqual(c.crossLowTrimValue, 1)
         XCTAssertEqual(c.crossMidTrimValue, 0)
         XCTAssertEqual(c.crossHighTrimValue, 1)
         XCTAssertEqual(c.balanceDbValue, 3)
@@ -231,7 +225,7 @@ final class StageBalanceTests: XCTestCase {
 
     func testANewEpochWipesTheBandSplitAndTheAlignmentRing() {
         var s = fullStage()
-        s.crossLowTrim = 1.6
+        s.crossLowTrim = 0.6
         s.crossHighTrim = 0.2
         s.alignMs = 0.4
         s.balanceDb = -2

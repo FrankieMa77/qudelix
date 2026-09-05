@@ -213,19 +213,19 @@ struct StageView: View {
                 slider("Low", value: Binding(
                     get: { stageState.stage.crossLowTrimValue * 100 },
                     set: { v in mutate(uid) { $0.crossLowTrim = v.rounded() / 100 } }),
-                    in: 0...200, display: String(format: "%.0f %%",
+                    in: 0...100, display: String(format: "%.0f %%",
                                                  stageState.stage.crossLowTrimValue * 100),
                     help: "Below 800 Hz.")
                 slider("Mid", value: Binding(
                     get: { stageState.stage.crossMidTrimValue * 100 },
                     set: { v in mutate(uid) { $0.crossMidTrim = v.rounded() / 100 } }),
-                    in: 0...200, display: String(format: "%.0f %%",
+                    in: 0...100, display: String(format: "%.0f %%",
                                                  stageState.stage.crossMidTrimValue * 100),
                     help: "800 Hz to 4 kHz.")
                 slider("High", value: Binding(
                     get: { stageState.stage.crossHighTrimValue * 100 },
                     set: { v in mutate(uid) { $0.crossHighTrim = v.rounded() / 100 } }),
-                    in: 0...200, display: String(format: "%.0f %%",
+                    in: 0...100, display: String(format: "%.0f %%",
                                                  stageState.stage.crossHighTrimValue * 100),
                     help: "Above 4 kHz.")
                 Text("Each of these scales the Crossfeed amount inside one "

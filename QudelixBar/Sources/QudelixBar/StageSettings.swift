@@ -115,7 +115,7 @@ struct StageSettings: Codable, Equatable {
         }
         func trim(_ v: Double?) -> Double? {
             guard let v else { return nil }
-            return v.isFinite ? min(max(v, 0), 2) : nil
+            return v.isFinite ? min(max(v, 0), 1) : nil
         }
         s.crossLowTrim = trim(s.crossLowTrim)
         s.crossMidTrim = trim(s.crossMidTrim)
