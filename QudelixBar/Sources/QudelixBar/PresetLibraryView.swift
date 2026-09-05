@@ -5,6 +5,7 @@ struct PresetLibraryView: View {
     @EnvironmentObject var controller: QudelixController
     @EnvironmentObject var library: PresetLibrary
     @EnvironmentObject var profileRules: ProfileRules
+    @EnvironmentObject var suggestions: HeadphoneSuggestions
 
     @State private var saving = false
     @State private var draftName = ""
@@ -25,6 +26,7 @@ struct PresetLibraryView: View {
         VStack(alignment: .leading, spacing: 6) {
             header
             headphoneRow
+            suggestionRow
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Used to find measurements and corrections for the pair you "
@@ -122,6 +124,35 @@ struct PresetLibraryView: View {
                 .font(.system(size: 10))
                 .help("The headphones plugged into the 5K — the output device can't "
                       + "say what is on the end of it.")
+        }
+    }
+
+    @ViewBuilder
+    private var suggestionRow: some View {
+        if let offered = suggestions.match {
+            HStack(spacing: 6) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityHidden(true)
+                Text(verbatim: HeadphoneSuggestions.measuredBy(offered.entry.source))
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if suggestions.busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button(HeadphoneSuggestions.applyLinkLabel) {
+                        suggestions.accept(offered.entry)
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 9))
+                    .disabled(!controller.canEditEqNow)
+                }
+                Spacer(minLength: 0)
+            }
+            .help("AutoEq has a measured correction for these headphones \u{2014} it is "
+                  + "fitted to this device before anything is written.")
         }
     }
 

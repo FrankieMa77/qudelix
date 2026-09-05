@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let stageState: StageState
         let profileRules: ProfileRules
         let presetLibrary: PresetLibrary
+        let headphoneSuggestions: HeadphoneSuggestions
         let abTuner: ABTuner
         let toneTester: ToneTester
         let blindTuner: BlindTuner
@@ -109,6 +110,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             controller?.applyLibraryPreset(preset) ?? false
         }
         w.presetLibrary.start()
+
+        w.headphoneSuggestions.limits = { [weak controller = w.controller] in
+            .qudelix(bandCount: controller?.bandCount ?? QxEqGroup.user.bandCount)
+        }
+        w.headphoneSuggestions.applyCorrection = { [weak controller = w.controller]
+            result, name in
+            guard let controller, controller.canWriteNow,
+                  controller.apply(result.file, named: name,
+                                   undoLabel: "correction for \(name)") else { return false }
+            var parts = [result.provenance]
+            if let applied = controller.lastImportSummary { parts.append(applied) }
+            parts.append(contentsOf: result.warnings)
+            controller.lastImportSummary = parts.joined(separator: " · ")
+            controller.requestPane(.importing)
+            return true
+        }
+        w.headphoneSuggestions.popoverIsOpen = { [weak self] in
+            self?.popover?.isShown ?? false
+        }
+        w.stageState.suggestionDiagnostics = { [weak s = w.headphoneSuggestions] in
+            s?.diagSummary ?? "suggest=none"
+        }
+        w.headphoneSuggestions.start()
 
         w.controller.$eqGroup
             .removeDuplicates()
@@ -302,6 +326,7 @@ struct QudelixBarApp: App {
     @StateObject private var stageState: StageState
     @StateObject private var profileRules: ProfileRules
     @StateObject private var presetLibrary: PresetLibrary
+    @StateObject private var headphoneSuggestions: HeadphoneSuggestions
     @StateObject private var a2dpGuard: A2dpGuard
     @StateObject private var abTuner: ABTuner
     @StateObject private var toneTester: ToneTester
@@ -315,6 +340,7 @@ struct QudelixBarApp: App {
         let stageState = StageState()
         let profileRules = ProfileRules()
         let presetLibrary = PresetLibrary()
+        let headphoneSuggestions = HeadphoneSuggestions(library: presetLibrary)
         let a2dpGuard = A2dpGuard()
         let abTuner = ABTuner()
         let toneTester = ToneTester()
@@ -326,6 +352,7 @@ struct QudelixBarApp: App {
                 .environmentObject(stageState)
                 .environmentObject(profileRules)
                 .environmentObject(presetLibrary)
+                .environmentObject(headphoneSuggestions)
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
@@ -334,6 +361,7 @@ struct QudelixBarApp: App {
             AppDelegate.Wiring(content: content, controller: controller,
                                stageState: stageState, profileRules: profileRules,
                                presetLibrary: presetLibrary,
+                               headphoneSuggestions: headphoneSuggestions,
                                abTuner: abTuner, toneTester: toneTester,
                                blindTuner: blindTuner, a2dpGuard: a2dpGuard)
         }
@@ -342,6 +370,7 @@ struct QudelixBarApp: App {
         _stageState = StateObject(wrappedValue: stageState)
         _profileRules = StateObject(wrappedValue: profileRules)
         _presetLibrary = StateObject(wrappedValue: presetLibrary)
+        _headphoneSuggestions = StateObject(wrappedValue: headphoneSuggestions)
         _a2dpGuard = StateObject(wrappedValue: a2dpGuard)
         _abTuner = StateObject(wrappedValue: abTuner)
         _toneTester = StateObject(wrappedValue: toneTester)

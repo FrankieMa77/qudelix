@@ -52,6 +52,7 @@ enum UIPreview {
                     .environmentObject(stage)
                     .environmentObject(profilesMock(pane))
                     .environmentObject(libraryMock(pane))
+                    .environmentObject(suggestionsMock(pane))
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
@@ -93,7 +94,7 @@ enum UIPreview {
                             BandInspector(selected: .constant(0))
                             EqEditorView(editingBand: .constant(nil))
                         }, controller, stage, blind)
-                    case "presets", "presets-busy":
+                    case "presets", "presets-busy", "suggest":
                         reportPaneFit(pane, PresetsView(), controller, stage, blind)
                     case "import":
                         reportPaneFit(pane, ImportView(), controller, stage, blind)
@@ -216,6 +217,7 @@ enum UIPreview {
             .environmentObject(stage)
             .environmentObject(profilesMock(pane))
             .environmentObject(libraryMock(pane))
+            .environmentObject(suggestionsMock(pane))
             .environmentObject(ABTuner())
             .environmentObject(ToneTester())
             .environmentObject(blind)
@@ -239,6 +241,7 @@ enum UIPreview {
                     .environmentObject(stage)
                     .environmentObject(profilesMock(pane))
                     .environmentObject(libraryMock(pane))
+                    .environmentObject(suggestionsMock(pane))
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
@@ -278,7 +281,8 @@ enum UIPreview {
          ("unsupported", unsupported(), stageMock(), BlindTuner()),
          ("b20", twentyBand(), stageMock(), BlindTuner()),
          ("lowbatt", lowBattery(), stageMock(), BlindTuner()),
-         ("micguard", micHijacked(), stageMock(), BlindTuner())]
+         ("micguard", micHijacked(), stageMock(), BlindTuner()),
+         ("suggest", make(.presets), stageMock(), BlindTuner())]
     }
 
     @MainActor
@@ -326,7 +330,8 @@ enum UIPreview {
     @MainActor
     private static func libraryMock(_ pane: String) -> PresetLibrary {
         let library = PresetLibrary()
-        guard pane == "presets" || pane == "presets-busy" else { return library }
+        guard pane == "presets" || pane == "presets-busy" || pane == "suggest"
+        else { return library }
         let ten = QxEqGroup.user.defaultFreqs.map {
             QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
         }
@@ -344,7 +349,7 @@ enum UIPreview {
             LibraryPreset(name: "Desk speakers", scope: .output(uid: "mock-speakers",
                                                                 name: "MacBook Pro Speakers"),
                           group: .user, bands: ten, preGain: 0),
-        ], headphoneName: "Alder AR-5",
+        ], headphoneName: pane == "suggest" ? "Sennheiser HD 650" : "Alder AR-5",
            message: pane == "presets-busy"
             ? "\u{201C}Studio reference\u{201D} was made for the 20-band EQ and the "
               + "device is in 10-band mode. Those are two separate banks with different "
@@ -352,6 +357,23 @@ enum UIPreview {
               + "device to 20-band mode to use it."
             : nil)
         return library
+    }
+
+    @MainActor
+    private static func suggestionsMock(_ pane: String) -> HeadphoneSuggestions {
+        let suggestions = HeadphoneSuggestions(library: PresetLibrary())
+        guard pane == "suggest" else { return suggestions }
+        let entries = [
+            AutoEqEntry(title: "Sennheiser HD 650", source: "oratory1990",
+                        path: "oratory1990/over-ear/Sennheiser%20HD%20650"),
+            AutoEqEntry(title: "Sennheiser HD 650", source: "crinacle",
+                        path: "crinacle/over-ear/Sennheiser%20HD%20650"),
+            AutoEqEntry(title: "Sennheiser HD 6XX", source: "rtings",
+                        path: "rtings/over-ear/Sennheiser%20HD%206XX"),
+        ]
+        suggestions.previewSet(HeadphoneSuggestions.Suggestion(
+            name: "Sennheiser HD 650", entry: entries[0], alternatives: entries))
+        return suggestions
     }
 
     @MainActor
