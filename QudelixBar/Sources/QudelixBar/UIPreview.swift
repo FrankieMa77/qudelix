@@ -248,8 +248,7 @@ enum UIPreview {
         c.crossfeedLevel = 0
         c.preGain = -6.1
         c.activePreset = 2
-        c.presetNames = [0: "Harman", 2: "HD 650", 5: "Bass boost"]
-        // A realistic AutoEq-style curve (Sennheiser HD 650, oratory1990).
+        c.presetNames = [0: "Harman", 2: "Alder AR-5", 5: "Bass boost"]
         c.bands = [
             .init(filter: .lowShelf, freq: 105, gain: 6.4, q: 0.70),
             .init(filter: .peak, freq: 8800, gain: 5.1, q: 1.42),
@@ -265,21 +264,21 @@ enum UIPreview {
         c.previewPane = pane
         if pane == .importing {
             c.previewAutoEq = (entries: [
-                AutoEqEntry(title: "Sennheiser HD 650", source: "oratory1990",
-                            path: "oratory1990/over-ear/Sennheiser%20HD%20650"),
-                AutoEqEntry(title: "Sennheiser HD 660S", source: "oratory1990",
-                            path: "oratory1990/over-ear/Sennheiser%20HD%20660S"),
-                AutoEqEntry(title: "Sennheiser HD 600", source: "crinacle",
-                            path: "crinacle/harman_over-ear_2018/Sennheiser%20HD%20600"),
-                AutoEqEntry(title: "Sennheiser HD 6XX", source: "oratory1990",
-                            path: "oratory1990/over-ear/Sennheiser%20HD%206XX"),
-                AutoEqEntry(title: "Sennheiser HD 560S", source: "oratory1990",
-                            path: "oratory1990/over-ear/Sennheiser%20HD%20560S"),
-                AutoEqEntry(title: "Sennheiser HD 800 S", source: "oratory1990",
-                            path: "oratory1990/over-ear/Sennheiser%20HD%20800%20S"),
-                AutoEqEntry(title: "Sennheiser HD 25", source: "crinacle",
-                            path: "crinacle/harman_over-ear_2018/Sennheiser%20HD%2025"),
-            ], query: "HD")
+                AutoEqEntry(title: "Alder AR-5", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-5"),
+                AutoEqEntry(title: "Alder AR-5 Pro", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-5%20Pro"),
+                AutoEqEntry(title: "Alder AR-3", source: "crinacle",
+                            path: "crinacle/harman_over-ear_2018/Alder%20AR-3"),
+                AutoEqEntry(title: "Alder AR-5X", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-5X"),
+                AutoEqEntry(title: "Alder AR-2", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-2"),
+                AutoEqEntry(title: "Alder AR-9 Reference", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-9%20Reference"),
+                AutoEqEntry(title: "Alder AR-1 Studio", source: "crinacle",
+                            path: "crinacle/harman_over-ear_2018/Alder%20AR-1%20Studio"),
+            ], query: "AR")
         }
         return c
     }
