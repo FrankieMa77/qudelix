@@ -94,6 +94,78 @@ final class EqUndoTests: XCTestCase {
                        "flatten must come back in one step, not four")
     }
 
+    func testFlattenZeroesGainsAndKeepsTheLayout() {
+        let c = connected()
+        c.updateBand(0, QxEqBandValue(filter: .lowShelf, freq: 105, gain: 6, q: 0.7))
+        c.updateBand(1, QxEqBandValue(filter: .peak, freq: 8800, gain: -4, q: 2.5))
+
+        c.flatten()
+
+        XCTAssertTrue(c.bands.allSatisfy { $0.gain == 0 })
+        XCTAssertEqual(c.bands[0].filter, .lowShelf)
+        XCTAssertEqual(c.bands[0].freq, 105, "flatten must keep the centres it was given")
+        XCTAssertEqual(c.bands[0].q, 0.7, accuracy: 0.001)
+        XCTAssertEqual(c.bands[1].filter, .peak)
+        XCTAssertEqual(c.bands[1].freq, 8800)
+        XCTAssertEqual(c.bands[1].q, 2.5, accuracy: 0.001)
+    }
+
+    func testResetBandLayoutRestoresTheFactoryLayoutInOneStep() {
+        let c = connected()
+        c.updateBand(0, QxEqBandValue(filter: .lowShelf, freq: 105, gain: 6, q: 0.7))
+        c.updateBand(1, QxEqBandValue(filter: .hpf, freq: 40, gain: 0, q: 1.4))
+        let shaped = c.bands
+
+        c.resetBandLayout()
+
+        XCTAssertEqual(c.bands.map(\.freq), c.eqGroup.defaultFreqs)
+        XCTAssertTrue(c.bands.allSatisfy { $0.filter == .peak && $0.gain == 0 && $0.q == 1.0 })
+        XCTAssertEqual(c.preGain, 0, accuracy: 0.001)
+
+        c.undoEqEdit()
+        XCTAssertEqual(c.bands.map(\.freq), shaped.map(\.freq),
+                       "a whole layout reset must come back in one step")
+        XCTAssertEqual(c.bands[1].filter, .hpf)
+    }
+
+    func testZeroingABandIsItsOwnStepAfterADrag() {
+        let c = connected()
+        for db in stride(from: 0.5, through: 6.0, by: 0.5) {
+            var b = c.bands[3]
+            b.gain = db
+            c.updateBand(3, b)
+        }
+        XCTAssertEqual(c.undoStack.count, 1)
+
+        c.zeroBand(3)
+        XCTAssertEqual(c.bands[3].gain, 0, accuracy: 0.01)
+        XCTAssertEqual(c.undoStack.count, 2)
+
+        c.undoEqEdit()
+        XCTAssertEqual(c.bands[3].gain, 6, accuracy: 0.01,
+                       "undo must give back the drag, not walk past it")
+    }
+
+    func testZeroingAPassFilterTurnsItIntoAFlatPeak() {
+        let c = connected()
+        c.updateBand(2, QxEqBandValue(filter: .hpf, freq: 60, gain: 0, q: 1.2))
+
+        c.zeroBand(2)
+
+        XCTAssertEqual(c.bands[2].filter, .peak)
+        XCTAssertEqual(c.bands[2].gain, 0, accuracy: 0.01)
+        XCTAssertEqual(c.bands[2].freq, 60)
+
+        c.undoEqEdit()
+        XCTAssertEqual(c.bands[2].filter, .hpf)
+    }
+
+    func testZeroingABandThatIsAlreadyFlatCostsNoStep() {
+        let c = connected()
+        c.zeroBand(5)
+        XCTAssertFalse(c.canUndo)
+    }
+
     func testRedoReappliesWhatUndoTookAway() {
         let c = connected()
         var b = c.bands[3]

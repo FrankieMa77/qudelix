@@ -87,8 +87,10 @@ enum UIPreview {
                 if name == "light" {
                     switch pane {
                     case "eq", "b20":
-                        reportPaneFit(pane, EqEditorView(editingBand: .constant(nil)),
-                                      controller, stage, blind)
+                        reportPaneFit(pane, VStack(spacing: 14) {
+                            BandInspector(selected: .constant(0))
+                            EqEditorView(editingBand: .constant(nil))
+                        }, controller, stage, blind)
                     case "presets":
                         reportPaneFit(pane, PresetsView(), controller, stage, blind)
                     case "import":
