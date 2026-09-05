@@ -18,10 +18,6 @@ enum AudioOutputs {
                   let uid: String = stringProperty(id, kAudioDevicePropertyDeviceUID),
                   let name: String = stringProperty(id, kAudioObjectPropertyName)
             else { return nil }
-            // The name is a driver-supplied string, and several surfaces
-            // render it verbatim: a newline in it forges a log line, and a
-            // bidi override scrambles the row around it. Filtered once, at
-            // construction, so no consumer has to remember.
             return AudioOutput(id: id, uid: uid,
                                name: QudelixController.displayName(name),
                                sampleRate: nominalRate(id))
@@ -60,10 +56,6 @@ enum AudioOutputs {
             rates.append(r.mMinimum)
             if r.mMaximum != r.mMinimum { rates.append(r.mMaximum) }
         }
-        // This list is what the picker offers and what the rate automation is
-        // allowed to ask for, so an impossible endpoint is dropped rather
-        // than clamped: asking a device to run at a rate it only claims to
-        // offer is worse than leaving it where it is.
         return Array(Set(rates.filter(isPlausibleRate))).sorted()
     }
 
@@ -71,10 +63,6 @@ enum AudioOutputs {
     /// does. The change is applied asynchronously by the HAL.
     @discardableResult
     static func setNominalRate(_ id: AudioDeviceID, _ rate: Double) -> Bool {
-        // Persisted state, the picker and the automation all reach this; a
-        // rate that cannot physically exist has no business being handed to
-        // the HAL, and refusing here is what keeps `false` meaningful to the
-        // caller that records what the device actually took.
         guard isPlausibleRate(rate) else { return false }
         var rate = rate
         var addr = address(kAudioDevicePropertyNominalSampleRate)
@@ -120,14 +108,8 @@ enum AudioOutputs {
         return object
     }
 
-    /// What the DSP runs at when a device answers with something impossible.
     static let fallbackRate: Double = 48000
 
-    /// Rates come out of a driver — third-party code nobody here controls —
-    /// and are then multiplied into buffer lengths (`Int(seconds * rate)`
-    /// traps on an infinity) and into loop bounds (`while f < rate / 2` never
-    /// ends on one). Validated at every boundary they cross, so nothing
-    /// downstream can ever see a rate that could not physically exist.
     static func isPlausibleRate(_ rate: Double) -> Bool {
         rate.isFinite && (8000...768_000).contains(rate)
     }

@@ -111,20 +111,12 @@ final class StageTrackingTests: XCTestCase {
                               measuredOn: qudelix.uid), 96000)
     }
 
-    /// 88.2 is the 44.1-family hi-res rate, and pinning a device to it is a
-    /// thing people do. Falling through to the lossless branch skipped it and
-    /// picked 96; taking the highest offered rate at or above 88.2 keeps the
-    /// content in its own family.
     func testHiResPrefers882WhenThatIsTheHighestOnOffer() {
         XCTAssertEqual(target(verdict: .hiRes(cutoffKHz: 24.5),
                               measuredOn: qudelix.uid,
                               availableRates: [44100, 48000, 88200]), 88200)
     }
 
-    /// The defect this replaces: hi-res content on an output offering nothing
-    /// above 48 fell through to the lossless branch and switched to 44.1 —
-    /// DOWNSAMPLING audio the analyzer had just measured as extending past
-    /// the 44.1 family. Nothing high enough to go to means nothing to do.
     func testHiResHoldsRatherThanDownsamplingWhenNothingHighIsOffered() {
         XCTAssertNil(target(verdict: .hiRes(cutoffKHz: 24.5),
                             measuredOn: qudelix.uid,
@@ -181,12 +173,7 @@ final class StageTrackingTests: XCTestCase {
             secondsStable: 30, secondsSinceLastSwitch: 300))
     }
 
-    // MARK: - The line that narrates the automation resolves the same rate
 
-    /// The popover's commentary used to name 44.1 itself and say "switching
-    /// shortly…" forever whenever 44.1 was not on offer — the normal state of
-    /// a 5K pinned to a single rate over USB. Both now read the same
-    /// function, so they cannot disagree about where a device is headed.
     func testTheNarrationAndTheSwitchResolveTheSameRate() {
         let rates = [44100.0, 48000, 88200, 96000]
         for verdict in [QualityAnalyzer.Verdict.losslessLike(cutoffKHz: 21.9),
@@ -211,8 +198,6 @@ final class StageTrackingTests: XCTestCase {
         }
     }
 
-    /// The 5K pinned to "96 only" over USB: 44.1 simply is not on offer, and
-    /// the narration has to say it is holding rather than promise a switch.
     func testLosslessOnAnOutputWithoutFortyFourPointOneStillResolvesToIt() {
         XCTAssertEqual(
             StageState.rateForVerdict(.losslessLike(cutoffKHz: 21.9),
@@ -223,7 +208,6 @@ final class StageTrackingTests: XCTestCase {
                             deviceRate: 96000))
     }
 
-    // MARK: - Rates that could not physically exist
 
     func testImplausibleRatesAreRejectedAtTheDeviceBoundary() {
         for rate in [Double.infinity, -.infinity, .nan, 0, -48000, 7999, 768_001, 1e12] {

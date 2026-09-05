@@ -126,11 +126,6 @@ struct LevelView: View {
                 .suffix(7)).reversed()
             if !history.isEmpty {
                 DisclosureGroup {
-                    // The pane is a fixed-height region, so a full week of
-                    // rows expanded at once pushes the footer below it out of
-                    // sight. Four rows show and the rest scroll in the same
-                    // space; the row height is pinned so the frame arithmetic
-                    // here and the layout inside cannot drift apart.
                     ScrollView(.vertical) {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(history), id: \.day) { day in

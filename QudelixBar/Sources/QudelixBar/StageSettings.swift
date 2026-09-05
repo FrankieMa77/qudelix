@@ -71,15 +71,6 @@ struct StageSettings: Codable, Equatable {
         return !audiblyEquals(neutral)
     }
 
-    /// True when every control sits at its no-op value, so the stage is
-    /// inserted and shaping nothing.
-    ///
-    /// Distinct from `doesAnything`, which asks whether these settings differ
-    /// from the app's DEFAULTS — and the defaults are not neutral (they widen
-    /// and crossfeed out of the box), so the two answers are unrelated. Each
-    /// condition mirrors the one the designer gates that element on, Span and
-    /// Size excepted: they only scale the crossfeed and room legs, which are
-    /// silent at zero however they are scaled.
     var isAudiblyNeutral: Bool {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0

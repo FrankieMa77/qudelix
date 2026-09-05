@@ -2,20 +2,9 @@ import CoreAudio
 import XCTest
 @testable import QudelixBar
 
-/// The render callback, driven with hand-built buffer lists the way the HAL
-/// drives it. What is checked here is the part of the processor no amount of
-/// listening reveals: which of the aggregate's input buffers it consumes,
-/// what the analyzer is allowed to see, and that the arithmetic survives the
-/// values a driver or a tapped app can actually hand it.
 final class StageProcessorRenderTests: XCTestCase {
 
-    // MARK: - Which buffer the tap's audio is in
 
-    /// The defect: the aggregate is built over the default output, and its
-    /// input list is the tap's buffer preceded by whatever input streams the
-    /// output device itself presents. An interface, headset or dock with
-    /// microphone inputs contributes those first, so consuming from the front
-    /// mixed a live microphone into the output and metered it as the music.
     func testTheTapsBufferIsTakenFromTheEndOfTheInputList() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -42,9 +31,6 @@ final class StageProcessorRenderTests: XCTestCase {
                        [0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4])
     }
 
-    /// The analyzer judges the SOURCE's bandwidth, so it reads the same
-    /// buffer the output does — a microphone's spectrum would be classified
-    /// as the stream that is playing.
     func testTheSpectrumRingIsFedFromTheTapNotFromTheMicrophone() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -63,12 +49,7 @@ final class StageProcessorRenderTests: XCTestCase {
         XCTAssertEqual(drained, tap)
     }
 
-    // MARK: - What the analyzer is allowed to see
 
-    /// The window is a peek at the most recent audio. Handing back the same
-    /// tail again when nothing new has arrived makes the analyzer re-judge
-    /// audio it already classified and max-hold it onto itself, which is how
-    /// a frozen ring reaches a stable verdict from no audio at all.
     func testASecondDrainWithNoFreshAudioReturnsNothing() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -84,9 +65,6 @@ final class StageProcessorRenderTests: XCTestCase {
         XCTAssertEqual(p.drainSpectrumSamples(n).count, n)
     }
 
-    /// A tone test mutes the pipeline, and render stops feeding the ring
-    /// before the mute. Everything still in it is pre-mute audio, so the
-    /// analyzer must come away empty rather than judging it.
     func testAMutedRenderFeedsTheRingNothing() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -105,8 +83,6 @@ final class StageProcessorRenderTests: XCTestCase {
         XCTAssertEqual(p.drainSpectrumSamples(n).count, n)
     }
 
-    /// A muted render still writes silence rather than the input, and still
-    /// reports what it saw — the diagnostics must not lie during a test.
     func testAMutedRenderWritesSilence() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -120,11 +96,7 @@ final class StageProcessorRenderTests: XCTestCase {
         XCTAssertFalse(p.renderDiagnostics().stageRan)
     }
 
-    // MARK: - What prepare() is responsible for
 
-    /// The rings, the ring's watermark and the meter all belong to the rate
-    /// and the device that produced them. Carried across a restart, the first
-    /// second on the new device reports a level nothing played.
     func testPrepareDropsTheRingAndTheMeter() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -140,9 +112,6 @@ final class StageProcessorRenderTests: XCTestCase {
         XCTAssertNil(p.drainSourceCorrelation())
     }
 
-    /// A driver supplies the rate, and a virtual one can supply anything.
-    /// `max(8000, .infinity)` is still infinity, and the delay lengths below
-    /// it are `Int(seconds * rate)` — which traps rather than clamps.
     func testPrepareSurvivesARateNoDeviceCouldRunAt() {
         for rate in [Double.infinity, .nan, 0, -48000, 1e30] {
             let p = StageProcessor()
@@ -157,14 +126,7 @@ final class StageProcessorRenderTests: XCTestCase {
         }
     }
 
-    // MARK: - Values a tapped app can actually produce
 
-    /// Non-finite samples arriving from a tapped app are scrubbed at the
-    /// door, but width on a pair near the float ceiling manufactures one
-    /// inside the stage: 200% width doubles the side channel, and doubling
-    /// 6e38 is an infinity. A memoryless shaper would merely pass it through;
-    /// the anti-aliased one keeps it as the previous sample and hands back
-    /// NaN for every sample after it, so it stops before the shaper.
     func testAnOverflowInsideTheStageDoesNotPoisonEverySampleAfterIt() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -185,20 +147,13 @@ final class StageProcessorRenderTests: XCTestCase {
         p.render(input: huge.constPointer, output: out1.list.unsafeMutablePointer)
         XCTAssertTrue(out1.samples(0, count: 32).allSatisfy(\.isFinite))
 
-        // Everything after it is finite too, where without the guard every
-        // sample for the rest of the session was NaN.
         let normal = Buffers([(2, 16)])
         normal.fill(0, (0..<32).map { Float(sin(Double($0) * 0.2)) * 0.4 })
         let out2 = Buffers([(2, 16)])
         p.render(input: normal.constPointer, output: out2.list.unsafeMutablePointer)
         XCTAssertTrue(out2.samples(0, count: 32).allSatisfy(\.isFinite))
 
-        // Silence is where an overflow leaves the stage — the filter states
-        // upstream of the shaper absorbed it too — and the epoch wipe is what
-        // brings it back, on the same edge an engine restart already uses.
         p.prepare(sampleRate: 48000)
-        // A fresh block: the stage filters the input buffers IN PLACE, so the
-        // one above now holds what came out of it, not what went in.
         let again = Buffers([(2, 16)])
         again.fill(0, (0..<32).map { Float(sin(Double($0) * 0.2)) * 0.4 })
         let out3 = Buffers([(2, 16)])
@@ -221,14 +176,7 @@ final class StageProcessorRenderTests: XCTestCase {
         XCTAssertTrue(output.samples(0, count: 16).allSatisfy(\.isFinite))
     }
 
-    // MARK: - The rendered sound itself
 
-    /// The render-path work in this batch — the tail index, the widened
-    /// denormal flush, the guard ahead of the clipper — is meant to be
-    /// inaudible: every one of them either replaces arithmetic with
-    /// equivalent arithmetic or fires only on values no signal reaches. These
-    /// are the samples the full stage produced before any of it, so a change
-    /// that alters the sound has to answer for itself here.
     func testTheFullStageStillRendersTheSameSamples() {
         let p = StageProcessor()
         p.prepare(sampleRate: 48000)
@@ -250,13 +198,10 @@ final class StageProcessorRenderTests: XCTestCase {
             XCTAssertEqual(rendered[e.index], e.value, accuracy: 1e-6,
                            "sample \(e.index)")
         }
-        // The whole block, not only the seven probes: a comb that wrapped one
-        // sample early would move every value after it a little.
         let energy = rendered.reduce(0.0) { $0 + Double($1) * Double($1) }
         XCTAssertEqual(energy, 162.362_148_3, accuracy: 1e-4)
     }
 
-    // MARK: - Helpers
 
     private func fullStage() -> StageSettings {
         var s = StageSettings()
@@ -273,8 +218,6 @@ final class StageProcessorRenderTests: XCTestCase {
         return s
     }
 
-    /// One stereo block of the same pseudo-random material every run, loud
-    /// enough to move the night-mode envelope off its resting point.
     private static func deterministicStereo(frames: Int) -> [Float] {
         var state: UInt64 = 0x2545_F491_4F6C_DD1D
         var out = [Float](repeating: 0, count: frames * 2)
@@ -299,7 +242,6 @@ final class StageProcessorRenderTests: XCTestCase {
         p.render(input: input.constPointer, output: output.list.unsafeMutablePointer)
     }
 
-    /// An AudioBufferList shaped like the HAL's, owning its blocks.
     private final class Buffers {
         let list: UnsafeMutableAudioBufferListPointer
         private var blocks: [UnsafeMutablePointer<Float>] = []

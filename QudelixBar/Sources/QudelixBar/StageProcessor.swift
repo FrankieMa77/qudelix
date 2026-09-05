@@ -200,10 +200,6 @@ final class StageProcessor {
     /// render thread wipe them on its next cycle. Nothing here touches
     /// render-side memory directly.
     func prepare(sampleRate: Double) {
-        // Everything below multiplies this into a buffer length, and
-        // `Int(seconds * rate)` traps rather than clamps on an infinity, so
-        // the clamp has to reject the impossible rather than just raise the
-        // floor: `max(8000, .infinity)` is still infinity.
         self.sampleRate = AudioOutputs.plausibleRate(sampleRate)
         epoch &+= 1
         // The spectrum ring holds samples timed for the OLD rate; an FFT
@@ -215,9 +211,6 @@ final class StageProcessor {
         specTotalWritten = 0
         specDrainedTotal = 0
         os_unfair_lock_unlock(specLock)
-        // The energy behind the meter was accumulated on the previous device
-        // at the previous rate; carrying it into the first second of the new
-        // one reports a level nothing played.
         os_unfair_lock_lock(meterLock)
         meterSumSquares = 0
         meterFrames = 0
@@ -227,15 +220,8 @@ final class StageProcessor {
     }
 
     /// Update the Soundstage. The new design swaps in atomically.
-    ///
-    /// Guarded, like the two switches below it: a slider drag calls this at
-    /// UI frame rate, and a redesign that lands a byte-identical Config is
-    /// a lock round trip and a full filter design for the same sound.
     func applyStage(_ settings: StageSettings) {
         let next = settings.clamped()
-        // `audiblyEquals`, not `==`: the geometry fields are optionals whose
-        // nil means a default, and the design reads only the resolved values,
-        // so two settings that compare unequal can design the same filters.
         guard !next.audiblyEquals(stageSettings) else { return }
         stageSettings = next
         redesign()
@@ -248,8 +234,6 @@ final class StageProcessor {
         redesign()
     }
 
-    /// Control-side view of the mute, so the analyzer can sit out a tone
-    /// session instead of judging the frozen ring behind it.
     var isMutedNow: Bool { muted }
 
     /// Meter without touching the audio path (Level tracking on its own).
@@ -396,17 +380,10 @@ final class StageProcessor {
     private var specRing = [Float](repeating: 0, count: specRingSize)
     private var specWriteIdx = 0
     private var specWritten = 0
-    /// Samples ever written, and the count at the last successful drain. A
-    /// drain that finds nothing new between them hands back nothing: the
-    /// window is a peek at the most recent audio, and re-handing the same
-    /// tail every tick — a silent gap, or a tone test's mute freezing the
-    /// ring — makes the analyzer re-judge audio it already classified, and
-    /// max-hold it onto itself until an accidental verdict goes stable.
     private var specTotalWritten = 0
     private var specDrainedTotal = 0
 
     /// Copy out the most recent `count` samples in playback order. Returns
-    /// empty until enough fresh audio has passed since the last drain.
     func drainSpectrumSamples(_ count: Int) -> [Float] {
         let n = min(count, Self.specRingSize)
         guard n > 0 else { return [] }
@@ -420,11 +397,6 @@ final class StageProcessor {
         specDrainedTotal = specTotalWritten
         let mask = Self.specRingSize - 1
         let start = (specWriteIdx - n) & mask
-        // Two block copies, not `n` bounds-checked element reads: the render
-        // thread takes this same lock every callback, so whatever this holds
-        // it for is time an IO cycle can spend waiting. The window is
-        // contiguous on each side of the wrap, so two runs always describe
-        // it, and `out` is uniquely referenced — the stores are in place.
         let firstRun = min(n, Self.specRingSize - start)
         out.withUnsafeMutableBufferPointer { dst in
             specRing.withUnsafeBufferPointer { src in
@@ -538,15 +510,6 @@ final class StageProcessor {
         }
 
         // Locate each input channel; the stage filters them in place.
-        //
-        // Counted from the END of the list, never from the front. The
-        // aggregate is built over the default output, and its input list is
-        // the tap's buffer preceded by whatever input streams the output
-        // device itself presents — an interface, headset or dock with
-        // microphone inputs contributes those, and they belong to nobody
-        // here. One tap means one consumed buffer, and taking the last is
-        // what leaves the rest alone; taking the first mixes a microphone
-        // into the output and meters it as if it were the music.
         let consumed = min(1, inList.count)
         inRefs.removeAll(keepingCapacity: true)
         for i in (inList.count - consumed)..<inList.count {
@@ -762,11 +725,6 @@ final class StageProcessor {
             tailLPR += 0.35 * ((wr + outR * p.tailFeedback) - tailLPR)
             tailBufL[tailIdxL] = tailLPL
             tailBufR[tailIdxR] = tailLPR
-            // Compare-and-reset, not a modulo: the tail lengths are odd
-            // sample counts rather than powers of two, so `%` is a real
-            // integer division — tens of cycles, twice a frame, on the render
-            // thread. The guard above already put the index inside the loop,
-            // so a single increment can only ever reach the length itself.
             tailIdxL += 1
             if tailIdxL >= p.tailLenL { tailIdxL = 0 }
             tailIdxR += 1
@@ -800,12 +758,6 @@ final class StageProcessor {
             // saturation above, so theatrical levels survive the widening.
             // Anti-aliased, and per channel: the shaper's memory is the
             // previous sample of the same signal, so L and R carry their own.
-            // The scrub at the door catches what arrived non-finite; this one
-            // catches what the stage itself can produce — width on a pair
-            // near the float ceiling, a room tail summing to infinity. A
-            // memoryless shaper would merely pass such a sample through, but
-            // the anti-aliased one keeps it as `prev` and hands back NaN for
-            // every sample after it, so it stops here.
             var xl = L * p.trim
             var xr = R * p.trim
             if !xl.isFinite { xl = 0 }
@@ -820,25 +772,8 @@ final class StageProcessor {
             pr += r.stride
         }
 
-        // Every recursion here decays through the denormal band after the
         // input goes silent, which costs real CPU on Intel (no FTZ is set on
         // the HAL thread). Flushing the scalars once per buffer keeps the
-        // spike bounded to a single cycle — the biquad states and the night
-        // envelope included, which is where a quiet passage lands hardest:
-        // they are the slowest-decaying of the lot.
-        //
-        // The rings — crossDelay, roomBuf, tailBuf — are deliberately not
-        // swept: they are delay lines, not recursions, and they refill from
-        // these states, so zeroing the one-poles empties them within one tail
-        // length on their own. Sweeping ~50k floats every block to shorten
-        // that would cost more every block than it saves in the one block it
-        // saves anything. `adaaPrev` is the previous input, not an
-        // accumulator, and takes no penalty of its own.
-        //
-        // The thresholds sit far below anything audible (−400 dBFS for the
-        // Float states, −600 dBFS for the Double ones), and comparisons take
-        // no subnormal penalty, so this is cheap even in the case it exists
-        // for and changes nothing at all above them.
         if abs(crossLPl) < 1e-20 { crossLPl = 0 }
         if abs(crossLPr) < 1e-20 { crossLPr = 0 }
         if abs(roomLPStateL) < 1e-20 { roomLPStateL = 0 }
