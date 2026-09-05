@@ -81,10 +81,45 @@ enum UIPreview {
                 if let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: dir.appendingPathComponent("\(pane)-\(name).png"))
                 }
+                if name == "light" {
+                    switch pane {
+                    case "eq", "b20":
+                        reportPaneFit(pane, EqEditorView(editingBand: .constant(nil)),
+                                      controller, stage)
+                    case "presets":
+                        reportPaneFit(pane, PresetsView(), controller, stage)
+                    case "import":
+                        reportPaneFit(pane, ImportView(), controller, stage)
+                    case "tune":
+                        reportPaneFit(pane, TuneView(), controller, stage)
+                    case "stage":
+                        reportPaneFit(pane, StageView(), controller, stage)
+                    case "level":
+                        reportPaneFit(pane, LevelView(), controller, stage)
+                    default: break
+                    }
+                }
                 window.close()
             }
         }
         print("shots written to \(dir.path)")
+    }
+
+    @MainActor
+    private static func reportPaneFit(_ pane: String, _ content: some View,
+                                      _ controller: QudelixController,
+                                      _ stage: StageState) {
+        let root = content
+            .environmentObject(controller)
+            .environmentObject(stage)
+            .environmentObject(ProfileRules())
+            .frame(width: 372)
+        let host = NSHostingView(rootView: AnyView(root))
+        host.layoutSubtreeIfNeeded()
+        let wanted = host.fittingSize.height
+        print(String(format: "%@: content %.1f pt vs %.0f pt pane — %@",
+                     pane, wanted, PopoverView.contentHeight,
+                     wanted <= PopoverView.contentHeight ? "fits" : "OVERFLOWS"))
     }
 
     @MainActor

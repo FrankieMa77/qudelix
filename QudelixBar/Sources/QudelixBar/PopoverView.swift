@@ -46,7 +46,7 @@ struct PopoverView: View {
     /// 10-band EQ table, plus the two USB-audio rows; every other pane
     /// top-aligns into the same space, and Stage/Level scroll internally if
     /// they ever exceed it.
-    private static let contentHeight: CGFloat = 613
+    static let contentHeight: CGFloat = 613
 
     var body: some View {
         VStack(spacing: 0) {
@@ -84,6 +84,7 @@ struct PopoverView: View {
                     .padding(14)
                 }
                 .frame(height: Self.contentHeight)
+                .clipped()
                 .onAppear { if pane.needsDevice { pane = .stage } }
             } else if connected {
                 // No outer ScrollView on purpose: the panes that can grow
@@ -128,8 +129,10 @@ struct PopoverView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .clipped()
                 .padding(14)
                 .frame(height: Self.contentHeight)
+                .clipped()
             } else {
                 VStack(spacing: 0) {
                     DisconnectedView()
@@ -156,6 +159,7 @@ struct PopoverView: View {
                     .padding(14)
                 }
                 .frame(height: Self.contentHeight)
+                .clipped()
                 .onAppear { if pane.needsDevice { pane = .stage } }
             }
 
