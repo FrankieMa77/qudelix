@@ -740,6 +740,7 @@ struct BandRow: View {
         let band = controller.bands.indices.contains(index)
             ? controller.bands[index] : QxEqBandValue()
         let muted = controller.isBandMuted(index)
+        let editsGain = band.filter == .bypass || band.filter.hasGain
         GridRow {
             Text("\(index + 1)")
                 .font(.system(size: 9).monospacedDigit())
@@ -767,11 +768,11 @@ struct BandRow: View {
                    in: -12...12,
                    onEditingChanged: { editing in editingBand = editing ? index : nil })
                 .controlSize(.mini)
-                .disabled(!band.filter.hasGain)
+                .disabled(!editsGain)
 
-            Text(band.filter.hasGain ? String(format: "%+.1f", band.gain) : "—")
+            Text(editsGain ? String(format: "%+.1f", band.gain) : "—")
                 .font(.system(size: 10).monospacedDigit())
-                .foregroundStyle(band.filter.hasGain && band.gain != 0 ? .primary : .secondary)
+                .foregroundStyle(editsGain && band.gain != 0 ? .primary : .secondary)
                 .frame(width: 32, alignment: .trailing)
 
             TextField("", value: Binding(get: { band.q }, set: { set { $0.q = $1 } ($0) }),
