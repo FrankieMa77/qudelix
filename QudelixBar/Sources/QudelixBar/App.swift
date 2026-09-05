@@ -23,6 +23,7 @@ struct QudelixBarApp: App {
     /// Also app-owned: it has to notice an output change while the popover is
     /// closed, which is when swapping headphones actually happens.
     @StateObject private var profileRules = ProfileRules()
+    @StateObject private var a2dpGuard = A2dpGuard()
     @StateObject private var abTuner = ABTuner()
     @StateObject private var toneTester = ToneTester()
     @StateObject private var blindTuner = BlindTuner()
@@ -45,6 +46,7 @@ struct QudelixBarApp: App {
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
+                .environmentObject(a2dpGuard)
         } label: {
             // One composed template image, not an HStack of Images — the
             // menu bar item drops all but the first SF symbol when handed
@@ -65,7 +67,18 @@ struct QudelixBarApp: App {
                         guard let controller else { return nil }
                         return (controller.activeCall, controller.inputSource)
                     }
+                    stageState.guardDiagnostics = { [weak a2dpGuard] in
+                        a2dpGuard?.diagSummary ?? "guard=off hijack=none"
+                    }
                     stageState.start()
+
+                    a2dpGuard.callActive = { [weak stageState] in
+                        stageState?.callActive ?? false
+                    }
+                    a2dpGuard.onModeChange = { [weak stageState] mode in
+                        stageState?.setA2dpGuardMode(mode)
+                    }
+                    a2dpGuard.start(mode: stageState.savedA2dpGuardMode)
 
                     // The rules engine decides *what* should happen and this
                     // is the only place that lets it happen, so it can never
@@ -95,7 +108,8 @@ struct QudelixBarApp: App {
                     // logic in them is inert.
                     profileRules.currentEqGroupRaw = controller.eqGroup.rawValue
                     profileRules.start()
-                    quitDelegate.onTerminate = { [weak stageState, weak controller, weak abTuner, weak toneTester, weak blindTuner] in
+                    quitDelegate.onTerminate = { [weak stageState, weak controller, weak abTuner, weak toneTester, weak blindTuner, weak a2dpGuard] in
+                        a2dpGuard?.stop()
                         if let controller {
                             if let abTuner, abTuner.phase == .running || abTuner.phase == .finished {
                                 abTuner.cancel(controller)

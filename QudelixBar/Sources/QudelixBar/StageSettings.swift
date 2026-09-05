@@ -155,6 +155,7 @@ struct PersistedStageState: Codable {
     var autoRate: Bool?
     /// The rate the user last picked by hand — where "lossy" returns to.
     var manualRateHz: Double?
+    var a2dpGuard: String?
 }
 
 /// Reads for user-writable state files. `Data(contentsOf:)` follows a

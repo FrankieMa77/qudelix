@@ -54,6 +54,7 @@ enum UIPreview {
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
+                    .environmentObject(guardMock(pane))
                     .frame(width: 400)
                     .background(VisualEffectBackground())
 
@@ -145,6 +146,7 @@ enum UIPreview {
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
+                    .environmentObject(guardMock(pane))
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
 
@@ -178,7 +180,8 @@ enum UIPreview {
          ("disconnected", disconnected(), stageMock(running: true), BlindTuner()),
          ("unsupported", unsupported(), stageMock(), BlindTuner()),
          ("b20", twentyBand(), stageMock(), BlindTuner()),
-         ("lowbatt", lowBattery(), stageMock(), BlindTuner())]
+         ("lowbatt", lowBattery(), stageMock(), BlindTuner()),
+         ("micguard", micHijacked(), stageMock(), BlindTuner())]
     }
 
     @MainActor
@@ -196,6 +199,25 @@ enum UIPreview {
     @MainActor
     private static func shapeRefusedMock() -> BlindTuner {
         BlindTuner.previewShape { _ in .preferA }
+    }
+
+    @MainActor
+    private static func guardMock(_ pane: String) -> A2dpGuard {
+        let g = A2dpGuard()
+        if pane == "micguard" {
+            g.previewSetMode(.ask)
+            g.previewSetHijack(id: 3, name: "Qudelix-5K", reason: .asking)
+        }
+        return g
+    }
+
+    @MainActor
+    private static func micHijacked() -> QudelixController {
+        let c = make(.equalizer)
+        c.inputSource = "HFP 1"
+        c.codecLabel = "AAC"
+        c.sampleRate = "16 kHz"
+        return c
     }
 
     /// Header treatment at a very low battery: red glyph, warning in the

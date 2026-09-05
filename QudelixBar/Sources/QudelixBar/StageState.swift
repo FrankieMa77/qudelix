@@ -28,6 +28,17 @@ final class StageState: ObservableObject {
 
     var deviceCallState: (() -> (activeCall: Bool?, inputSource: String?)?)?
 
+    private var a2dpGuardModeRaw = A2dpGuard.Mode.ask.rawValue
+    var savedA2dpGuardMode: A2dpGuard.Mode {
+        A2dpGuard.Mode(rawValue: a2dpGuardModeRaw) ?? .ask
+    }
+    func setA2dpGuardMode(_ mode: A2dpGuard.Mode) {
+        guard mode.rawValue != a2dpGuardModeRaw else { return }
+        a2dpGuardModeRaw = mode.rawValue
+        scheduleSave()
+    }
+    var guardDiagnostics: (() -> String)?
+
     // Stream-quality detection: spectral analysis of what the tap hears.
     @Published private(set) var detectQuality = true
     @Published private(set) var autoRate = true
@@ -112,6 +123,9 @@ final class StageState: ObservableObject {
             autoRate = saved.autoRate ?? true
             if let rate = saved.manualRateHz, AudioOutputs.isPlausibleRate(rate) {
                 manualRateHz = rate
+            }
+            if let raw = saved.a2dpGuard, A2dpGuard.Mode(rawValue: raw) != nil {
+                a2dpGuardModeRaw = raw
             }
             // The file is user-writable: clamp what comes off it so a
             // hand-edited value can't trap Int() in the Level pane, drop
@@ -385,7 +399,8 @@ final class StageState: ObservableObject {
             levelTracking: levelTracking,
             detectQuality: detectQuality,
             autoRate: autoRate,
-            manualRateHz: manualRateHz))
+            manualRateHz: manualRateHz,
+            a2dpGuard: a2dpGuardModeRaw))
     }
 
     // MARK: - Metering
@@ -432,7 +447,9 @@ final class StageState: ObservableObject {
             // radio-supplied string — a newline in it forges heartbeat lines.
             let content = DebugLog.sanitized(
                 "running=\(engine.isRunning) call=\(callActive) "
-                + "hold=\(engine.callHold) status=\"\(engine.status)\" "
+                + "hold=\(engine.callHold) "
+                + (guardDiagnostics.map { $0() + " " } ?? "")
+                + "status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
                 + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room) "
                 + String(format: "cross=%.2f/%.2f/%.2f bal=%.1fdB/%.2fms) ",
