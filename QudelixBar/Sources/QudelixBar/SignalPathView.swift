@@ -79,6 +79,8 @@ enum SignalPath {
         var engineMode: StageEngine.Mode?
         var stage = StageSettings()
 
+        var bassGuardActive = false
+
         // Row 4: Qudelix EQ (runs on the device, not the Mac)
         var eqEnabled = true
         var bandCount = 10
@@ -205,14 +207,16 @@ enum SignalPath {
                       state: "not in the path — metering only, audio untouched",
                       indicator: .passthrough)
         case .insert:
-            return Row(id: "app", name: name, state: stageDescription(i.stage),
+            return Row(id: "app", name: name,
+                      state: stageDescription(i.stage, guarding: i.bassGuardActive),
                       indicator: .altering)
         }
     }
 
     /// What the Stage is actually doing, named rather than just "on" — the
     /// four audible controls that are above their neutral value.
-    private static func stageDescription(_ s: StageSettings) -> String {
+    private static func stageDescription(_ s: StageSettings,
+                                        guarding: Bool) -> String {
         guard !s.isAudiblyNeutral else {
             return "Soundstage inserted — every control at neutral"
         }
@@ -228,6 +232,7 @@ enum SignalPath {
         if s.balanceDbValue != 0 || s.alignMsValue != 0 { parts.append("balance") }
         if s.loudnessValue { parts.append("loudness compensation") }
         if s.limiterValue { parts.append("true-peak limiter") }
+        if s.bassGuardValue, guarding { parts.append("dynamic bass") }
         let detail = parts.isEmpty ? "processing the stereo mix"
                                    : parts.joined(separator: ", ") + " active"
         return "Soundstage inserted — " + detail
@@ -339,6 +344,8 @@ struct SignalPathView: View {
             mixerDeviceName: stageState.outputName,
             engineMode: stageState.engine.isRunning ? stageState.engine.mode : nil,
             stage: stageState.stage,
+            bassGuardActive: stageState.stage.bassGuardValue
+                && !stageState.bassGuardInert,
             eqEnabled: controller.eqEnabled,
             bandCount: controller.bandCount,
             mutedBandCount: controller.mutedBands.count,

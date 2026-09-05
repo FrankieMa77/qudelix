@@ -392,9 +392,13 @@ enum UIPreview {
         stage.enabled = running
         stage.limiter = running
         stage.loudness = running
+        stage.bassGuard = running
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: running ? -21 : nil,
                      loudnessShelfDb: running ? 4.2 : 0,
+                     bassGuardBoostDb: running ? 7.5 : 0,
+                     bassGuardCeilingDb: running ? 7.5 : 0,
+                     bassGuardGainReductionDb: running ? 2.1 : 0,
                      earLevel: running ? .estimated(71) : .unavailable,
                      earAnchor: running ? .system(-18) : nil)
         s.watcher.previewSetDevices(
@@ -417,11 +421,15 @@ enum UIPreview {
         stage.enabled = true
         stage.limiter = true
         stage.loudness = true
+        stage.bassGuard = true
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: -23, levelTracking: true,
                      verdict: .losslessLike(cutoffKHz: 21.9),
                      limiterGainReductionDb: 2.4,
                      loudnessShelfDb: 1.8,
+                     bassGuardBoostDb: 6.4,
+                     bassGuardCeilingDb: 6.4,
+                     bassGuardGainReductionDb: 1.6,
                      earLevel: .estimated(78), earAnchor: .qudelix(-24))
         s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
         return s

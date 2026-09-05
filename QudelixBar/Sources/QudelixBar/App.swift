@@ -66,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         w.stageState.qudelixVolumeDb = { [weak controller = w.controller] in
             controller?.reportedVolumeDb
         }
+        w.stageState.deviceEqCurve = { [weak controller = w.controller] in
+            guard let controller, controller.eqEnabled else { return nil }
+            guard case .connected = controller.connection else { return nil }
+            return controller.bands
+        }
         w.stageState.start()
 
         w.a2dpGuard.callActive = { [weak stageState = w.stageState] in
