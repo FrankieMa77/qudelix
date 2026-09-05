@@ -70,6 +70,9 @@ struct QudelixBarApp: App {
                     stageState.guardDiagnostics = { [weak a2dpGuard] in
                         a2dpGuard?.diagSummary ?? "guard=off hijack=none"
                     }
+                    stageState.qudelixVolumeDb = { [weak controller] in
+                        controller?.reportedVolumeDb
+                    }
                     stageState.start()
 
                     a2dpGuard.callActive = { [weak stageState] in

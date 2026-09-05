@@ -259,7 +259,8 @@ enum UIPreview {
         stage.enabled = false
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: -23, levelTracking: true,
-                     verdict: .losslessLike(cutoffKHz: 21.9))
+                     verdict: .losslessLike(cutoffKHz: 21.9),
+                     earLevel: .estimated(78), earAnchor: .qudelix(-24))
         s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
         return s
     }

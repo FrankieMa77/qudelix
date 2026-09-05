@@ -7,6 +7,8 @@ import os.lock
 struct BiquadSection {
     var b0: Double, b1: Double, b2: Double, a1: Double, a2: Double
 
+    static let passthrough = BiquadSection(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+
     /// Peaking filter with a matched (impulse-invariant) design — Vicanek,
     /// "Matched Second Order Digital Filters" (2016), §3.2 + §4.4. Unlike the
     /// bilinear transform it doesn't cramp the bandwidth toward Nyquist, so a
@@ -136,6 +138,8 @@ final class StageProcessor {
         /// path depends on how the HAL joins a dying IOProc.
         var epoch: UInt64 = 0
         var stage = StageParams()
+        var kShelf = BiquadSection.passthrough
+        var kHighpass = BiquadSection.passthrough
     }
 
     /// One early reflection. Fixed shape, not an array: keeping StageParams
@@ -224,6 +228,8 @@ final class StageProcessor {
 
     private var sampleRate: Double = 48000
     private var stageSettings = StageSettings()
+    private var kShelfDesign = KWeighting.shelf(sampleRate: 48000)
+    private var kHighpassDesign = KWeighting.highpass(sampleRate: 48000)
     private var muted = false
     private var monitorOnly = false
     /// Control-side epoch counter; stamped into every config. prepare()
@@ -240,6 +246,8 @@ final class StageProcessor {
     func prepare(sampleRate: Double) {
         self.sampleRate = AudioOutputs.plausibleRate(sampleRate)
         epoch &+= 1
+        kShelfDesign = KWeighting.shelf(sampleRate: self.sampleRate)
+        kHighpassDesign = KWeighting.highpass(sampleRate: self.sampleRate)
         // The spectrum ring holds samples timed for the OLD rate; an FFT
         // window mixing both mislabels every bin frequency. Unlike the DSP
         // rings this one is shared by lock, not epoch, so clear it here.
@@ -252,6 +260,8 @@ final class StageProcessor {
         os_unfair_lock_lock(meterLock)
         meterSumSquares = 0
         meterFrames = 0
+        loudSumSquares = 0
+        loudFrames = 0
         corrLR = 0; corrLL = 0; corrRR = 0
         os_unfair_lock_unlock(meterLock)
         redesign()
@@ -367,6 +377,8 @@ final class StageProcessor {
         next.monitorOnly = monitorOnly
         next.epoch = epoch
         next.stage = designStage()
+        next.kShelf = kShelfDesign
+        next.kHighpass = kHighpassDesign
         // Config is POD (asserted in init), so this swap is a plain copy:
         // nothing is retained or released on either side of the lock.
         os_unfair_lock_lock(lock)
@@ -386,6 +398,8 @@ final class StageProcessor {
     }()
     private var meterSumSquares: Double = 0
     private var meterFrames: Int = 0
+    private var loudSumSquares: Double = 0
+    private var loudFrames: Int = 0
 
     /// What the last render cycle actually saw — the ground truth for "is
     /// the stage really running", readable from the control thread.
@@ -421,6 +435,15 @@ final class StageProcessor {
         let result = (meterSumSquares, meterFrames)
         meterSumSquares = 0
         meterFrames = 0
+        return result
+    }
+
+    func drainLoudnessMeter() -> (sumSquares: Double, frames: Int) {
+        os_unfair_lock_lock(meterLock)
+        defer { os_unfair_lock_unlock(meterLock) }
+        let result = (loudSumSquares, loudFrames)
+        loudSumSquares = 0
+        loudFrames = 0
         return result
     }
 
@@ -518,6 +541,9 @@ final class StageProcessor {
     // engage open with a burst until the attack catches up.
     private var nightEnv: Double = 0.05
 
+    private var kState = [Double](repeating: 0, count: 8)
+    private var kEngaged = false
+
     /// False while the stage is idle; the first engaged render wipes the
     /// rings and filter states so hours-old audio can't replay out of
     /// frozen buffers.
@@ -569,6 +595,7 @@ final class StageProcessor {
             renderEpoch = cfg.epoch
             resetStageState()
             stageEngaged = false
+            kEngaged = false
         }
 
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
@@ -606,6 +633,7 @@ final class StageProcessor {
             diagStageRan = false
             os_unfair_lock_unlock(meterLock)
             stageEngaged = false
+            kEngaged = false
             return
         }
 
@@ -672,14 +700,51 @@ final class StageProcessor {
                 ss += v * v
                 p += first.stride
             }
+
+            if !kEngaged {
+                for i in kState.indices { kState[i] = 0 }
+                kEngaged = true
+            }
+            let kChannels = min(inRefs.count, 2)
+            var kFrames = first.frames
+            for c in 1..<kChannels { kFrames = min(kFrames, inRefs[c].frames) }
+            var kss = 0.0
+            for c in 0..<kChannels {
+                let ref = inRefs[c]
+                let base = c * 4
+                var z1 = kState[base], z2 = kState[base + 1]
+                var z3 = kState[base + 2], z4 = kState[base + 3]
+                var q = ref.ptr
+                for _ in 0..<kFrames {
+                    var x = Double(q.pointee)
+                    if !x.isFinite { x = 0 }
+                    let y1 = cfg.kShelf.b0 * x + z1
+                    z1 = cfg.kShelf.b1 * x - cfg.kShelf.a1 * y1 + z2
+                    z2 = cfg.kShelf.b2 * x - cfg.kShelf.a2 * y1
+                    let y2 = cfg.kHighpass.b0 * y1 + z3
+                    z3 = cfg.kHighpass.b1 * y1 - cfg.kHighpass.a1 * y2 + z4
+                    z4 = cfg.kHighpass.b2 * y1 - cfg.kHighpass.a2 * y2
+                    kss += y2 * y2
+                    q += ref.stride
+                }
+                kState[base] = flushDenormal(z1)
+                kState[base + 1] = flushDenormal(z2)
+                kState[base + 2] = flushDenormal(z3)
+                kState[base + 3] = flushDenormal(z4)
+            }
+
             // In monitor mode the samples are unscrubbed; a NaN buffer must
             // not poison the whole second's accumulator.
+            os_unfair_lock_lock(meterLock)
             if ss.isFinite {
-                os_unfair_lock_lock(meterLock)
                 meterSumSquares += ss
                 meterFrames += first.frames
-                os_unfair_lock_unlock(meterLock)
             }
+            if kss.isFinite {
+                loudSumSquares += kss
+                loudFrames += kFrames
+            }
+            os_unfair_lock_unlock(meterLock)
         }
 
         // Monitor mode writes nothing: the original audio is still playing
@@ -908,6 +973,11 @@ final class StageProcessor {
         if abs(dialogueZ1) < 1e-30 { dialogueZ1 = 0 }
         if abs(dialogueZ2) < 1e-30 { dialogueZ2 = 0 }
         if abs(nightEnv) < 1e-30 { nightEnv = 0 }
+    }
+
+    @inline(__always)
+    private func flushDenormal(_ v: Double) -> Double {
+        abs(v) < 1e-30 ? 0 : v
     }
 
     /// Padé tanh approximation: transparent at normal levels, saturating

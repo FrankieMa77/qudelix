@@ -110,6 +110,47 @@ enum AudioOutputs {
         return object
     }
 
+    static func outputVolume(_ id: AudioDeviceID) -> Float? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectHasProperty(id, &addr) == false { addr.mElement = 1 }
+        guard AudioObjectHasProperty(id, &addr) else { return nil }
+        var volume: Float32 = 0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &volume) == noErr
+        else { return nil }
+        return volume
+    }
+
+    static func outputVolumeDbRaw(_ id: AudioDeviceID) -> Float? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeDecibels,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectHasProperty(id, &addr) == false { addr.mElement = 1 }
+        guard AudioObjectHasProperty(id, &addr) else { return nil }
+        var db: Float32 = 0
+        var size = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &db) == noErr
+        else { return nil }
+        return db
+    }
+
+    static func outputVolumeDb(_ id: AudioDeviceID) -> Float? {
+        trustedVolumeDb(db: outputVolumeDbRaw(id), scalar: outputVolume(id))
+    }
+
+    static let fullVolumeScalar: Float = 0.995
+
+    static func trustedVolumeDb(db: Float?, scalar: @autoclosure () -> Float?) -> Float? {
+        guard let db, EarLevel.plausibleVolumeDb.contains(Double(db)) else { return nil }
+        guard db == 0, let scalar = scalar(),
+              scalar.isFinite, scalar >= 0, scalar < fullVolumeScalar else { return db }
+        return max(20 * log10f(scalar), Float(EarLevel.plausibleVolumeDb.lowerBound))
+    }
+
     static let fallbackRate: Double = 48000
 
     static func isPlausibleRate(_ rate: Double) -> Bool {

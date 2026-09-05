@@ -203,6 +203,93 @@ final class StageProcessorRenderTests: XCTestCase {
     }
 
 
+    func testTheLoudnessMeasurementNeverWritesToTheAudio() {
+        let p = StageProcessor()
+        p.prepare(sampleRate: 48000)
+        p.setMonitorOnly(true)
+        p.applyStage(fullStage())
+
+        let frames = 1024
+        let samples = Self.deterministicStereo(frames: frames)
+        let input = Buffers([(2, frames)])
+        input.fill(0, samples)
+        let output = Buffers([(2, frames)])
+        p.render(input: input.constPointer, output: output.list.unsafeMutablePointer)
+
+        XCTAssertEqual(input.samples(0, count: frames * 2).map(\.bitPattern),
+                       samples.map(\.bitPattern))
+        XCTAssertTrue(output.samples(0, count: frames * 2).allSatisfy { $0 == 0 })
+        let loudness = p.drainLoudnessMeter()
+        XCTAssertEqual(loudness.frames, frames)
+        XCTAssertGreaterThan(loudness.sumSquares, 0)
+    }
+
+    func testTheLoudnessMeterCountsFramesNotChannelSamples() {
+        let p = StageProcessor()
+        p.prepare(sampleRate: 48000)
+        let frames = 48000
+        let amplitude = 0.5
+        var samples = [Float](repeating: 0, count: frames * 2)
+        for i in 0..<frames {
+            let v = Float(amplitude * sin(2 * .pi * 1000 * Double(i) / 48000))
+            samples[i * 2] = v
+            samples[i * 2 + 1] = v
+        }
+        let input = Buffers([(2, frames)])
+        input.fill(0, samples)
+        let output = Buffers([(2, frames)])
+        p.render(input: input.constPointer, output: output.list.unsafeMutablePointer)
+
+        let loudness = p.drainLoudnessMeter()
+        XCTAssertEqual(loudness.frames, frames)
+        var window = ShortTermLoudness()
+        window.add(sumSquares: loudness.sumSquares, frames: loudness.frames)
+        let mono = 10 * log10(amplitude * amplitude / 2)
+        XCTAssertEqual(window.lufs ?? .nan, mono + 3.01, accuracy: 0.1)
+    }
+
+    func testPrepareDropsTheLoudnessWindowWithTheRestOfTheMeter() {
+        let p = StageProcessor()
+        p.prepare(sampleRate: 48000)
+        feed(p, frames: 4096, value: 0.5)
+        XCTAssertGreaterThan(p.drainLoudnessMeter().frames, 0)
+        feed(p, frames: 4096, value: 0.5)
+
+        p.prepare(sampleRate: 44100)
+        let loudness = p.drainLoudnessMeter()
+        XCTAssertEqual(loudness.frames, 0)
+        XCTAssertEqual(loudness.sumSquares, 0)
+    }
+
+    func testAMutedRenderMeasuresNoLoudness() {
+        let p = StageProcessor()
+        p.prepare(sampleRate: 48000)
+        p.setMuted(true)
+        feed(p, frames: 1024, value: 0.5)
+        XCTAssertEqual(p.drainLoudnessMeter().frames, 0)
+    }
+
+    func testNonFiniteSamplesNeverLodgeInTheLoudnessFilter() {
+        let p = StageProcessor()
+        p.prepare(sampleRate: 48000)
+        let frames = 256
+        var samples = [Float](repeating: 0.2, count: frames * 2)
+        samples[10] = .nan
+        samples[11] = .infinity
+        let input = Buffers([(2, frames)])
+        input.fill(0, samples)
+        let output = Buffers([(2, frames)])
+        p.render(input: input.constPointer, output: output.list.unsafeMutablePointer)
+        XCTAssertGreaterThan(p.drainLoudnessMeter().sumSquares, 0)
+
+        let clean = Buffers([(2, frames)])
+        clean.fill(0, [Float](repeating: 0.2, count: frames * 2))
+        p.render(input: clean.constPointer, output: output.list.unsafeMutablePointer)
+        let after = p.drainLoudnessMeter()
+        XCTAssertTrue(after.sumSquares.isFinite)
+        XCTAssertGreaterThan(after.sumSquares, 0)
+    }
+
     private func fullStage() -> StageSettings {
         var s = StageSettings()
         s.enabled = true

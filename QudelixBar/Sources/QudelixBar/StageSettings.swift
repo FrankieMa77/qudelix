@@ -156,6 +156,7 @@ struct PersistedStageState: Codable {
     /// The rate the user last picked by hand — where "lossy" returns to.
     var manualRateHz: Double?
     var a2dpGuard: String?
+    var earCalibrationByDevice: [String: Double]?
 }
 
 /// Reads for user-writable state files. `Data(contentsOf:)` follows a
