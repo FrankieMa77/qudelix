@@ -99,6 +99,11 @@ struct StageView: View {
             // something when touched beat controls that politely do nothing.
             .opacity(stageState.stage.enabled ? 1 : 0.55)
 
+            if stageState.stage.crossfeed > 0 {
+                crossBandGroup(uid)
+                    .opacity(stageState.stage.enabled ? 1 : 0.55)
+            }
+
             DisclosureGroup {
                 VStack(spacing: 8) {
                     slider("Distance", value: Binding(
@@ -140,6 +145,9 @@ struct StageView: View {
             }
             .opacity(stageState.stage.enabled ? 1 : 0.55)
 
+            balanceSection(uid)
+                .opacity(stageState.stage.enabled ? 1 : 0.55)
+
             if stageState.stage.enabled, let corr = stageState.sourceCorrelation,
                corr > 0.985 {
                 HStack(alignment: .top, spacing: 5) {
@@ -149,8 +157,9 @@ struct StageView: View {
                         .foregroundStyle(.orange)
                     Text("What's playing right now is mono — identical left and "
                          + "right. Width and Crossfeed have nothing to work "
-                         + "with; only Dialogue and Room can act. Try a stereo "
-                         + "source (music, a film trailer) to hear the stage.")
+                         + "with; only Dialogue, Room and Balance can act. Try "
+                         + "a stereo source (music, a film trailer) to hear the "
+                         + "stage.")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -198,9 +207,107 @@ struct StageView: View {
         .tint(stageState.stage.audiblyEquals(preset) ? Color.accentColor : nil)
     }
 
+    private func crossBandGroup(_ uid: String?) -> some View {
+        DisclosureGroup {
+            VStack(spacing: 8) {
+                slider("Low", value: Binding(
+                    get: { stageState.stage.crossLowTrimValue * 100 },
+                    set: { v in mutate(uid) { $0.crossLowTrim = v.rounded() / 100 } }),
+                    in: 0...200, display: String(format: "%.0f %%",
+                                                 stageState.stage.crossLowTrimValue * 100),
+                    help: "Below 800 Hz.")
+                slider("Mid", value: Binding(
+                    get: { stageState.stage.crossMidTrimValue * 100 },
+                    set: { v in mutate(uid) { $0.crossMidTrim = v.rounded() / 100 } }),
+                    in: 0...200, display: String(format: "%.0f %%",
+                                                 stageState.stage.crossMidTrimValue * 100),
+                    help: "800 Hz to 4 kHz.")
+                slider("High", value: Binding(
+                    get: { stageState.stage.crossHighTrimValue * 100 },
+                    set: { v in mutate(uid) { $0.crossHighTrim = v.rounded() / 100 } }),
+                    in: 0...200, display: String(format: "%.0f %%",
+                                                 stageState.stage.crossHighTrimValue * 100),
+                    help: "Above 4 kHz.")
+                Text("Each of these scales the Crossfeed amount inside one "
+                     + "range. 100 % everywhere is the plain Crossfeed above.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 5) {
+                Text("Crossfeed by band")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                if bandTrimsActive {
+                    Text(String(format: "%.0f / %.0f / %.0f %%",
+                                stageState.stage.crossLowTrimValue * 100,
+                                stageState.stage.crossMidTrimValue * 100,
+                                stageState.stage.crossHighTrimValue * 100))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .help("Scales Crossfeed separately below 800 Hz, between 800 Hz "
+                  + "and 4 kHz, and above 4 kHz.")
+        }
+    }
+
+    private var bandTrimsActive: Bool {
+        stageState.stage.crossLowTrimValue != 1
+            || stageState.stage.crossMidTrimValue != 1
+            || stageState.stage.crossHighTrimValue != 1
+    }
+
+    private func balanceSection(_ uid: String?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Balance")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            slider("Level", value: Binding(
+                get: { stageState.stage.balanceDbValue },
+                set: { v in mutate(uid) { $0.balanceDb = (v * 10).rounded() / 10 } }),
+                in: -3...3, display: levelDisplay,
+                help: "Level difference between the two sides. Half of it goes "
+                    + "to each side, so the balance changes and the volume "
+                    + "does not.",
+                valueWidth: 74,
+                reset: { mutate(uid) { $0.balanceDb = 0 } })
+            slider("Time", value: Binding(
+                get: { stageState.stage.alignMsValue },
+                set: { v in mutate(uid) { $0.alignMs = (v * 100).rounded() / 100 } }),
+                in: -0.5...0.5, display: timeDisplay,
+                help: "Arrival-time difference between the two sides — the side "
+                    + "shown is the one held back.",
+                valueWidth: 74,
+                reset: { mutate(uid) { $0.alignMs = 0 } })
+            Text("For a real mismatch between the two sides: a pair that has "
+                 + "drifted apart, or one ear that hears less than the other. "
+                 + "It acts on mono content too.")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var levelDisplay: String {
+        let v = stageState.stage.balanceDbValue
+        if v == 0 { return "centred" }
+        return String(format: "%@ +%.1f dB", v > 0 ? "R" : "L", abs(v))
+    }
+
+    private var timeDisplay: String {
+        let v = stageState.stage.alignMsValue
+        if v == 0 { return "aligned" }
+        return String(format: "%@ +%.2f ms", v > 0 ? "R" : "L", abs(v))
+    }
+
     private func slider(_ label: String, value: Binding<Double>,
                         in range: ClosedRange<Double>, display: String,
-                        help: String) -> some View {
+                        help: String, valueWidth: CGFloat = 56,
+                        reset: (() -> Void)? = nil) -> some View {
         HStack(spacing: 8) {
             Text(label)
                 .font(.system(size: 11))
@@ -211,7 +318,17 @@ struct StageView: View {
             Text(display)
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(width: 56, alignment: .trailing)
+                .frame(width: valueWidth, alignment: .trailing)
+            if let reset {
+                Button(action: reset) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 9))
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .accessibilityLabel("Reset \(label)")
+                .help("Reset \(label)")
+            }
         }
         .help(help)
     }

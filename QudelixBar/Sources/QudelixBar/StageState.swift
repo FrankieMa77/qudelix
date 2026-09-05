@@ -374,7 +374,11 @@ final class StageState: ObservableObject {
             let content = DebugLog.sanitized(
                 "running=\(engine.isRunning) status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
-                + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room)) "
+                + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room) "
+                + String(format: "cross=%.2f/%.2f/%.2f bal=%.1fdB/%.2fms) ",
+                         stage.crossLowTrimValue, stage.crossMidTrimValue,
+                         stage.crossHighTrimValue, stage.balanceDbValue,
+                         stage.alignMsValue)
                 + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug)")
             if engine.isRunning || content != lastDiagContent {
                 let repeats = diagSuppressed

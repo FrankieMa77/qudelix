@@ -32,11 +32,23 @@ struct StageSettings: Codable, Equatable {
     /// dialogue up, explosions down.
     var night: Double?
 
+    var crossLowTrim: Double?
+    var crossMidTrim: Double?
+    var crossHighTrim: Double?
+
+    var balanceDb: Double?
+    var alignMs: Double?
+
     var distanceValue: Double { distance ?? 0.35 }
     var spanValue: Double { span ?? 0.5 }
     var centerValue: Double { center ?? 0 }
     var sizeValue: Double { size ?? 0.5 }
     var nightValue: Double { night ?? 0 }
+    var crossLowTrimValue: Double { crossLowTrim ?? 1 }
+    var crossMidTrimValue: Double { crossMidTrim ?? 1 }
+    var crossHighTrimValue: Double { crossHighTrim ?? 1 }
+    var balanceDbValue: Double { balanceDb ?? 0 }
+    var alignMsValue: Double { alignMs ?? 0 }
 
     static let music = StageSettings(enabled: true, width: 115, crossfeed: 0.35,
                                      dialogue: 0, room: 0.1,
@@ -60,6 +72,11 @@ struct StageSettings: Codable, Equatable {
             && centerValue == other.centerValue
             && sizeValue == other.sizeValue
             && nightValue == other.nightValue
+            && crossLowTrimValue == other.crossLowTrimValue
+            && crossMidTrimValue == other.crossMidTrimValue
+            && crossHighTrimValue == other.crossHighTrimValue
+            && balanceDbValue == other.balanceDbValue
+            && alignMsValue == other.alignMsValue
     }
 
     /// True when these settings differ from a fresh default in ANY audible
@@ -74,6 +91,7 @@ struct StageSettings: Codable, Equatable {
     var isAudiblyNeutral: Bool {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0
+            && balanceDbValue == 0 && alignMsValue == 0
     }
 
     /// The file this comes from is user-writable, so everything headed to
@@ -94,6 +112,19 @@ struct StageSettings: Codable, Equatable {
         s.night = unit(s.night)
         if let c = s.center {
             s.center = c.isFinite ? min(max(c, -6), 3) : nil
+        }
+        func trim(_ v: Double?) -> Double? {
+            guard let v else { return nil }
+            return v.isFinite ? min(max(v, 0), 2) : nil
+        }
+        s.crossLowTrim = trim(s.crossLowTrim)
+        s.crossMidTrim = trim(s.crossMidTrim)
+        s.crossHighTrim = trim(s.crossHighTrim)
+        if let b = s.balanceDb {
+            s.balanceDb = b.isFinite ? min(max(b, -3), 3) : nil
+        }
+        if let a = s.alignMs {
+            s.alignMs = a.isFinite ? min(max(a, -0.5), 0.5) : nil
         }
         return s
     }

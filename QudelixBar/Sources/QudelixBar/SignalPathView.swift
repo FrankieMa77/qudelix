@@ -212,9 +212,14 @@ enum SignalPath {
         }
         var parts: [String] = []
         if s.width != 100 { parts.append("width") }
-        if s.crossfeed > 0 { parts.append("crossfeed") }
+        if s.crossfeed > 0 {
+            let banded = s.crossLowTrimValue != 1 || s.crossMidTrimValue != 1
+                || s.crossHighTrimValue != 1
+            parts.append(banded ? "crossfeed (per band)" : "crossfeed")
+        }
         if s.dialogue > 0 { parts.append("dialogue") }
         if s.room > 0 { parts.append("room") }
+        if s.balanceDbValue != 0 || s.alignMsValue != 0 { parts.append("balance") }
         let detail = parts.isEmpty ? "processing the stereo mix"
                                    : parts.joined(separator: ", ") + " active"
         return "Soundstage inserted — " + detail

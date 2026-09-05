@@ -80,6 +80,32 @@ struct BiquadSection {
         return BiquadSection(b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
                              a1: a1 / a0, a2: a2 / a0)
     }
+
+    static func lowPass(freq: Double, q: Double,
+                        sampleRate: Double) -> BiquadSection {
+        let (cosW0, alpha) = passShape(freq: freq, q: q, sampleRate: sampleRate)
+        let b0 = (1 - cosW0) / 2, b1 = 1 - cosW0, b2 = (1 - cosW0) / 2
+        let a0 = 1 + alpha, a1 = -2 * cosW0, a2 = 1 - alpha
+        return BiquadSection(b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+                             a1: a1 / a0, a2: a2 / a0)
+    }
+
+    static func highPass(freq: Double, q: Double,
+                         sampleRate: Double) -> BiquadSection {
+        let (cosW0, alpha) = passShape(freq: freq, q: q, sampleRate: sampleRate)
+        let b0 = (1 + cosW0) / 2, b1 = -(1 + cosW0), b2 = (1 + cosW0) / 2
+        let a0 = 1 + alpha, a1 = -2 * cosW0, a2 = 1 - alpha
+        return BiquadSection(b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+                             a1: a1 / a0, a2: a2 / a0)
+    }
+
+    private static func passShape(freq: Double, q: Double,
+                                  sampleRate: Double) -> (cosW0: Double, alpha: Double) {
+        let f0 = max(10, min(freq, sampleRate / 2 - 1))
+        let Q = max(0.05, q)
+        let w0 = 2 * Double.pi * f0 / sampleRate
+        return (cos(w0), sin(w0) / (2 * Q))
+    }
 }
 
 /// The realtime DSP core behind the Stage and Level features: the Soundstage
@@ -137,6 +163,18 @@ final class StageProcessor {
         var crossDirect: Float = 1     // loudness compensation for the blend
         var crossDelaySamples: Int = 14
         var crossLPCoef: Float = 0.09
+        var crossLowTrim: Float = 1
+        var crossMidTrim: Float = 1
+        var crossHighTrim: Float = 1
+        var crossBandsActive = false
+        var crossBandLP: BiquadSection?
+        var crossBandHP: BiquadSection?
+        var balanceGainL: Float = 1
+        var balanceGainR: Float = 1
+        var alignActive = false
+        var alignOnRight = true        // positive alignMs holds the right back
+        var alignInt: Int = 0
+        var alignFrac: Float = 0
         var dialogue: BiquadSection?   // mid-only presence peak
         var roomWet: Float = 0         // 0…0.8
         var tailFeedback: Float = 0    // 0…0.45, the diffuse tail's decay
@@ -267,6 +305,26 @@ final class StageProcessor {
         p.crossLPCoef = Float(1 - exp(-2 * Double.pi * shadowHz / sampleRate))
         p.crossGain = Float(s.crossfeed) * 0.35
         p.crossDirect = 1 / (1 + p.crossGain * 0.7)
+
+        p.crossLowTrim = Float(s.crossLowTrimValue)
+        p.crossMidTrim = Float(s.crossMidTrimValue)
+        p.crossHighTrim = Float(s.crossHighTrimValue)
+        p.crossBandsActive = p.crossLowTrim != 1 || p.crossMidTrim != 1
+            || p.crossHighTrim != 1
+        p.crossBandLP = BiquadSection.lowPass(freq: 800, q: 0.71,
+                                              sampleRate: sampleRate)
+        p.crossBandHP = BiquadSection.highPass(freq: 4000, q: 0.71,
+                                               sampleRate: sampleRate)
+
+        let half = s.balanceDbValue / 2
+        p.balanceGainL = Float(pow(10, -half / 20))
+        p.balanceGainR = Float(pow(10, half / 20))
+        let alignSamples = min(Double(Self.alignBufSize - 2),
+                               abs(s.alignMsValue) / 1000 * sampleRate)
+        p.alignActive = alignSamples > 0
+        p.alignOnRight = s.alignMsValue > 0
+        p.alignInt = Int(alignSamples)
+        p.alignFrac = Float(alignSamples - Double(p.alignInt))
 
         if s.dialogue > 0.05 {
             p.dialogue = BiquadSection.peak(freq: 2500, gainDb: s.dialogue,
@@ -422,6 +480,14 @@ final class StageProcessor {
     private var crossIdx = 0
     private var crossLPl: Float = 0
     private var crossLPr: Float = 0
+    private var crossLoZ1L: Double = 0, crossLoZ2L: Double = 0
+    private var crossLoZ1R: Double = 0, crossLoZ2R: Double = 0
+    private var crossHiZ1L: Double = 0, crossHiZ2L: Double = 0
+    private var crossHiZ1R: Double = 0, crossHiZ2R: Double = 0
+    static let alignBufSize = 512
+    private var alignBufL = [Float](repeating: 0, count: alignBufSize)
+    private var alignBufR = [Float](repeating: 0, count: alignBufSize)
+    private var alignIdx = 0
     private var dialogueZ1: Double = 0
     private var dialogueZ2: Double = 0
     private var sideShelfZ1: Double = 0
@@ -466,8 +532,11 @@ final class StageProcessor {
         for i in 0..<Self.crossBufSize { crossDelayL[i] = 0; crossDelayR[i] = 0 }
         for i in 0..<Self.roomBufSize { roomBufL[i] = 0; roomBufR[i] = 0 }
         for i in 0..<Self.tailBufSize { tailBufL[i] = 0; tailBufR[i] = 0 }
-        crossIdx = 0; roomIdx = 0; tailIdxL = 0; tailIdxR = 0
+        for i in 0..<Self.alignBufSize { alignBufL[i] = 0; alignBufR[i] = 0 }
+        crossIdx = 0; roomIdx = 0; tailIdxL = 0; tailIdxR = 0; alignIdx = 0
         crossLPl = 0; crossLPr = 0; tailLPL = 0; tailLPR = 0
+        crossLoZ1L = 0; crossLoZ2L = 0; crossLoZ1R = 0; crossLoZ2R = 0
+        crossHiZ1L = 0; crossHiZ2L = 0; crossHiZ1R = 0; crossHiZ2R = 0
         roomLPStateL = 0; roomLPStateR = 0
         sideShelfZ1 = 0; sideShelfZ2 = 0
         dialogueZ1 = 0; dialogueZ2 = 0
@@ -632,6 +701,7 @@ final class StageProcessor {
         let frames = min(l.frames, r.frames)
         let crossMask = Self.crossBufSize - 1
         let roomMask = Self.roomBufSize - 1
+        let alignMask = Self.alignBufSize - 1
         var pl = l.ptr, pr = r.ptr
 
         for _ in 0..<frames {
@@ -682,9 +752,38 @@ final class StageProcessor {
             crossLPl += p.crossLPCoef * (crossDelayR[read] - crossLPl)
             crossLPr += p.crossLPCoef * (crossDelayL[read] - crossLPr)
             crossIdx = (crossIdx + 1) & crossMask
+
+            var fedL = crossLPl, fedR = crossLPr
+            if let lo = p.crossBandLP, let hi = p.crossBandHP {
+                let xl = Double(crossLPl), xr = Double(crossLPr)
+                var y = lo.b0 * xl + crossLoZ1L
+                crossLoZ1L = lo.b1 * xl - lo.a1 * y + crossLoZ2L
+                crossLoZ2L = lo.b2 * xl - lo.a2 * y
+                let lowL = Float(y)
+                y = lo.b0 * xr + crossLoZ1R
+                crossLoZ1R = lo.b1 * xr - lo.a1 * y + crossLoZ2R
+                crossLoZ2R = lo.b2 * xr - lo.a2 * y
+                let lowR = Float(y)
+                y = hi.b0 * xl + crossHiZ1L
+                crossHiZ1L = hi.b1 * xl - hi.a1 * y + crossHiZ2L
+                crossHiZ2L = hi.b2 * xl - hi.a2 * y
+                let highL = Float(y)
+                y = hi.b0 * xr + crossHiZ1R
+                crossHiZ1R = hi.b1 * xr - hi.a1 * y + crossHiZ2R
+                crossHiZ2R = hi.b2 * xr - hi.a2 * y
+                let highR = Float(y)
+                if p.crossBandsActive {
+                    fedL = lowL * p.crossLowTrim
+                        + (crossLPl - lowL - highL) * p.crossMidTrim
+                        + highL * p.crossHighTrim
+                    fedR = lowR * p.crossLowTrim
+                        + (crossLPr - lowR - highR) * p.crossMidTrim
+                        + highR * p.crossHighTrim
+                }
+            }
             if p.crossGain > 0 {
-                L = L * p.crossDirect + crossLPl * p.crossGain
-                R = R * p.crossDirect + crossLPr * p.crossGain
+                L = L * p.crossDirect + fedL * p.crossGain
+                R = R * p.crossDirect + fedR * p.crossGain
             }
 
             // Room: per-ear early reflections drawn from both channels
@@ -754,6 +853,22 @@ final class StageProcessor {
                 R *= g
             }
 
+            alignBufL[alignIdx] = L
+            alignBufR[alignIdx] = R
+            if p.alignActive {
+                let i0 = (alignIdx - p.alignInt) & alignMask
+                let i1 = (alignIdx - p.alignInt - 1) & alignMask
+                if p.alignOnRight {
+                    R = alignBufR[i0] + (alignBufR[i1] - alignBufR[i0]) * p.alignFrac
+                } else {
+                    L = alignBufL[i0] + (alignBufL[i1] - alignBufL[i0]) * p.alignFrac
+                }
+            }
+            alignIdx = (alignIdx + 1) & alignMask
+
+            L *= p.balanceGainL
+            R *= p.balanceGainR
+
             // Soft clip instead of hard headroom: unity below ~0.5, gentle
             // saturation above, so theatrical levels survive the widening.
             // Anti-aliased, and per channel: the shaper's memory is the
@@ -776,6 +891,14 @@ final class StageProcessor {
         // the HAL thread). Flushing the scalars once per buffer keeps the
         if abs(crossLPl) < 1e-20 { crossLPl = 0 }
         if abs(crossLPr) < 1e-20 { crossLPr = 0 }
+        if abs(crossLoZ1L) < 1e-30 { crossLoZ1L = 0 }
+        if abs(crossLoZ2L) < 1e-30 { crossLoZ2L = 0 }
+        if abs(crossLoZ1R) < 1e-30 { crossLoZ1R = 0 }
+        if abs(crossLoZ2R) < 1e-30 { crossLoZ2R = 0 }
+        if abs(crossHiZ1L) < 1e-30 { crossHiZ1L = 0 }
+        if abs(crossHiZ2L) < 1e-30 { crossHiZ2L = 0 }
+        if abs(crossHiZ1R) < 1e-30 { crossHiZ1R = 0 }
+        if abs(crossHiZ2R) < 1e-30 { crossHiZ2R = 0 }
         if abs(roomLPStateL) < 1e-20 { roomLPStateL = 0 }
         if abs(roomLPStateR) < 1e-20 { roomLPStateR = 0 }
         if abs(tailLPL) < 1e-20 { tailLPL = 0 }
