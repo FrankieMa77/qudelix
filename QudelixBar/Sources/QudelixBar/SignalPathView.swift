@@ -78,6 +78,7 @@ enum SignalPath {
         /// nil = the engine isn't running at all. Set only while running.
         var engineMode: StageEngine.Mode?
         var stage = StageSettings()
+        var impulseActive = false
 
         var bassGuardActive = false
 
@@ -208,7 +209,8 @@ enum SignalPath {
                       indicator: .passthrough)
         case .insert:
             return Row(id: "app", name: name,
-                      state: stageDescription(i.stage, guarding: i.bassGuardActive),
+                      state: stageDescription(i.stage, impulse: i.impulseActive,
+                                              guarding: i.bassGuardActive),
                       indicator: .altering)
         }
     }
@@ -216,8 +218,9 @@ enum SignalPath {
     /// What the Stage is actually doing, named rather than just "on" — the
     /// four audible controls that are above their neutral value.
     private static func stageDescription(_ s: StageSettings,
-                                        guarding: Bool) -> String {
-        guard !s.isAudiblyNeutral else {
+                                         impulse: Bool,
+                                         guarding: Bool) -> String {
+        guard !s.isAudiblyNeutral || impulse else {
             return "Soundstage inserted — every control at neutral"
         }
         var parts: [String] = []
@@ -230,6 +233,7 @@ enum SignalPath {
         if s.dialogue > 0 { parts.append("dialogue") }
         if s.room > 0 { parts.append("room") }
         if s.balanceDbValue != 0 || s.alignMsValue != 0 { parts.append("balance") }
+        if impulse { parts.append("impulse response") }
         if s.loudnessValue { parts.append("loudness compensation") }
         if s.limiterValue { parts.append("true-peak limiter") }
         if s.bassGuardValue, guarding { parts.append("dynamic bass") }
@@ -344,6 +348,7 @@ struct SignalPathView: View {
             mixerDeviceName: stageState.outputName,
             engineMode: stageState.engine.isRunning ? stageState.engine.mode : nil,
             stage: stageState.stage,
+            impulseActive: stageState.impulseInPath,
             bassGuardActive: stageState.stage.bassGuardValue
                 && !stageState.bassGuardInert,
             eqEnabled: controller.eqEnabled,

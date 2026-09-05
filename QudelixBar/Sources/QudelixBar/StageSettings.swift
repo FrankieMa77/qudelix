@@ -47,6 +47,9 @@ struct StageSettings: Codable, Equatable {
     var bassGuard: Bool?
     var bassGuardStrength: Double?
 
+    var impulseFile: String?
+    var impulseMix: Double?
+
     var distanceValue: Double { distance ?? 0.35 }
     var spanValue: Double { span ?? 0.5 }
     var centerValue: Double { center ?? 0 }
@@ -62,6 +65,9 @@ struct StageSettings: Codable, Equatable {
     var loudnessStrengthValue: Double { loudnessStrength ?? 1 }
     var bassGuardValue: Bool { bassGuard ?? false }
     var bassGuardStrengthValue: Double { bassGuardStrength ?? 1 }
+    var impulseFileValue: String { impulseFile ?? "" }
+    var impulseMixValue: Double { impulseMix ?? 1 }
+    var hasImpulse: Bool { !impulseFileValue.isEmpty }
 
     static let music = StageSettings(enabled: true, width: 115, crossfeed: 0.35,
                                      dialogue: 0, room: 0.1,
@@ -95,6 +101,8 @@ struct StageSettings: Codable, Equatable {
             && loudnessStrengthValue == other.loudnessStrengthValue
             && bassGuardValue == other.bassGuardValue
             && bassGuardStrengthValue == other.bassGuardStrengthValue
+            && impulseFileValue == other.impulseFileValue
+            && impulseMixValue == other.impulseMixValue
     }
 
     /// True when these settings differ from a fresh default in ANY audible
@@ -110,7 +118,7 @@ struct StageSettings: Codable, Equatable {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0
             && balanceDbValue == 0 && alignMsValue == 0 && !limiterValue
-            && !loudnessValue && !bassGuardValue
+            && !loudnessValue && !bassGuardValue && !hasImpulse
     }
 
     /// The file this comes from is user-writable, so everything headed to
@@ -152,6 +160,9 @@ struct StageSettings: Codable, Equatable {
         if s.bassGuard == false { s.bassGuard = nil }
         s.bassGuardStrength = unit(s.bassGuardStrength)
         if s.bassGuardStrength == 1 { s.bassGuardStrength = nil }
+        s.impulseFile = IRLibrary.safeName(s.impulseFile)
+        s.impulseMix = s.impulseFile == nil ? nil : unit(s.impulseMix)
+        if s.impulseMix == 1 { s.impulseMix = nil }
         return s
     }
 }
