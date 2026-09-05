@@ -1,44 +1,302 @@
 import AppKit
+import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// The debounced saves and the 30-second exposure cadence assume someone
-/// flushes the remainder at the end; without this hook, quitting always
-/// discarded the last half-minute of listening history and any edit made in
-/// the final half-second.
 @MainActor
-final class QuitFlushDelegate: NSObject, NSApplicationDelegate {
-    var onTerminate: (() -> Void)?
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    struct Wiring {
+        let content: AnyView
+        let controller: QudelixController
+        let stageState: StageState
+        let profileRules: ProfileRules
+        let abTuner: ABTuner
+        let toneTester: ToneTester
+        let blindTuner: BlindTuner
+        let a2dpGuard: A2dpGuard
+    }
+
+    static var makeStatusUI: (() -> Wiring)?
+    private static weak var shared: AppDelegate?
+
+    private var statusItem: NSStatusItem?
+    private var popover: NSPopover?
+    private var wiring: Wiring?
+    private let iconModel = StatusIconModel()
+    private var sources: Set<AnyCancellable> = []
+    private var started = false
+    private var lastDeviceOnCall: Bool?
+
     func applicationWillTerminate(_ notification: Notification) {
-        onTerminate?()
+        guard let w = wiring else { return }
+        w.a2dpGuard.stop()
+        if w.abTuner.phase == .running || w.abTuner.phase == .finished {
+            w.abTuner.cancel(w.controller)
+        }
+        if w.toneTester.phase == .running {
+            w.toneTester.stop(w.controller)
+        }
+        if w.blindTuner.phase != .idle {
+            w.blindTuner.cancel(w.controller)
+        }
+        w.controller.flushEqSnapshot()
+        w.stageState.saveNow()
+        w.stageState.engine.stop()
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.shared = self
+        guard !started, let wiring = Self.makeStatusUI?() else { return }
+        started = true
+        self.wiring = wiring
+        startServices(wiring)
+        buildStatusUI(wiring)
+    }
+
+    private func startServices(_ w: Wiring) {
+        w.controller.start()
+        w.stageState.deviceCallState = { [weak controller = w.controller] in
+            guard let controller else { return nil }
+            return (controller.activeCall, controller.inputSource)
+        }
+        w.stageState.guardDiagnostics = { [weak guardian = w.a2dpGuard] in
+            guardian?.diagSummary ?? "guard=off hijack=none"
+        }
+        w.stageState.start()
+
+        w.a2dpGuard.callActive = { [weak stageState = w.stageState] in
+            stageState?.callActiveLive ?? false
+        }
+        w.a2dpGuard.onModeChange = { [weak stageState = w.stageState] mode in
+            stageState?.setA2dpGuardMode(mode)
+        }
+        w.a2dpGuard.start(mode: w.stageState.savedA2dpGuardMode)
+
+        w.profileRules.onApplyPreset = { [weak controller = w.controller] index in
+            controller?.loadPreset(index) ?? false
+        }
+        w.profileRules.presetLabel = { [weak controller = w.controller] index in
+            controller?.presetLabel(index) ?? "Preset \(index + 1)"
+        }
+        w.profileRules.canApplyNow = { [weak controller = w.controller,
+                                        weak rules = w.profileRules] in
+            guard let controller, controller.canWriteNow,
+                  !controller.byEarSessionActive,
+                  controller.activePreset != nil else { return false }
+            return rules?.editingNow != true
+        }
+        w.profileRules.currentEqGroupRaw = w.controller.eqGroup.rawValue
+        w.profileRules.start()
+
+        w.controller.$eqGroup
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak rules = w.profileRules] group in
+                MainActor.assumeIsolated { rules?.currentEqGroupRaw = group.rawValue }
+            }
+            .store(in: &sources)
+
+        Publishers.Merge(w.controller.$activeCall.map { _ in () },
+                         w.controller.$inputSource.map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated { self?.deviceCallStateMayHaveChanged() }
+            }
+            .store(in: &sources)
+    }
+
+    private func deviceCallStateMayHaveChanged() {
+        guard let w = wiring else { return }
+        let onCall = StageState.callIsActive(outputOnCall: false,
+                                             deviceActiveCall: w.controller.activeCall,
+                                             deviceInputSource: w.controller.inputSource)
+        guard onCall != lastDeviceOnCall else { return }
+        lastDeviceOnCall = onCall
+        w.stageState.checkCallNow()
+    }
+
+    private func buildStatusUI(_ w: Wiring) {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentViewController = NSHostingController(rootView: w.content)
+        popover.delegate = self
+        self.popover = popover
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        statusItem = item
+
+        iconModel.follow(controller: w.controller, stage: w.stageState)
+        show(iconModel.presentation)
+
+        if let button = item.button {
+            button.target = self
+            button.action = #selector(togglePopover(_:))
+            button.layoutSubtreeIfNeeded()
+
+            let drop = StatusDropView(frame: button.bounds)
+            drop.autoresizingMask = [.width, .height]
+            drop.onMouseDown = { [weak self] event in
+                self?.lastStatusMouseDown = event.timestamp
+            }
+            drop.onDrop = { [weak self] url in
+                self?.importDropped(url)
+            }
+            button.addSubview(drop)
+        }
+
+        iconModel.$presentation
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] presentation in
+                MainActor.assumeIsolated { self?.show(presentation) }
+            }
+            .store(in: &sources)
+    }
+
+    private func show(_ presentation: StatusIconModel.Presentation) {
+        guard let button = statusItem?.button else { return }
+        button.image = StatusIcon.image(for: presentation.icon)
+        button.title = presentation.title ?? ""
+        button.imagePosition = presentation.title == nil ? .imageOnly : .imageLeading
+        button.toolTip = presentation.tooltip
+        button.setAccessibilityLabel(presentation.accessibility)
+    }
+
+    private var closeEventTimestamp: TimeInterval = -1
+    fileprivate var lastStatusMouseDown: TimeInterval = -2
+
+    @objc private func togglePopover(_ sender: Any?) {
+        guard let popover, let button = statusItem?.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else if closeEventTimestamp != lastStatusMouseDown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    func popoverWillShow(_ notification: Notification) {
+        wiring?.stageState.setUIVisible(true)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        closeEventTimestamp = NSApp.currentEvent?.timestamp ?? -1
+        wiring?.stageState.setUIVisible(false)
+    }
+
+    static func runFilePanel(_ panel: NSSavePanel,
+                             completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        let delegate = shared
+        if let popover = delegate?.popover, popover.isShown {
+            popover.performClose(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { response in
+            completion(response)
+            delegate?.showPopover()
+        }
+    }
+
+    private func showPopover() {
+        guard let popover, !popover.isShown, let button = statusItem?.button else { return }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private static let maxDroppedBytes = 64 * 1024
+
+    private func importDropped(_ url: URL) {
+        guard let controller = wiring?.controller else { return }
+        let name = SafeText.scrubbed(url.lastPathComponent, limit: 64)
+        defer {
+            controller.requestPane(.importing)
+            showPopover()
+        }
+        guard let data = SafeFile.read(url, cap: Self.maxDroppedBytes) else {
+            controller.lastImportSummary = "Couldn't read \(name) — an EQ preset is a "
+                + "plain text file, and not a large one."
+            return
+        }
+        guard let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else {
+            controller.lastImportSummary = "Could not read \(name) as text."
+            return
+        }
+        controller.importText(text, named: name)
+    }
+}
+
+private final class StatusDropView: NSView {
+    var onDrop: ((URL) -> Void)?
+    var onMouseDown: ((NSEvent) -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    private static let readOptions: [NSPasteboard.ReadingOptionKey: Any] = [
+        .urlReadingFileURLsOnly: true,
+        .urlReadingContentsConformToTypes: [UTType.plainText.identifier],
+    ]
+
+    private func url(from sender: NSDraggingInfo) -> URL? {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                         options: Self.readOptions) as? [URL]
+        guard let urls, urls.count == 1 else { return nil }
+        return urls.first
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard url(from: sender) != nil else { return [] }
+        (superview as? NSButton)?.highlight(true)
+        return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        (superview as? NSButton)?.highlight(false)
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        (superview as? NSButton)?.highlight(false)
+        guard let dropped = url(from: sender) else { return false }
+        onDrop?(dropped)
+        return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onMouseDown?(event)
+        superview?.mouseDown(with: event)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        onMouseDown?(event)
+        superview?.rightMouseDown(with: event)
     }
 }
 
 @main
 struct QudelixBarApp: App {
-    @NSApplicationDelegateAdaptor(QuitFlushDelegate.self) private var quitDelegate
-    @StateObject private var controller = QudelixController()
-    /// App-owned, not popover-owned: the stage engine and the exposure meter
-    /// must survive the popover closing.
-    @StateObject private var stageState = StageState()
-    /// Also app-owned: it has to notice an output change while the popover is
-    /// closed, which is when swapping headphones actually happens.
-    @StateObject private var profileRules = ProfileRules()
-    @StateObject private var a2dpGuard = A2dpGuard()
-    @StateObject private var abTuner = ABTuner()
-    @StateObject private var toneTester = ToneTester()
-    @StateObject private var blindTuner = BlindTuner()
-    /// The menu bar label's `onAppear` can fire more than once; starting twice
-    /// would replace the BLE central while the old one still held the link.
-    @State private var started = false
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var controller: QudelixController
+    @StateObject private var stageState: StageState
+    @StateObject private var profileRules: ProfileRules
+    @StateObject private var a2dpGuard: A2dpGuard
+    @StateObject private var abTuner: ABTuner
+    @StateObject private var toneTester: ToneTester
+    @StateObject private var blindTuner: BlindTuner
 
     init() {
         #if DEBUG
         UIPreview.runIfRequested()
         #endif
-    }
+        let controller = QudelixController()
+        let stageState = StageState()
+        let profileRules = ProfileRules()
+        let a2dpGuard = A2dpGuard()
+        let abTuner = ABTuner()
+        let toneTester = ToneTester()
+        let blindTuner = BlindTuner()
 
-    var body: some Scene {
-        MenuBarExtra {
+        let content = AnyView(
             PopoverView()
                 .environmentObject(controller)
                 .environmentObject(stageState)
@@ -46,229 +304,26 @@ struct QudelixBarApp: App {
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
-                .environmentObject(a2dpGuard)
-        } label: {
-            // One composed template image, not an HStack of Images — the
-            // menu bar item drops all but the first SF symbol when handed
-            // several. Colour is stripped up there anyway, so battery state
-            // is shapes and text: a bolt while charging, the battery glyph
-            // plus the percentage once it runs low.
-            HStack(spacing: 3) {
-                Image(nsImage: NSImage.traySymbols(traySymbols))
-                if let percent = trayPercent {
-                    Text(percent)
-                }
-            }
-            .onAppear {
-                if !started {
-                    started = true
-                    controller.start()
-                    stageState.deviceCallState = { [weak controller] in
-                        guard let controller else { return nil }
-                        return (controller.activeCall, controller.inputSource)
-                    }
-                    stageState.guardDiagnostics = { [weak a2dpGuard] in
-                        a2dpGuard?.diagSummary ?? "guard=off hijack=none"
-                    }
-                    stageState.start()
-
-                    a2dpGuard.callActive = { [weak stageState] in
-                        stageState?.callActive ?? false
-                    }
-                    a2dpGuard.onModeChange = { [weak stageState] mode in
-                        stageState?.setA2dpGuardMode(mode)
-                    }
-                    a2dpGuard.start(mode: stageState.savedA2dpGuardMode)
-
-                    // The rules engine decides *what* should happen and this
-                    // is the only place that lets it happen, so it can never
-                    // reach the device except through the controller's own
-                    // gated write path.
-                    profileRules.onApplyPreset = { [weak controller] index in
-                        controller?.loadPreset(index) ?? false
-                    }
-                    profileRules.presetLabel = { [weak controller] index in
-                        controller?.presetLabel(index) ?? "Preset \(index + 1)"
-                    }
-                    // Switching silently is only ever allowed when there is
-                    // nothing to lose by it: the device must be writable, the
-                    // running curve must be a saved slot rather than an unsaved
-                    // custom one, and no band may be mid-edit. When this is
-                    // false an automatic rule degrades to asking.
-                    profileRules.canApplyNow = { [weak controller, weak profileRules] in
-                        guard let controller, controller.canWriteNow,
-                              !controller.byEarSessionActive,
-                              controller.activePreset != nil else { return false }
-                        return profileRules?.editingNow != true
-                    }
-                    // Which EQ group a rule was bound in matters: the device
-                    // keeps separate preset banks per group, so slot 3 in
-                    // 10-band mode and slot 3 in 20-band are unrelated curves.
-                    // Without this the rules cannot tell, and the group-aware
-                    // logic in them is inert.
-                    profileRules.currentEqGroupRaw = controller.eqGroup.rawValue
-                    profileRules.start()
-                    quitDelegate.onTerminate = { [weak stageState, weak controller, weak abTuner, weak toneTester, weak blindTuner, weak a2dpGuard] in
-                        a2dpGuard?.stop()
-                        if let controller {
-                            if let abTuner, abTuner.phase == .running || abTuner.phase == .finished {
-                                abTuner.cancel(controller)
-                            }
-                            if let toneTester, toneTester.phase == .running {
-                                toneTester.stop(controller)
-                            }
-                            if let blindTuner, blindTuner.phase != .idle {
-                                blindTuner.cancel(controller)
-                            }
-                        }
-                        // A stale EQ snapshot doesn't just lose the last
-                        // edit — the next connect restores over it.
-                        controller?.flushEqSnapshot()
-                        stageState?.saveNow()
-                        stageState?.engine.stop()
-                    }
-                }
-            }
-            .onChange(of: trayTooltip, initial: true) { _, tip in
-                Self.setTrayTooltip(tip)
-            }
-            // The device can change mode from its own buttons or another app,
-            // so this follows the group rather than being set once.
-            .onChange(of: controller.eqGroup) { _, group in
-                profileRules.currentEqGroupRaw = group.rawValue
-            }
-            .onChange(of: deviceOnCall) { _, _ in
-                stageState.checkCallNow()
-            }
+                .environmentObject(a2dpGuard))
+        AppDelegate.makeStatusUI = {
+            AppDelegate.Wiring(content: content, controller: controller,
+                               stageState: stageState, profileRules: profileRules,
+                               abTuner: abTuner, toneTester: toneTester,
+                               blindTuner: blindTuner, a2dpGuard: a2dpGuard)
         }
-        .menuBarExtraStyle(.window)
+
+        _controller = StateObject(wrappedValue: controller)
+        _stageState = StateObject(wrappedValue: stageState)
+        _profileRules = StateObject(wrappedValue: profileRules)
+        _a2dpGuard = StateObject(wrappedValue: a2dpGuard)
+        _abTuner = StateObject(wrappedValue: abTuner)
+        _toneTester = StateObject(wrappedValue: toneTester)
+        _blindTuner = StateObject(wrappedValue: blindTuner)
     }
 
-    private var connected: Bool {
-        if case .connected = controller.connection { return true }
-        return false
-    }
-
-    private var deviceOnCall: Bool {
-        StageState.callIsActive(outputOnCall: false,
-                                deviceActiveCall: controller.activeCall,
-                                deviceInputSource: controller.inputSource)
-    }
-
-    private var menuIcon: String {
-        connected ? "headphones.circle.fill" : "headphones.circle"
-    }
-
-    private var traySymbols: [String] {
-        var symbols = [menuIcon]
-        if connected, let batt = controller.batteryPercent {
-            if controller.charging {
-                symbols.append("bolt.fill")
-            } else if batt <= BatteryAlerts.veryLowThreshold {
-                symbols.append("battery.0")
-            } else if batt <= BatteryAlerts.lowThreshold {
-                symbols.append("battery.25")
-            }
+    var body: some Scene {
+        Settings {
+            EmptyView()
         }
-        return symbols
-    }
-
-    private var trayPercent: String? {
-        guard connected, let batt = controller.batteryPercent, !controller.charging,
-              batt <= BatteryAlerts.lowThreshold else { return nil }
-        return "\(batt)%"
-    }
-
-    /// What hovering the menu bar item shows: charge, preset, link.
-    private var trayTooltip: String {
-        guard case .connected(let rawName) = controller.connection else {
-            return "Qudelix — no device connected"
-        }
-        let cleaned = QudelixController.displayName(
-            rawName.replacingOccurrences(of: " USB DAC 96KHz", with: ""))
-        var lines = [cleaned.isEmpty ? "Qudelix" : cleaned]
-        if let batt = controller.batteryPercent {
-            var line = "Battery \(batt)%"
-            if controller.charging {
-                line += " — charging"
-            } else {
-                // A low battery outranks the charger state: "plugged in and
-                // not charging" is useful, but if it is also nearly flat that
-                // is the part that needs acting on, so both get said.
-                if batt <= BatteryAlerts.veryLowThreshold {
-                    line += " — very low"
-                } else if batt <= BatteryAlerts.lowThreshold {
-                    line += " — low"
-                }
-                if controller.chargerConnected {
-                    line += batt <= BatteryAlerts.lowThreshold
-                        ? " (plugged in, not charging)" : " — plugged in, not charging"
-                }
-            }
-            lines.append(line)
-        }
-        if let idx = controller.activePreset {
-            lines.append("Preset: \(controller.presetLabel(idx))")
-        } else {
-            lines.append("Preset: custom")
-        }
-        switch controller.link {
-        case .usb: lines.append("Connected over USB")
-        case .bluetooth: lines.append("Connected over Bluetooth")
-        case .none: break
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    /// MenuBarExtra exposes no NSStatusItem, so the tooltip goes onto the
-    /// status item's window directly. Class-name check, not private API; if
-    /// the window isn't found the tooltip is simply absent, nothing worse.
-    private static func setTrayTooltip(_ text: String) {
-        DispatchQueue.main.async {
-            for window in NSApp.windows where window.className == "NSStatusBarWindow" {
-                guard let view = window.contentView else { continue }
-                view.toolTip = text
-                for sub in view.subviews { sub.toolTip = text }
-            }
-        }
-    }
-}
-
-extension NSImage {
-    /// The given SF symbols drawn side by side as one template image, sized
-    /// for the menu bar. Drawn through a drawingHandler so it re-rasterises
-    /// at the screen's actual scale instead of shipping a 1x bitmap.
-    /// Composed images are cached: the label re-evaluates on every publish
-    /// (once a second while the meter runs), and a fresh NSImage instance
-    /// defeats SwiftUI's diffing, redrawing the status item each time. The
-    /// cache key is the symbol list — a handful of distinct states, ever.
-    private static var trayCache: [String: NSImage] = [:]
-
-    static func traySymbols(_ names: [String]) -> NSImage {
-        let key = names.joined(separator: "|")
-        if let cached = trayCache[key] { return cached }
-        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        let images = names.compactMap {
-            NSImage(systemSymbolName: $0, accessibilityDescription: nil)?
-                .withSymbolConfiguration(config)
-        }
-        let spacing: CGFloat = 2
-        let height = images.map(\.size.height).max() ?? 18
-        let width = images.map(\.size.width).reduce(0, +)
-            + spacing * CGFloat(max(images.count - 1, 0))
-        let composed = NSImage(size: NSSize(width: width, height: height),
-                               flipped: false) { _ in
-            var x: CGFloat = 0
-            for image in images {
-                image.draw(in: NSRect(x: x, y: (height - image.size.height) / 2,
-                                      width: image.size.width,
-                                      height: image.size.height))
-                x += image.size.width + spacing
-            }
-            return true
-        }
-        composed.isTemplate = true
-        trayCache[key] = composed
-        return composed
     }
 }
