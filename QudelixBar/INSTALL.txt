@@ -5,18 +5,42 @@ Bluetooth.
 Not affiliated with or endorsed by Qudelix, Inc.
 
 
-INSTALL
--------
-1. Drag Qudelix.app onto the Applications folder in this window.
-2. Launch it from Applications.
+INSTALL - two clicks
+--------------------
+1. Double-click "Install Qudelix".
 
-macOS will refuse to open it the first time, saying it cannot verify the
-developer. This is expected: the app is signed only ad-hoc, not with a paid
-Apple Developer ID. To allow it:
+2. The FIRST time, macOS refuses to open it, saying it cannot verify the
+   developer. That is expected, and it happens to every downloaded app that
+   is not notarized through Apple: this one is signed only ad-hoc, not with
+   a paid Apple Developer ID. Click Done, then open System Settings >
+   Privacy & Security, scroll to the Security section, and click "Open
+   Anyway" next to the message about Install Qudelix. Confirm once.
 
-   Open System Settings > Privacy & Security, scroll to the Security
-   section, and click "Open Anyway" next to the message about Qudelix.
-   Confirm once, and it will launch normally from then on.
+3. The installer copies Qudelix.app into Applications, replacing any copy
+   already there, clears the download flag, and launches it. Look for the
+   headphones icon in the menu bar - the app has no Dock icon and no window.
+
+That "Open Anyway" trip is asked once, for the installer only. Because the
+installer clears the download flag on the copy it makes, Qudelix itself never
+shows that dialog.
+
+
+ALTERNATIVE - one line in Terminal
+----------------------------------
+Open Terminal (Cmd-Space, type Terminal), paste this whole line, press Return:
+
+rm -rf /Applications/Qudelix.app && cp -R /Volumes/Qudelix/Qudelix.app /Applications/ && xattr -dr com.apple.quarantine /Applications/Qudelix.app && open /Applications/Qudelix.app
+
+It does exactly what the installer does, and skips the "Open Anyway" trip
+entirely because the download flag is cleared before the app is first opened.
+
+
+ALTERNATIVE - drag and drop
+---------------------------
+Drag Qudelix.app onto the Applications folder in this window and launch it from
+there. Done this way the download flag stays on, so macOS refuses the first
+launch and you take the same "Open Anyway" trip described above, for Qudelix
+itself rather than for the installer.
 
 
 VERIFYING THIS DOWNLOAD

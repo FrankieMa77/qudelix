@@ -45,6 +45,31 @@ cp -R ../Qudelix.app "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cp INSTALL.txt "$STAGE/READ ME FIRST.txt"
 
+osacompile -o "$STAGE/Install Qudelix.app" <<'APPLESCRIPT'
+on run
+	set myPath to POSIX path of (path to me)
+	set srcDir to do shell script "dirname " & quoted form of myPath
+	set src to srcDir & "/Qudelix.app"
+	try
+		do shell script "test -d " & quoted form of src
+	on error
+		display dialog "Qudelix.app was not found next to this installer. Open the disk image and run the installer from there." buttons {"Close"} default button "Close" with icon stop
+		return
+	end try
+	display dialog "Install Qudelix into the Applications folder?" & return & return & "A copy already there will be replaced." buttons {"Cancel", "Install"} default button "Install" cancel button "Cancel"
+	set cmd to "pkill -x QudelixBar; sleep 1; rm -rf /Applications/Qudelix.app && cp -R " & quoted form of src & " /Applications/ && (xattr -dr com.apple.quarantine /Applications/Qudelix.app 2>/dev/null; true)"
+	try
+		do shell script cmd
+	on error
+		do shell script cmd with administrator privileges
+	end try
+	do shell script "open /Applications/Qudelix.app"
+	display dialog "Qudelix is installed and running — look for the headphones icon in the menu bar." buttons {"Done"} default button "Done"
+end run
+APPLESCRIPT
+
+codesign --force --sign - "$STAGE/Install Qudelix.app"
+
 rm -f "$DMG"
 hdiutil create \
   -volname "$VOLNAME" \
