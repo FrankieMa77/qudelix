@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 APP=../Qudelix.app
 
 # Which source this bundle was actually built from. The About panel shows it,
