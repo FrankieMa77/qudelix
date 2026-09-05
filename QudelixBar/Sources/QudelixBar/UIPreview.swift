@@ -52,6 +52,7 @@ enum UIPreview {
                     .environmentObject(stage)
                     .environmentObject(profilesMock(pane))
                     .environmentObject(libraryMock(pane))
+                    .environmentObject(studioMock(pane))
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
@@ -93,7 +94,7 @@ enum UIPreview {
                             BandInspector(selected: .constant(0))
                             EqEditorView(editingBand: .constant(nil))
                         }, controller, stage, blind)
-                    case "presets", "presets-busy":
+                    case "presets", "presets-busy", "presets-ai":
                         reportPaneFit(pane, PresetsView(), controller, stage, blind)
                     case "import":
                         reportPaneFit(pane, ImportView(), controller, stage, blind)
@@ -216,6 +217,7 @@ enum UIPreview {
             .environmentObject(stage)
             .environmentObject(profilesMock(pane))
             .environmentObject(libraryMock(pane))
+            .environmentObject(studioMock(pane))
             .environmentObject(ABTuner())
             .environmentObject(ToneTester())
             .environmentObject(blind)
@@ -239,6 +241,7 @@ enum UIPreview {
                     .environmentObject(stage)
                     .environmentObject(profilesMock(pane))
                     .environmentObject(libraryMock(pane))
+                    .environmentObject(studioMock(pane))
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
@@ -263,6 +266,7 @@ enum UIPreview {
         [("eq", make(.equalizer), stageMock(), BlindTuner()),
          ("presets", make(.presets), stageMock(), BlindTuner()),
          ("presets-busy", presetsBusy(), stageMock(), BlindTuner()),
+         ("presets-ai", make(.presets), stageMock(), BlindTuner()),
          ("import", make(.importing), stageMock(), BlindTuner()),
          ("tune", make(.tune), stageMock(), BlindTuner()),
          ("shape", make(.tune), stageMock(), shapeMock()),
@@ -324,9 +328,36 @@ enum UIPreview {
     }
 
     @MainActor
+    private static func studioMock(_ pane: String) -> AIPresetStudio {
+        let studio = AIPresetStudio(
+            research: AIResearchStore(directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("qudelixbar-preview-\(UUID().uuidString)")),
+            defaults: UserDefaults(suiteName: "qudelixbar.preview") ?? .standard)
+        guard pane == "presets-ai" else { return studio }
+        let freqs = [42, 96, 187, 340, 610, 1180, 2350, 4300, 7200, 12400]
+        let gains: [Double] = [4.8, 2.6, -1.4, -2.2, 0.6, 1.4, 3.1, -2.8, 1.9, -1.2]
+        let bands = zip(freqs, gains).map { f, g in
+            QxEqBandValue(filter: .peak, freq: f, gain: g, q: 1.1)
+        }
+        studio.previewSetDossier(confidence: "medium",
+                                 researchedAt: Date().addingTimeInterval(-86_400))
+        studio.previewSet(
+            draft: AIDraft(name: "Alder AR-5 · Clarity", bands: bands, preGain: -4.8,
+                           rationale: "Lifts the 2–5 kHz presence band and trims the "
+                               + "low-mid thickness this model is known for, keeping "
+                               + "sibilance in check above 7 kHz."),
+            grounded: true,
+            context: AIPresetStudio.DraftContext(headphone: "Alder AR-5",
+                                                 kind: "Clarity", bands: 10))
+        return studio
+    }
+
+    @MainActor
     private static func libraryMock(_ pane: String) -> PresetLibrary {
         let library = PresetLibrary()
-        guard pane == "presets" || pane == "presets-busy" else { return library }
+        guard pane == "presets" || pane == "presets-busy" || pane == "presets-ai" else {
+            return library
+        }
         let ten = QxEqGroup.user.defaultFreqs.map {
             QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
         }

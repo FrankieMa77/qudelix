@@ -41,6 +41,7 @@ final class StageState: ObservableObject {
         scheduleSave()
     }
     var guardDiagnostics: (() -> String)?
+    var aiDiagnostics: (() -> String)?
 
     // Stream-quality detection: spectral analysis of what the tap hears.
     @Published private(set) var detectQuality = true
@@ -604,6 +605,7 @@ final class StageState: ObservableObject {
                 "running=\(engine.isRunning) call=\(callActiveLive) "
                 + "hold=\(engine.callHold) "
                 + (guardDiagnostics.map { $0() + " " } ?? "")
+                + (aiDiagnostics.map { $0() + " " } ?? "")
                 + "status=\"\(engine.status)\" "
                 + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
                 + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room) "

@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let stageState: StageState
         let profileRules: ProfileRules
         let presetLibrary: PresetLibrary
+        let aiStudio: AIPresetStudio
         let abTuner: ABTuner
         let toneTester: ToneTester
         let blindTuner: BlindTuner
@@ -62,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         w.stageState.guardDiagnostics = { [weak guardian = w.a2dpGuard] in
             guardian?.diagSummary ?? "guard=off hijack=none"
+        }
+        w.stageState.aiDiagnostics = { [weak studio = w.aiStudio] in
+            studio?.diagSummary ?? "ai=idle"
         }
         w.stageState.qudelixVolumeDb = { [weak controller = w.controller] in
             controller?.reportedVolumeDb
@@ -297,6 +301,7 @@ struct QudelixBarApp: App {
     @StateObject private var stageState: StageState
     @StateObject private var profileRules: ProfileRules
     @StateObject private var presetLibrary: PresetLibrary
+    @StateObject private var aiStudio: AIPresetStudio
     @StateObject private var a2dpGuard: A2dpGuard
     @StateObject private var abTuner: ABTuner
     @StateObject private var toneTester: ToneTester
@@ -310,6 +315,7 @@ struct QudelixBarApp: App {
         let stageState = StageState()
         let profileRules = ProfileRules()
         let presetLibrary = PresetLibrary()
+        let aiStudio = AIPresetStudio()
         let a2dpGuard = A2dpGuard()
         let abTuner = ABTuner()
         let toneTester = ToneTester()
@@ -321,6 +327,7 @@ struct QudelixBarApp: App {
                 .environmentObject(stageState)
                 .environmentObject(profileRules)
                 .environmentObject(presetLibrary)
+                .environmentObject(aiStudio)
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
@@ -328,7 +335,7 @@ struct QudelixBarApp: App {
         AppDelegate.makeStatusUI = {
             AppDelegate.Wiring(content: content, controller: controller,
                                stageState: stageState, profileRules: profileRules,
-                               presetLibrary: presetLibrary,
+                               presetLibrary: presetLibrary, aiStudio: aiStudio,
                                abTuner: abTuner, toneTester: toneTester,
                                blindTuner: blindTuner, a2dpGuard: a2dpGuard)
         }
@@ -337,6 +344,7 @@ struct QudelixBarApp: App {
         _stageState = StateObject(wrappedValue: stageState)
         _profileRules = StateObject(wrappedValue: profileRules)
         _presetLibrary = StateObject(wrappedValue: presetLibrary)
+        _aiStudio = StateObject(wrappedValue: aiStudio)
         _a2dpGuard = StateObject(wrappedValue: a2dpGuard)
         _abTuner = StateObject(wrappedValue: abTuner)
         _toneTester = StateObject(wrappedValue: toneTester)

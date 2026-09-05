@@ -54,6 +54,14 @@ right.
   as published sites print it — or from the
   [AutoEq](https://github.com/jaakkopasanen/AutoEq) database (6,000+ headphones),
   fitted live to a target curve of your choosing with bass and tilt adjustment
+- **AI preset studio** — design a preset for the headphones you named, with an
+  AI provider of your choosing on your own API key. It researches the model
+  once and caches what it learned, then designs one of fifteen kinds of preset
+  and shows it as a draft you can audition on the 5K, keep in the library, or
+  write into a device slot. Folded away by default and silent until you press
+  **Generate**; the key lives in the Keychain and nowhere else. **Correction**
+  needs no provider at all when the AutoEq project has measured your model.
+  See [Privacy](#privacy) for exactly what is contacted and what is sent
 - **Device settings** — channel trim, volume limit and the DAC reconstruction
   filter, all stored on the 5K itself
 - **Export** your EQ in the standard parametric format
@@ -354,6 +362,28 @@ no third-party dependencies.
   number. Nothing is contacted at launch, and there is no background or
   scheduled check — the update check runs once, when you press it, and
   downloads nothing.
+- **The AI preset studio adds a fourth destination, and only if you use it.**
+  It contacts exactly one host, the provider you picked in its own menu: one of
+  `api.mistral.ai`, `api.openai.com`, `api.anthropic.com` or `openrouter.ai`,
+  and never any of the others. It is reached only while you are pressing
+  **Generate** — choosing a provider, typing a model name, saving a key,
+  picking a preset kind or writing a note sends nothing anywhere. Requests go
+  over HTTPS to that one pinned host, refuse every redirect, and run one at a
+  time with no retry.
+- What leaves the machine on a Generate is: the headphone name you typed in the
+  Library field, the preset kind you chose, the note you typed (capped at 200
+  characters), and — when the AutoEq project has measured that headphone — the
+  stored correction as a list of filter lines this app formats itself from the
+  numbers it parsed. Nothing else. Not your EQ curve, not your presets, not
+  your device, not your output names, and no identifier of any kind. It is your
+  own account at that provider, on your own key, and their privacy policy is
+  the one that then applies to the request.
+- The API key lives only in the macOS Keychain, one item per provider under the
+  service name `com.qudelixbar.app.ai`. It is never written to a state file, a
+  log, an error message, or back into the pane — the studio asks the Keychain
+  whether a key *exists* to enable its button, and only the request builder ever
+  asks for the bytes, which go into one HTTP header and nowhere else. **Forget
+  key** removes the item.
 - No telemetry, analytics, or crash reporting, and nothing is ever uploaded.
 - The Stage and Level features process audio in memory and write none of it
   anywhere, ever. What they open, when, and how to close it is set out under
@@ -362,7 +392,7 @@ no third-party dependencies.
   in **Fix automatically** mode sets that default to the built-in microphone —
   it never opens a microphone, records nothing, and does nothing else.
 - Everything the app keeps is a local file, readable only by your user
-  account, and never transmitted. Four of them live in
+  account, and never transmitted. Six of them live in
   `~/Library/Application Support/QudelixBar/`:
 
   | File | What is in it |
@@ -370,18 +400,21 @@ no third-party dependencies.
   | `stage.json` | Soundstage settings per output device, the 14-day listening totals, and the Level and quality toggles |
   | `profiles.json` | Your output-device-to-preset pairings |
   | `last-eq.json` | The last EQ curve seen on the device, one per EQ group, what produced it, and which device it came from |
-  | `diag.txt` | The last 200 lines of an engine heartbeat, for bug reports |
+  | `presets.json` | The preset library kept on this Mac, and the headphone name you typed |
+  | `ai-research.json` | What the AI preset studio has researched, keyed by headphone name — the description it got back, and the measurement it was anchored to. Up to 64 headphones, no key material, nothing about you |
+  | `diag.txt` | The last 200 lines of an engine heartbeat, for bug reports. It records which phase the studio is in — `ai=idle`, `ai=researching`, `ai=designing` — and never what was asked or answered |
 
-  If one of the three JSON files ever fails to load, it is not overwritten:
+  If one of the five JSON files ever fails to load, it is not overwritten:
   the app copies it aside as `<name>.recovered`, carries on with defaults, and
   leaves the copy for you.
 - Outside that folder, `~/Library/Logs/QudelixBar.log` holds device packet
   traces, and rolls over to `QudelixBar.log.1` at 2 MB — so there are normally
   two of it. Since it records raw packet hex it includes the 5K's own Bluetooth
   address and any preset names stored on it. Separately, macOS keeps the app's
-  preferences in `~/Library/Preferences/com.qudelixbar.app.plist`; the only
-  thing the app puts there is which Bluetooth peripheral it has adopted, as the
-  per-Mac identifier CoreBluetooth issues rather than the device's address.
+  preferences in `~/Library/Preferences/com.qudelixbar.app.plist`; the app puts
+  two things there — which Bluetooth peripheral it has adopted, as the per-Mac
+  identifier CoreBluetooth issues rather than the device's address, and the AI
+  provider and model name chosen in the studio. Never a key.
 - Several of those identify hardware, and are worth a glance before you attach
   one to a bug report. The packet log and `diag.txt` carry the names of your
   audio output devices. `stage.json` and `profiles.json` go further: they are

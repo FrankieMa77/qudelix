@@ -1085,6 +1085,9 @@ struct PresetsView: View {
             PresetLibraryView()
 
             Divider()
+            AIPresetSection()
+
+            Divider()
             ProfilesView()
         }
     }
