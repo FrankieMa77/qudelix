@@ -140,6 +140,9 @@ final class StageState: ObservableObject {
         watcher.start()
         outputsChanged()
         startMetering()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.watcher.refreshNow()
+        }
     }
 
     // MARK: - Edits
