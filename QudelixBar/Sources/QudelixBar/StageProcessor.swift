@@ -83,6 +83,25 @@ struct BiquadSection {
                              a1: a1 / a0, a2: a2 / a0)
     }
 
+    static func lowShelf(freq: Double, gainDb: Double, q: Double,
+                         sampleRate: Double) -> BiquadSection {
+        let f0 = max(10, min(freq, sampleRate / 2 - 1))
+        let Q = max(0.05, q)
+        let a = pow(10, gainDb / 40)
+        let w0 = 2 * Double.pi * f0 / sampleRate
+        let cosW0 = cos(w0), sinW0 = sin(w0)
+        let alpha = sinW0 / (2 * Q)
+        let sq = 2 * sqrt(a) * alpha
+        let b0 = a * ((a + 1) - (a - 1) * cosW0 + sq)
+        let b1 = 2 * a * ((a - 1) - (a + 1) * cosW0)
+        let b2 = a * ((a + 1) - (a - 1) * cosW0 - sq)
+        let a0 = (a + 1) + (a - 1) * cosW0 + sq
+        let a1 = -2 * ((a - 1) + (a + 1) * cosW0)
+        let a2 = (a + 1) + (a - 1) * cosW0 - sq
+        return BiquadSection(b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+                             a1: a1 / a0, a2: a2 / a0)
+    }
+
     static func lowPass(freq: Double, q: Double,
                         sampleRate: Double) -> BiquadSection {
         let (cosW0, alpha) = passShape(freq: freq, q: q, sampleRate: sampleRate)
@@ -200,6 +219,11 @@ final class StageProcessor {
         var limiterOn = false
         var limitCeiling: Float = 0.891_250_9
         var limRelease: Float = 0.000_26
+        var loudActive = false
+        var loudLow = BiquadSection.passthrough
+        var loudHigh = BiquadSection.passthrough
+        var loudDcGain: Double = 1
+        var loudGlide: Double = 0.0001
     }
 
     static let maxChannels = 32
@@ -235,6 +259,8 @@ final class StageProcessor {
     private var kHighpassDesign = KWeighting.highpass(sampleRate: 48000)
     private var muted = false
     private var monitorOnly = false
+    private var loudnessShelfDb: Double = 0
+    private var loudnessAppliedDb: Double = 0
     /// Control-side epoch counter; stamped into every config. prepare()
     /// bumps it, and the render thread answers by wiping its state.
     private var epoch: UInt64 = 0
@@ -295,9 +321,20 @@ final class StageProcessor {
         redesign()
     }
 
+    func applyLoudness(shelfDb: Double) {
+        let next = shelfDb.isFinite
+            ? min(max(shelfDb, 0), EarLevel.maxShelfDb) : 0
+        guard abs(next - loudnessShelfDb) >= 0.1 else { return }
+        loudnessShelfDb = next
+        redesign()
+    }
+
+    var appliedLoudnessShelfDb: Double { loudnessAppliedDb }
+
     private func designStage() -> StageParams {
         var p = StageParams()
         let s = stageSettings
+        loudnessAppliedDb = 0
         guard s.enabled else { return p }
         p.enabled = true
         p.sideGain = Float(s.width / 100)
@@ -374,8 +411,29 @@ final class StageProcessor {
         p.trim = 1 / (1 + excess * 0.5)
         p.limiterOn = s.limiterValue
         p.limRelease = Float(1 - exp(-1 / (0.08 * sampleRate)))
+
+        let shelf = s.loudnessValue
+            ? min(max(loudnessShelfDb, 0), EarLevel.maxShelfDb) : 0
+        p.loudActive = shelf > 0.05
+        if p.loudActive {
+            loudnessAppliedDb = shelf
+            p.loudDcGain = pow(10, shelf / 20)
+            p.loudLow = BiquadSection.lowShelf(
+                freq: Self.loudnessLowHz, gainDb: shelf,
+                q: Self.loudnessShelfQ, sampleRate: sampleRate)
+            p.loudHigh = BiquadSection.highShelf(
+                freq: Self.loudnessHighHz, gainDb: shelf * EarLevel.trebleShelfRatio,
+                q: Self.loudnessShelfQ, sampleRate: sampleRate)
+        }
+        p.loudGlide = 1 - exp(-1 / (Self.loudnessGlideSeconds * sampleRate))
         return p
     }
+
+    static let loudnessLowHz: Double = 120
+    static let loudnessHighHz: Double = 8000
+    static let loudnessShelfQ: Double = 0.8
+    static let loudnessGlideSeconds: Double = 0.2
+    static let loudnessMaxWet: Double = 8
 
     private func redesign() {
         var next = Config()
@@ -550,6 +608,15 @@ final class StageProcessor {
     // filter above it, and like them it must be wiped on re-engage.
     private var adaaPrevL: Float = 0
     private var adaaPrevR: Float = 0
+    private var loudLowCur = BiquadSection.passthrough
+    private var loudHighCur = BiquadSection.passthrough
+    private var loudCurDcGain: Double = 1
+    private var loudWet: Double = 0
+    private var loudLoZ1L: Double = 0, loudLoZ2L: Double = 0
+    private var loudLoZ1R: Double = 0, loudLoZ2R: Double = 0
+    private var loudHiZ1L: Double = 0, loudHiZ2L: Double = 0
+    private var loudHiZ1R: Double = 0, loudHiZ2R: Double = 0
+    private var loudEngaged = false
 
     // Night-mode envelope (stage render state). Rests at the comfort level,
     // not at silence — an envelope resting near zero makes every stage
@@ -618,6 +685,11 @@ final class StageProcessor {
         sideShelfZ1 = 0; sideShelfZ2 = 0
         dialogueZ1 = 0; dialogueZ2 = 0
         adaaPrevL = 0; adaaPrevR = 0
+        loudLowCur = .passthrough; loudHighCur = .passthrough
+        loudCurDcGain = 1; loudWet = 0
+        loudLoZ1L = 0; loudLoZ2L = 0; loudLoZ1R = 0; loudLoZ2R = 0
+        loudHiZ1L = 0; loudHiZ2L = 0; loudHiZ1R = 0; loudHiZ2R = 0
+        loudEngaged = false
         nightEnv = 0.05
     }
 
@@ -723,6 +795,41 @@ final class StageProcessor {
             }
         }
 
+        var kss = 0.0
+        var kFrames = 0
+        if let first = inRefs.first {
+            if !kEngaged {
+                for i in kState.indices { kState[i] = 0 }
+                kEngaged = true
+            }
+            let kChannels = min(inRefs.count, 2)
+            kFrames = first.frames
+            for c in 1..<kChannels { kFrames = min(kFrames, inRefs[c].frames) }
+            for c in 0..<kChannels {
+                let ref = inRefs[c]
+                let base = c * 4
+                var z1 = kState[base], z2 = kState[base + 1]
+                var z3 = kState[base + 2], z4 = kState[base + 3]
+                var q = ref.ptr
+                for _ in 0..<kFrames {
+                    var x = Double(q.pointee)
+                    if !x.isFinite { x = 0 }
+                    let y1 = cfg.kShelf.b0 * x + z1
+                    z1 = cfg.kShelf.b1 * x - cfg.kShelf.a1 * y1 + z2
+                    z2 = cfg.kShelf.b2 * x - cfg.kShelf.a2 * y1
+                    let y2 = cfg.kHighpass.b0 * y1 + z3
+                    z3 = cfg.kHighpass.b1 * y1 - cfg.kHighpass.a1 * y2 + z4
+                    z4 = cfg.kHighpass.b2 * y1 - cfg.kHighpass.a2 * y2
+                    kss += y2 * y2
+                    q += ref.stride
+                }
+                kState[base] = flushDenormal(z1)
+                kState[base + 1] = flushDenormal(z2)
+                kState[base + 2] = flushDenormal(z3)
+                kState[base + 3] = flushDenormal(z4)
+            }
+        }
+
         // The Soundstage needs the stereo pair frame-locked, so it iterates
         // L and R together. Never in monitor mode: the tap is unmuted there,
         // so the buffers are a copy of what's already playing, not the path
@@ -766,38 +873,6 @@ final class StageProcessor {
                 p += first.stride
             }
 
-            if !kEngaged {
-                for i in kState.indices { kState[i] = 0 }
-                kEngaged = true
-            }
-            let kChannels = min(inRefs.count, 2)
-            var kFrames = first.frames
-            for c in 1..<kChannels { kFrames = min(kFrames, inRefs[c].frames) }
-            var kss = 0.0
-            for c in 0..<kChannels {
-                let ref = inRefs[c]
-                let base = c * 4
-                var z1 = kState[base], z2 = kState[base + 1]
-                var z3 = kState[base + 2], z4 = kState[base + 3]
-                var q = ref.ptr
-                for _ in 0..<kFrames {
-                    var x = Double(q.pointee)
-                    if !x.isFinite { x = 0 }
-                    let y1 = cfg.kShelf.b0 * x + z1
-                    z1 = cfg.kShelf.b1 * x - cfg.kShelf.a1 * y1 + z2
-                    z2 = cfg.kShelf.b2 * x - cfg.kShelf.a2 * y1
-                    let y2 = cfg.kHighpass.b0 * y1 + z3
-                    z3 = cfg.kHighpass.b1 * y1 - cfg.kHighpass.a1 * y2 + z4
-                    z4 = cfg.kHighpass.b2 * y1 - cfg.kHighpass.a2 * y2
-                    kss += y2 * y2
-                    q += ref.stride
-                }
-                kState[base] = flushDenormal(z1)
-                kState[base + 1] = flushDenormal(z2)
-                kState[base + 2] = flushDenormal(z3)
-                kState[base + 3] = flushDenormal(z4)
-            }
-
             // In monitor mode the samples are unscrubbed; a NaN buffer must
             // not poison the whole second's accumulator.
             os_unfair_lock_lock(meterLock)
@@ -833,6 +908,21 @@ final class StageProcessor {
         let roomMask = Self.roomBufSize - 1
         let alignMask = Self.alignBufSize - 1
         var pl = l.ptr, pr = r.ptr
+
+        if p.loudActive {
+            if p.loudDcGain != loudCurDcGain {
+                let effective = 1 + loudWet * (loudCurDcGain - 1)
+                loudWet = min(Self.loudnessMaxWet,
+                              max(0, (effective - 1) / (p.loudDcGain - 1)))
+                loudCurDcGain = p.loudDcGain
+                loudLowCur = p.loudLow
+                loudHighCur = p.loudHigh
+            }
+            loudEngaged = true
+        }
+        let loudWetTarget: Double = p.loudActive ? 1 : 0
+        let loudRunning = loudEngaged
+        let glide = p.loudGlide
 
         for _ in 0..<frames {
             var L = pl.pointee, R = pr.pointee
@@ -999,6 +1089,32 @@ final class StageProcessor {
             L *= p.balanceGainL
             R *= p.balanceGainR
 
+            if loudRunning {
+                loudWet += glide * (loudWetTarget - loudWet)
+
+                let dryL = Double(L)
+                var x = dryL
+                var y = loudLowCur.b0 * x + loudLoZ1L
+                loudLoZ1L = loudLowCur.b1 * x - loudLowCur.a1 * y + loudLoZ2L
+                loudLoZ2L = loudLowCur.b2 * x - loudLowCur.a2 * y
+                x = y
+                y = loudHighCur.b0 * x + loudHiZ1L
+                loudHiZ1L = loudHighCur.b1 * x - loudHighCur.a1 * y + loudHiZ2L
+                loudHiZ2L = loudHighCur.b2 * x - loudHighCur.a2 * y
+                L = Float(dryL + loudWet * (y - dryL))
+
+                let dryR = Double(R)
+                x = dryR
+                y = loudLowCur.b0 * x + loudLoZ1R
+                loudLoZ1R = loudLowCur.b1 * x - loudLowCur.a1 * y + loudLoZ2R
+                loudLoZ2R = loudLowCur.b2 * x - loudLowCur.a2 * y
+                x = y
+                y = loudHighCur.b0 * x + loudHiZ1R
+                loudHiZ1R = loudHighCur.b1 * x - loudHighCur.a1 * y + loudHiZ2R
+                loudHiZ2R = loudHighCur.b2 * x - loudHighCur.a2 * y
+                R = Float(dryR + loudWet * (y - dryR))
+            }
+
             // Soft clip instead of hard headroom: unity below ~0.5, gentle
             // saturation above, so theatrical levels survive the widening.
             // Anti-aliased, and per channel: the shaper's memory is the
@@ -1038,6 +1154,24 @@ final class StageProcessor {
         if abs(dialogueZ1) < 1e-30 { dialogueZ1 = 0 }
         if abs(dialogueZ2) < 1e-30 { dialogueZ2 = 0 }
         if abs(nightEnv) < 1e-30 { nightEnv = 0 }
+        if abs(loudLoZ1L) < 1e-30 { loudLoZ1L = 0 }
+        if abs(loudLoZ2L) < 1e-30 { loudLoZ2L = 0 }
+        if abs(loudLoZ1R) < 1e-30 { loudLoZ1R = 0 }
+        if abs(loudLoZ2R) < 1e-30 { loudLoZ2R = 0 }
+        if abs(loudHiZ1L) < 1e-30 { loudHiZ1L = 0 }
+        if abs(loudHiZ2L) < 1e-30 { loudHiZ2L = 0 }
+        if abs(loudHiZ1R) < 1e-30 { loudHiZ1R = 0 }
+        if abs(loudHiZ2R) < 1e-30 { loudHiZ2R = 0 }
+
+        if loudRunning, !p.loudActive, loudWet < 1e-6 {
+            loudLowCur = .passthrough
+            loudHighCur = .passthrough
+            loudCurDcGain = 1
+            loudWet = 0
+            loudLoZ1L = 0; loudLoZ2L = 0; loudLoZ1R = 0; loudLoZ2R = 0
+            loudHiZ1L = 0; loudHiZ2L = 0; loudHiZ1R = 0; loudHiZ2R = 0
+            loudEngaged = false
+        }
     }
 
     private func renderLimiter(ceiling: Float, release: Float) {

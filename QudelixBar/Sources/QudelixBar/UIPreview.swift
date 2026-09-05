@@ -331,8 +331,12 @@ enum UIPreview {
         var stage = StageSettings.movie
         stage.enabled = running
         stage.limiter = running
+        stage.loudness = running
         s.previewSet(stage: stage, exposure: exposureMock(),
-                     currentDb: running ? -21 : nil)
+                     currentDb: running ? -21 : nil,
+                     loudnessShelfDb: running ? 4.2 : 0,
+                     earLevel: running ? .estimated(71) : .unavailable,
+                     earAnchor: running ? .system(-18) : nil)
         s.watcher.previewSetDevices(
             [AudioOutput(id: 1, uid: "mock-speakers",
                          name: "MacBook Pro Speakers", sampleRate: 48000),
@@ -352,10 +356,12 @@ enum UIPreview {
         var stage = StageSettings.music
         stage.enabled = true
         stage.limiter = true
+        stage.loudness = true
         s.previewSet(stage: stage, exposure: exposureMock(),
                      currentDb: -23, levelTracking: true,
                      verdict: .losslessLike(cutoffKHz: 21.9),
                      limiterGainReductionDb: 2.4,
+                     loudnessShelfDb: 1.8,
                      earLevel: .estimated(78), earAnchor: .qudelix(-24))
         s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
         return s

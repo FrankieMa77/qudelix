@@ -41,6 +41,9 @@ struct StageSettings: Codable, Equatable {
 
     var limiter: Bool?
 
+    var loudness: Bool?
+    var loudnessStrength: Double?
+
     var distanceValue: Double { distance ?? 0.35 }
     var spanValue: Double { span ?? 0.5 }
     var centerValue: Double { center ?? 0 }
@@ -52,6 +55,8 @@ struct StageSettings: Codable, Equatable {
     var balanceDbValue: Double { balanceDb ?? 0 }
     var alignMsValue: Double { alignMs ?? 0 }
     var limiterValue: Bool { limiter ?? false }
+    var loudnessValue: Bool { loudness ?? false }
+    var loudnessStrengthValue: Double { loudnessStrength ?? 1 }
 
     static let music = StageSettings(enabled: true, width: 115, crossfeed: 0.35,
                                      dialogue: 0, room: 0.1,
@@ -81,6 +86,8 @@ struct StageSettings: Codable, Equatable {
             && balanceDbValue == other.balanceDbValue
             && alignMsValue == other.alignMsValue
             && limiterValue == other.limiterValue
+            && loudnessValue == other.loudnessValue
+            && loudnessStrengthValue == other.loudnessStrengthValue
     }
 
     /// True when these settings differ from a fresh default in ANY audible
@@ -96,6 +103,7 @@ struct StageSettings: Codable, Equatable {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0
             && balanceDbValue == 0 && alignMsValue == 0 && !limiterValue
+            && !loudnessValue
     }
 
     /// The file this comes from is user-writable, so everything headed to
@@ -131,6 +139,9 @@ struct StageSettings: Codable, Equatable {
             s.alignMs = a.isFinite ? min(max(a, -0.5), 0.5) : nil
         }
         if s.limiter == false { s.limiter = nil }
+        if s.loudness == false { s.loudness = nil }
+        s.loudnessStrength = unit(s.loudnessStrength)
+        if s.loudnessStrength == 1 { s.loudnessStrength = nil }
         return s
     }
 }
