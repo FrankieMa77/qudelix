@@ -37,8 +37,6 @@ enum SessionInterruption: Equatable {
 /// - Binary search per tilt: present two curves either side of the current
 ///   centre, move toward the winner, halve the step. Four rounds takes ±6 dB
 ///   down to ±0.75 dB.
-/// - Every candidate is loudness-matched. Without that the listener simply
-///   prefers whichever is louder and the result is meaningless.
 /// - Which side carries the higher setting is randomised per trial, so the
 ///   listener cannot learn the pattern.
 /// - One trial per round presents the same curve twice. Naming a winner there is
