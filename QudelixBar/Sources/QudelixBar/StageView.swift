@@ -150,6 +150,8 @@ struct StageView: View {
 
             limiterSection(uid)
 
+            loudnessSection(uid)
+
             if stageState.stage.enabled, let corr = stageState.sourceCorrelation,
                corr > 0.985 {
                 HStack(alignment: .top, spacing: 5) {
@@ -315,6 +317,81 @@ struct StageView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
+    private func loudnessSection(_ uid: String?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { stageState.stage.loudnessValue },
+                    set: { on in
+                        var s = stageState.stage
+                        s.loudness = on
+                        stageState.setStage(s, editedFor: uid)
+                    })) {
+                    Text("Loudness")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(!stageState.stage.enabled)
+                Spacer()
+                if stageState.stage.enabled, stageState.stage.loudnessValue {
+                    Text(loudnessAmount)
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(stageState.loudnessShelfDb > 0.05
+                                         ? AnyShapeStyle(.secondary)
+                                         : AnyShapeStyle(.tertiary))
+                }
+            }
+            if stageState.stage.loudnessValue {
+                slider("Strength", value: Binding(
+                    get: { stageState.stage.loudnessStrengthValue * 100 },
+                    set: { v in mutate(uid) { $0.loudnessStrength = v.rounded() / 100 } }),
+                    in: 0...100, display: String(format: "%.0f %%",
+                                                 stageState.stage.loudnessStrengthValue * 100),
+                    help: "Scales the whole contour. 100 % is the full "
+                        + "correction the estimated level asks for.")
+            }
+            Text(loudnessNote)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
+    private var loudnessAmount: String {
+        let db = stageState.loudnessShelfDb
+        return db > 0.05 ? String(format: "+%.1f dB bass", db) : "flat"
+    }
+
+    private var loudnessNote: String {
+        guard stageState.stage.enabled else {
+            return "Unavailable while Soundstage is off — with the stage off "
+                + "this app is not in the audio path at all, so it has "
+                + "nothing to shape."
+        }
+        let what = String(format: "Quiet listening loses bass first, and a "
+                          + "little treble with it. This raises both back "
+                          + "while the estimated level at your ear sits "
+                          + "below the %.0f dB reference, and eases off as "
+                          + "you turn up.", EarLevel.referenceDb)
+        guard stageState.engine.isRunning else { return what }
+        if stageState.earAnchor == nil {
+            return what + " Holding flat for now: it rests on the estimate "
+                + "in the Level pane, and this output offers no volume "
+                + "reading to anchor one."
+        }
+        if stageState.earLevelAverageDb == nil {
+            return what + " Holding flat until the estimate in the Level "
+                + "pane settles — it averages about half a minute of "
+                + "playback, so the shelf follows the listening level "
+                + "rather than the chorus."
+        }
+        return what + " It rests on the estimate in the Level pane, which is "
+            + "measured before this shelf so the two can never chase each "
+            + "other."
     }
 
     private var limiterNote: String {

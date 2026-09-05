@@ -119,6 +119,18 @@ enum EarLevel {
         (defaultCalibrationDb - calibrationSpanDb)...(defaultCalibrationDb + calibrationSpanDb)
     static let plausibleVolumeDb: ClosedRange<Double> = -160...20
 
+    static let referenceDb: Double = 83
+    static let shelfDbPerDeficitDb: Double = 0.35
+    static let maxShelfDb: Double = 12
+    static let trebleShelfRatio: Double = 0.3
+
+    static func shelfDb(earLevelDb: Double?, strength: Double) -> Double {
+        guard let level = earLevelDb, level.isFinite else { return 0 }
+        let deficit = max(0, referenceDb - level)
+        let s = strength.isFinite ? min(max(strength, 0), 1) : 0
+        return min(maxShelfDb, deficit * shelfDbPerDeficitDb) * s
+    }
+
     static func clampedCalibration(_ db: Double) -> Double {
         guard db.isFinite else { return defaultCalibrationDb }
         return min(max(db, calibrationRange.lowerBound), calibrationRange.upperBound)

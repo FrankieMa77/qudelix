@@ -51,7 +51,7 @@ struct LevelView: View {
 
             meter
 
-            limiterRow
+            stageMetersRow
 
             earLevelSection
 
@@ -76,23 +76,48 @@ struct LevelView: View {
     }
 
     @ViewBuilder
-    private var limiterRow: some View {
-        if stageState.stage.limiterValue, stageState.stage.enabled,
-           stageState.engine.isRunning, stageState.engine.mode == .insert {
-            HStack(spacing: 6) {
-                Text("True-peak limiter")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text(limiterText)
-                    .font(.system(size: 10).monospacedDigit())
-                    .foregroundStyle(stageState.limiterGainReductionDb > 0.1
-                                     ? AnyShapeStyle(.orange)
-                                     : AnyShapeStyle(.tertiary))
+    private var stageMetersRow: some View {
+        let inserted = stageState.stage.enabled && stageState.engine.isRunning
+            && stageState.engine.mode == .insert
+        if inserted, stageState.stage.limiterValue || stageState.stage.loudnessValue {
+            HStack(spacing: 10) {
+                if stageState.stage.limiterValue {
+                    HStack(spacing: 6) {
+                        Text("True-peak limiter")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(limiterText)
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(stageState.limiterGainReductionDb > 0.1
+                                             ? AnyShapeStyle(.orange)
+                                             : AnyShapeStyle(.tertiary))
+                    }
+                    .help("How far the limiter is pulling the Soundstage's "
+                          + "output down this second to hold −1 dBTP.")
+                }
+                if stageState.stage.loudnessValue {
+                    HStack(spacing: 6) {
+                        Text("Loudness")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(loudnessText)
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(stageState.loudnessShelfDb > 0.05
+                                             ? AnyShapeStyle(.secondary)
+                                             : AnyShapeStyle(.tertiary))
+                    }
+                    .help("How much bass the compensation is adding this "
+                          + "second, from the estimate below. Treble rides "
+                          + "along at a third of it.")
+                }
                 Spacer()
             }
-            .help("How far the limiter is pulling the Soundstage's output "
-                  + "down this second to hold −1 dBTP.")
         }
+    }
+
+    private var loudnessText: String {
+        let db = stageState.loudnessShelfDb
+        return db > 0.05 ? String(format: "+%.1f dB bass", db) : "flat"
     }
 
     private var limiterText: String {
@@ -158,15 +183,15 @@ struct LevelView: View {
     }
 
     private var earDisclaimer: String {
+        let tap = " — taken before the loudness shelf."
         switch stageState.earAnchor {
         case .qudelix:
-            return "An estimate, not a measurement. It rests on the 5K's own "
-                + "volume setting and on a typical headphone's sensitivity — "
-                + "not on this pair."
+            return "An estimate, not a measurement: the 5K's volume setting "
+                + "and a typical headphone's sensitivity, not this pair" + tap
         case .system:
-            return "An estimate, not a measurement. It rests on where your "
-                + "Mac's volume for this output is set and on a typical "
-                + "headphone's sensitivity — not on this pair."
+            return "An estimate, not a measurement: your Mac's volume for "
+                + "this output and a typical headphone's sensitivity, not "
+                + "this pair" + tap
         case nil:
             return "An estimate, not a measurement. It needs a volume reading "
                 + "to anchor it, and this output offers none this app can read."
