@@ -97,7 +97,7 @@ struct ProfilesView: View {
                         }
                     }
                 }
-                .frame(height: 140)
+                .frame(height: 72)
             }
         }
     }

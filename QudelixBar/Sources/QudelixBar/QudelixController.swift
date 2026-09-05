@@ -909,15 +909,16 @@ final class QudelixController: ObservableObject {
     /// same sense every other field is. Control and format scalars are dropped
     /// rather than escaped — a U+202E override would visually reorder the rows
     /// around it, and a newline would stretch the row.
-    nonisolated static func displayName(_ s: String) -> String {
+    nonisolated static func displayName(_ s: String,
+                                        limit: Int = maxPresetNameLength) -> String {
         // Bounded by scalars before anything else. The length cap below counts
         // Characters, and a grapheme cluster has no upper size — one letter
         // carrying a hundred combining marks is a single Character that
         // survives the cap intact and renders as a vertical smear over the
         // rows around it.
         let s = SafeText.scrubbed(
-            String(String.UnicodeScalarView(s.unicodeScalars.prefix(maxPresetNameLength * 4))),
-            limit: maxPresetNameLength * 4)
+            String(String.UnicodeScalarView(s.unicodeScalars.prefix(limit * 4))),
+            limit: limit * 4)
         let kept = s.unicodeScalars.filter { u in
             switch u.properties.generalCategory {
             case .control, .format, .lineSeparator, .paragraphSeparator: return false
@@ -926,7 +927,7 @@ final class QudelixController: ObservableObject {
         }
         return String(String.UnicodeScalarView(kept))
             .trimmingCharacters(in: .whitespaces)
-            .prefix(maxPresetNameLength)
+            .prefix(limit)
             .trimmingCharacters(in: .whitespaces)
     }
 
@@ -1722,12 +1723,14 @@ final class QudelixController: ObservableObject {
     /// Push a parsed parametric-EQ file to the device: pre-gain, then every
     /// band, then any unused bands bypassed so leftovers from the previous
     /// preset can't linger.
-    func apply(_ file: ParametricEQFile, named name: String? = nil) {
+    @discardableResult
+    func apply(_ file: ParametricEQFile, named name: String? = nil,
+               undoLabel: String = "import") -> Bool {
         guard canWriteEq else {
             lastImportSummary = "Not applied — this device isn't supported."
-            return
+            return false
         }
-        checkpoint("import", discrete: true)
+        checkpoint(undoLabel, discrete: true)
         suppressUndo = true
         defer { suppressUndo = false }
         eqSourceName = name
@@ -1767,7 +1770,19 @@ final class QudelixController: ObservableObject {
         DebugLog.shared.log("import: \(lastImportSummary ?? "")")
         sourceCurve = bands
         sourcePreGain = preGain
+        return true
     }
+
+    @discardableResult
+    func applyLibraryPreset(_ preset: LibraryPreset) -> Bool {
+        guard preset.group == eqGroup else { return false }
+        var file = ParametricEQFile()
+        file.preamp = preset.preGain
+        file.bands = preset.bands
+        return apply(file, named: preset.name, undoLabel: "apply \(preset.name)")
+    }
+
+    var currentSourceName: String? { eqSourceName }
 
     /// EQ files are a few hundred bytes; refuse anything absurd rather than
     /// reading an arbitrary user-picked file entirely into memory.
@@ -1816,6 +1831,11 @@ final class QudelixController: ObservableObject {
 
     /// Serialise the current bands in the same format we import.
     func exportText() -> String {
+        Self.exportText(bands: bands, preGain: preGain, mutedBands: mutedBands)
+    }
+
+    nonisolated static func exportText(bands: [QxEqBandValue], preGain: Double,
+                                       mutedBands: [Int: QxFilter] = [:]) -> String {
         var lines = [String(format: "Preamp: %.1f dB", preGain)]
         for (i, b) in bands.enumerated() {
             // A muted band is still part of the user's curve — the mute is a
@@ -1823,7 +1843,7 @@ final class QudelixController: ObservableObject {
             // the band and handing out a file with a filter silently missing.
             // A band that is bypassed with nothing parked really is empty.
             let shape = b.filter == .bypass ? (mutedBands[i] ?? .bypass) : b.filter
-            guard let token = Self.exportToken(for: shape) else { continue }
+            guard let token = exportToken(for: shape) else { continue }
             lines.append(String(format: "Filter %d: ON %@ Fc %d Hz Gain %.1f dB Q %.2f",
                                 i + 1, token, b.freq, b.gain, b.q))
         }

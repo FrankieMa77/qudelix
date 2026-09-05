@@ -92,6 +92,11 @@ final class StageState: ObservableObject {
     @Published private(set) var limiterGainReductionDb: Double = 0
     @Published private(set) var loudnessShelfDb: Double = 0
     private var loudnessTargetDb: Double = 0
+    @Published private(set) var bassGuardBoostDb: Double = 0
+    @Published private(set) var bassGuardCeilingDb: Double = 0
+    @Published private(set) var bassGuardGainReductionDb: Double = 0
+    var bassGuardInert: Bool { bassGuardBoostDb <= Self.bassGuardInertDb }
+    var deviceEqCurve: (() -> [QxEqBandValue]?)?
 
     @Published private(set) var earLevel: EarLevelEstimate = .unavailable
     @Published private(set) var earLevelAverageDb: Double?
@@ -246,6 +251,7 @@ final class StageState: ObservableObject {
         if let uid = outputUID { stageByDevice[uid] = stage }
         engine.processor.applyStage(stage)
         syncImpulse()
+        updateBassGuard()
         reconcile()
         scheduleSave()
     }
@@ -617,6 +623,9 @@ final class StageState: ObservableObject {
                     verdict: QualityAnalyzer.Verdict? = nil,
                     limiterGainReductionDb: Double = 0,
                     loudnessShelfDb: Double = 0,
+                    bassGuardBoostDb: Double = 0,
+                    bassGuardCeilingDb: Double = 0,
+                    bassGuardGainReductionDb: Double = 0,
                     earLevel: EarLevelEstimate = .unavailable,
                     earAnchor: EarVolumeAnchor? = nil,
                     earCalibrationDb: Double = EarLevel.defaultCalibrationDb) {
@@ -634,6 +643,9 @@ final class StageState: ObservableObject {
         self.levelTracking = levelTracking
         self.limiterGainReductionDb = limiterGainReductionDb
         self.loudnessShelfDb = loudnessShelfDb
+        self.bassGuardBoostDb = bassGuardBoostDb
+        self.bassGuardCeilingDb = bassGuardCeilingDb
+        self.bassGuardGainReductionDb = bassGuardGainReductionDb
         qualityVerdict = verdict
         qualityVerdictLive = verdict
     }
@@ -718,6 +730,12 @@ final class StageState: ObservableObject {
         }
     }
 
+    private var bassDiag: String {
+        guard stage.bassGuardValue else { return "bass=off" }
+        return String(format: "bass=%.1f/-%.1fdB", bassGuardCeilingDb,
+                      bassGuardGainReductionDb)
+    }
+
     private var earDiag: String {
         let lufs = shortTerm.lufs.map { String(format: "%.1f", $0) } ?? "nil"
         let anchor: String
@@ -767,7 +785,8 @@ final class StageState: ObservableObject {
                          stage.crossLowTrimValue, stage.crossMidTrimValue,
                          stage.crossHighTrimValue, stage.balanceDbValue,
                          stage.alignMsValue)
-                + limiterDiag + " " + loudDiag + " " + impulseDiag + " "
+                + limiterDiag + " " + loudDiag + " " + bassDiag + " "
+                + impulseDiag + " "
                 + "quality=\(qualityVerdictLive.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
                 + earDiag)
             if engine.isRunning || content != lastDiagContent {
@@ -806,6 +825,10 @@ final class StageState: ObservableObject {
             if loudnessTargetDb != 0 { loudnessTargetDb = 0 }
             if loudnessShelfDb != 0 { loudnessShelfDb = 0 }
             engine.processor.applyLoudness(shelfDb: 0)
+            if bassGuardBoostDb != 0 { bassGuardBoostDb = 0 }
+            if bassGuardCeilingDb != 0 { bassGuardCeilingDb = 0 }
+            if bassGuardGainReductionDb != 0 { bassGuardGainReductionDb = 0 }
+            engine.processor.applyBassGuard(ceilingDb: 0, predictedBoostDb: 0)
             correlationSmoothed = nil
             clearEarLevel()
             clearVerdict()
@@ -825,9 +848,11 @@ final class StageState: ObservableObject {
 
         updateLimiterTelemetry()
         refreshImpulseStatus()
+        updateBassGuardTelemetry()
         qualityTick()
         updateEarLevel()
         updateLoudness()
+        updateBassGuard()
 
         let (sumSquares, frames) = engine.processor.drainMeter()
         guard frames > 0 else {
@@ -896,6 +921,89 @@ final class StageState: ObservableObject {
             return nil
         }
         if earLevelAverageDb != average { earLevelAverageDb = average }
+    }
+
+    nonisolated static let bassGuardScanLowHz: Double = 20
+    nonisolated static let bassGuardScanHighHz: Double = 200
+    nonisolated static let bassGuardScanPoints = 201
+    nonisolated static let bassGuardInertDb: Double = 0.5
+
+    nonisolated static func bassGuardBoostDb(bands: [QxEqBandValue],
+                                             loudnessShelfDb: Double) -> Double {
+        let freqs = EQCurve.logSweep(count: bassGuardScanPoints,
+                                     from: bassGuardScanLowHz,
+                                     to: bassGuardScanHighHz)
+        let curve = EQCurve.response(bands: bands, preGain: 0, at: freqs)
+        let shelfDb = loudnessShelfDb.isFinite
+            ? min(max(loudnessShelfDb, 0), EarLevel.maxShelfDb) : 0
+        let shelf = shelfDb > 0.05
+            ? BiquadSection.lowShelf(freq: StageProcessor.loudnessLowHz,
+                                     gainDb: shelfDb,
+                                     q: StageProcessor.loudnessShelfQ,
+                                     sampleRate: EQCurve.sampleRate)
+            : nil
+        var worst = 0.0
+        for (i, f) in freqs.enumerated() {
+            var db = curve[i]
+            if let shelf {
+                db += shelf.magnitudeDb(at: f, sampleRate: EQCurve.sampleRate)
+            }
+            if db.isFinite, db > worst { worst = db }
+        }
+        return worst
+    }
+
+    nonisolated static func bassGuardCeilingDb(worstBoostDb: Double,
+                                               strength: Double) -> Double {
+        guard worstBoostDb.isFinite, worstBoostDb > bassGuardInertDb else { return 0 }
+        let scale = strength.isFinite ? min(max(strength, 0), 1) : 0
+        return min(worstBoostDb, StageProcessor.bassGuardMaxCeilingDb) * scale
+    }
+
+    private var scannedBands: [QxEqBandValue]?
+    private var scannedShelfDb: Double = 0
+    private var scannedBoostDb: Double = 0
+
+    private func updateBassGuard() {
+        let measuring = stage.enabled && stage.bassGuardValue
+        var boost = 0.0
+        if measuring {
+            let bands = deviceEqCurve?() ?? []
+            if bands != scannedBands
+                || abs(loudnessShelfDb - scannedShelfDb) >= 0.1 {
+                scannedBands = bands
+                scannedShelfDb = loudnessShelfDb
+                scannedBoostDb = Self.bassGuardBoostDb(
+                    bands: bands, loudnessShelfDb: loudnessShelfDb)
+            }
+            boost = scannedBoostDb
+        } else if scannedBands != nil {
+            scannedBands = nil
+            scannedShelfDb = 0
+            scannedBoostDb = 0
+        }
+        let ceiling = measuring
+            ? Self.bassGuardCeilingDb(worstBoostDb: boost,
+                                      strength: stage.bassGuardStrengthValue)
+            : 0
+        let moved = abs(boost - bassGuardBoostDb) >= 0.1
+            || abs(ceiling - bassGuardCeilingDb) >= 0.1
+            || (boost == 0 && bassGuardBoostDb != 0)
+            || (ceiling == 0 && bassGuardCeilingDb != 0)
+        if moved {
+            bassGuardBoostDb = boost
+            bassGuardCeilingDb = ceiling
+        }
+        engine.processor.applyBassGuard(ceilingDb: bassGuardCeilingDb,
+                                        predictedBoostDb: bassGuardBoostDb)
+    }
+
+    private func updateBassGuardTelemetry() {
+        let deepest = engine.processor.drainBassGuardReduction()
+        let reduction = deepest.isFinite && deepest > 0.05 ? Double(deepest) : 0
+        if bassGuardGainReductionDb != reduction {
+            bassGuardGainReductionDb = reduction
+        }
     }
 
     private func updateLoudness() {

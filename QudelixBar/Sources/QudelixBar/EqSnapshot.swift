@@ -168,7 +168,7 @@ enum EqSnapshotFile {
         // The name heads for the UI: the one string in this pipeline that a
         // handcrafted file controls gets the same scrub every device string
         // gets (control/bidi scalars out, length capped).
-        s.name = s.name.map(QudelixController.displayName)
+        s.name = s.name.map { QudelixController.displayName($0) }
         s.preGain = EQHeadroom.clamp(s.preGain)
         s.bands = s.bands.prefix(QxEq.maxBandCount).map { band in
             var b = band

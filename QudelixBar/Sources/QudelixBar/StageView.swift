@@ -154,6 +154,7 @@ struct StageView: View {
 
             loudnessSection(uid)
 
+            bassGuardSection(uid)
             impulseSection(uid)
 
             if stageState.stage.enabled, let corr = stageState.sourceCorrelation,
@@ -365,6 +366,51 @@ struct StageView: View {
         .opacity(stageState.stage.enabled ? 1 : 0.55)
     }
 
+    private func bassGuardSection(_ uid: String?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { stageState.stage.bassGuardValue },
+                    set: { on in
+                        var s = stageState.stage
+                        s.bassGuard = on
+                        stageState.setStage(s, editedFor: uid)
+                    })) {
+                    Text("Dynamic bass")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(!stageState.stage.enabled)
+                Spacer()
+                if stageState.stage.enabled, stageState.stage.bassGuardValue,
+                   !stageState.bassGuardInert {
+                    Text(bassGuardAmount)
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(stageState.bassGuardGainReductionDb > 0.1
+                                         ? AnyShapeStyle(.orange)
+                                         : AnyShapeStyle(.tertiary))
+                        .help(bassGuardCeilingHelp)
+                }
+            }
+            if stageState.stage.bassGuardValue {
+                slider("Strength", value: Binding(
+                    get: { stageState.stage.bassGuardStrengthValue * 100 },
+                    set: { v in mutate(uid) { $0.bassGuardStrength = v.rounded() / 100 } }),
+                    in: 0...100, display: String(format: "%.0f %%",
+                                                 stageState.stage.bassGuardStrengthValue * 100),
+                    help: "Scales the ceiling: at 100 % the loudest passages "
+                        + "can lose the whole boost the 5K is adding, at 50 % "
+                        + "half of it.")
+            }
+            Text(bassGuardNote)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
     private func impulseSection(_ uid: String?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             DisclosureGroup {
@@ -443,6 +489,37 @@ struct StageView: View {
             }
         }
         .opacity(stageState.stage.enabled ? 1 : 0.55)
+    }
+
+    private var bassGuardCeilingHelp: String {
+        String(format: "The deepest cut the guard may make, measured off the "
+               + "5K's own curve: it peaks at +%.1f dB below 200 Hz, and the "
+               + "Strength slider scales what that buys.",
+               stageState.bassGuardBoostDb)
+    }
+
+    private var bassGuardAmount: String {
+        let gr = stageState.bassGuardGainReductionDb
+        if gr > 0.1 { return String(format: "\u{2212}%.1f dB", gr) }
+        return String(format: "up to \u{2212}%.1f dB", stageState.bassGuardCeilingDb)
+    }
+
+    private var bassGuardNote: String {
+        guard stageState.stage.enabled else {
+            return "Unavailable while Soundstage is off — with the stage off "
+                + "this app is not in the audio path at all, so it has "
+                + "nothing to ease."
+        }
+        let what = "Eases the low band on loud passages only, here on the Mac "
+            + "and ahead of the bass the 5K's EQ adds after us — so quiet "
+            + "passages keep the whole boost and the loudest ones stop asking "
+            + "the driver for all of it at once."
+        guard stageState.stage.bassGuardValue else { return what }
+        if stageState.bassGuardInert {
+            return "Nothing to guard — the 5K's curve boosts no bass, so this "
+                + "stands down rather than shaving a band nobody lifted."
+        }
+        return what
     }
 
     private func chooseImpulse(_ uid: String?) {

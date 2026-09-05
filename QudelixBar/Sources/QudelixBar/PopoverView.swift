@@ -1067,6 +1067,7 @@ struct PresetsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            Text("On the 5K").font(.system(size: 11, weight: .medium))
             if controller.activePreset == nil {
                 Text("Current EQ is a custom setting, not a saved slot.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -1078,7 +1079,10 @@ struct PresetsView: View {
                     }
                 }
             }
-            .frame(height: 190)
+            .frame(height: 88)
+
+            Divider()
+            PresetLibraryView()
 
             Divider()
             ProfilesView()

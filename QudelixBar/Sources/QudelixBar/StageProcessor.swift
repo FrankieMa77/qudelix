@@ -120,6 +120,20 @@ struct BiquadSection {
                              a1: a1 / a0, a2: a2 / a0)
     }
 
+    func magnitudeDb(at hz: Double, sampleRate: Double) -> Double {
+        let w = 2 * Double.pi * hz / sampleRate
+        let cos1 = cos(w), cos2 = cos(2 * w)
+        let sin1 = sin(w), sin2 = sin(2 * w)
+        let numRe = b0 + b1 * cos1 + b2 * cos2
+        let numIm = -(b1 * sin1 + b2 * sin2)
+        let denRe = 1 + a1 * cos1 + a2 * cos2
+        let denIm = -(a1 * sin1 + a2 * sin2)
+        let den = denRe * denRe + denIm * denIm
+        guard den > 0 else { return 0 }
+        let power = (numRe * numRe + numIm * numIm) / den
+        return power > 0 ? 10 * log10(power) : -200
+    }
+
     private static func passShape(freq: Double, q: Double,
                                   sampleRate: Double) -> (cosW0: Double, alpha: Double) {
         let f0 = max(10, min(freq, sampleRate / 2 - 1))
@@ -225,6 +239,14 @@ final class StageProcessor {
         var loudDcGain: Double = 1
         var loudGlide: Double = 0.0001
         var convWet: Float = 0
+        var guardOn = false
+        var guardLP = BiquadSection.passthrough
+        var guardBoostGain: Float = 1
+        var guardMaxRedDb: Float = 0
+        var guardThreshDb: Float = -6
+        var guardKneeDb: Float = 6
+        var guardAtk: Float = 0
+        var guardRel: Float = 0
     }
 
     static let maxChannels = 32
@@ -264,6 +286,9 @@ final class StageProcessor {
     private var monitorOnly = false
     private var loudnessShelfDb: Double = 0
     private var loudnessAppliedDb: Double = 0
+    private var bassGuardCeiling: Double = 0
+    private var bassGuardBoost: Double = 0
+    private var bassGuardAppliedDb: Double = 0
     /// Control-side epoch counter; stamped into every config. prepare()
     /// bumps it, and the render thread answers by wiping its state.
     private var epoch: UInt64 = 0
@@ -296,6 +321,7 @@ final class StageProcessor {
         loudFrames = 0
         corrLR = 0; corrLL = 0; corrRR = 0
         limMinGain = 1
+        guardMaxRedDb = 0
         os_unfair_lock_unlock(meterLock)
         rebuildImpulse(block: wantedBlockFrames)
         redesign()
@@ -335,10 +361,25 @@ final class StageProcessor {
 
     var appliedLoudnessShelfDb: Double { loudnessAppliedDb }
 
+    func applyBassGuard(ceilingDb: Double, predictedBoostDb: Double) {
+        let ceiling = ceilingDb.isFinite
+            ? min(max(ceilingDb, 0), Self.bassGuardMaxCeilingDb) : 0
+        let boost = predictedBoostDb.isFinite
+            ? min(max(predictedBoostDb, 0), Self.bassGuardMaxBoostDb) : 0
+        guard abs(ceiling - bassGuardCeiling) >= 0.1
+            || abs(boost - bassGuardBoost) >= 0.1 else { return }
+        bassGuardCeiling = ceiling
+        bassGuardBoost = boost
+        redesign()
+    }
+
+    var appliedBassGuardCeilingDb: Double { bassGuardAppliedDb }
+
     private func designStage() -> StageParams {
         var p = StageParams()
         let s = stageSettings
         loudnessAppliedDb = 0
+        bassGuardAppliedDb = 0
         guard s.enabled else { return p }
         p.enabled = true
         p.sideGain = Float(s.width / 100)
@@ -432,6 +473,19 @@ final class StageProcessor {
         p.loudGlide = 1 - exp(-1 / (Self.loudnessGlideSeconds * sampleRate))
         p.convWet = s.hasImpulse
             ? Float(min(max(s.impulseMixValue, 0), 1)) : 0
+
+        p.guardOn = s.bassGuardValue && bassGuardCeiling > 0
+        if p.guardOn {
+            bassGuardAppliedDb = bassGuardCeiling
+            p.guardLP = BiquadSection.lowPass(freq: Self.bassGuardLowHz, q: 0.71,
+                                              sampleRate: sampleRate)
+            p.guardBoostGain = Float(pow(10, bassGuardBoost / 20))
+            p.guardMaxRedDb = Float(bassGuardCeiling)
+            p.guardThreshDb = Float(Self.bassGuardThresholdDb)
+            p.guardKneeDb = Float(Self.bassGuardKneeDb)
+            p.guardAtk = Float(1 - exp(-1 / (Self.bassGuardAttackSeconds * sampleRate)))
+            p.guardRel = Float(1 - exp(-1 / (Self.bassGuardReleaseSeconds * sampleRate)))
+        }
         return p
     }
 
@@ -440,6 +494,14 @@ final class StageProcessor {
     static let loudnessShelfQ: Double = 0.8
     static let loudnessGlideSeconds: Double = 0.2
     static let loudnessMaxWet: Double = 8
+
+    static let bassGuardLowHz: Double = 120
+    static let bassGuardThresholdDb: Double = -6
+    static let bassGuardKneeDb: Double = 6
+    static let bassGuardAttackSeconds: Double = 0.005
+    static let bassGuardReleaseSeconds: Double = 0.25
+    static let bassGuardMaxCeilingDb: Double = 12
+    static let bassGuardMaxBoostDb: Double = 40
 
     private func redesign() {
         var next = Config()
@@ -548,6 +610,7 @@ final class StageProcessor {
     private var loudSumSquares: Double = 0
     private var loudFrames: Int = 0
     private var limMinGain: Float = 1
+    private var guardMaxRedDb: Float = 0
 
     /// What the last render cycle actually saw — the ground truth for "is
     /// the stage really running", readable from the control thread.
@@ -600,6 +663,14 @@ final class StageProcessor {
         let floor = limMinGain
         limMinGain = 1
         return floor
+    }
+
+    func drainBassGuardReduction() -> Float {
+        os_unfair_lock_lock(meterLock)
+        defer { os_unfair_lock_unlock(meterLock) }
+        let deepest = guardMaxRedDb
+        guardMaxRedDb = 0
+        return deepest
     }
 
     func drainLoudnessMeter() -> (sumSquares: Double, frames: Int) {
@@ -708,6 +779,10 @@ final class StageProcessor {
     private var loudHiZ1L: Double = 0, loudHiZ2L: Double = 0
     private var loudHiZ1R: Double = 0, loudHiZ2R: Double = 0
     private var loudEngaged = false
+    private var guardLoZ1L: Double = 0, guardLoZ2L: Double = 0
+    private var guardLoZ1R: Double = 0, guardLoZ2R: Double = 0
+    private var guardEnv: Float = 0
+    private var guardEngaged = false
 
     // Night-mode envelope (stage render state). Rests at the comfort level,
     // not at silence — an envelope resting near zero makes every stage
@@ -781,6 +856,9 @@ final class StageProcessor {
         loudLoZ1L = 0; loudLoZ2L = 0; loudLoZ1R = 0; loudLoZ2R = 0
         loudHiZ1L = 0; loudHiZ2L = 0; loudHiZ1R = 0; loudHiZ2R = 0
         loudEngaged = false
+        guardLoZ1L = 0; guardLoZ2L = 0; guardLoZ1R = 0; guardLoZ2R = 0
+        guardEnv = 0
+        guardEngaged = false
         nightEnv = 0.05
         convEngaged = false
     }
@@ -1032,6 +1110,18 @@ final class StageProcessor {
         let loudRunning = loudEngaged
         let glide = p.loudGlide
 
+        if p.guardOn {
+            if !guardEngaged {
+                guardLoZ1L = 0; guardLoZ2L = 0; guardLoZ1R = 0; guardLoZ2R = 0
+                guardEnv = 0
+                guardEngaged = true
+            }
+        } else {
+            guardEngaged = false
+        }
+        let guardHalfKnee = p.guardKneeDb * 0.5
+        var guardLocalRedDb: Float = 0
+
         func front(_ inL: Float, _ inR: Float) -> (Float, Float) {
             var L = inL, R = inR
 
@@ -1228,6 +1318,38 @@ final class StageProcessor {
                 R = Float(dryR + loudWet * (y - dryR))
             }
 
+            if p.guardOn {
+                let xgl = Double(L), xgr = Double(R)
+                var yg = p.guardLP.b0 * xgl + guardLoZ1L
+                guardLoZ1L = p.guardLP.b1 * xgl - p.guardLP.a1 * yg + guardLoZ2L
+                guardLoZ2L = p.guardLP.b2 * xgl - p.guardLP.a2 * yg
+                let lowL = Float(yg)
+                yg = p.guardLP.b0 * xgr + guardLoZ1R
+                guardLoZ1R = p.guardLP.b1 * xgr - p.guardLP.a1 * yg + guardLoZ2R
+                guardLoZ2R = p.guardLP.b2 * xgr - p.guardLP.a2 * yg
+                let lowR = Float(yg)
+
+                let predicted = max(abs(lowL), abs(lowR)) * p.guardBoostGain
+                let coef = predicted > guardEnv ? p.guardAtk : p.guardRel
+                guardEnv += coef * (predicted - guardEnv)
+
+                let over = 20 * log10f(max(guardEnv, 1e-7)) - p.guardThreshDb
+                var redDb: Float = 0
+                if over >= guardHalfKnee {
+                    redDb = over
+                } else if over > -guardHalfKnee {
+                    let t = over + guardHalfKnee
+                    redDb = t * t / (2 * p.guardKneeDb)
+                }
+                if redDb > p.guardMaxRedDb { redDb = p.guardMaxRedDb }
+                if redDb > 0 {
+                    let g = powf(10, -redDb / 20) - 1
+                    L += g * lowL
+                    R += g * lowR
+                    if redDb > guardLocalRedDb { guardLocalRedDb = redDb }
+                }
+            }
+
             // Soft clip instead of hard headroom: unity below ~0.5, gentle
             // saturation above, so theatrical levels survive the widening.
             // Anti-aliased, and per channel: the shaper's memory is the
@@ -1310,6 +1432,17 @@ final class StageProcessor {
         if abs(loudHiZ2L) < 1e-30 { loudHiZ2L = 0 }
         if abs(loudHiZ1R) < 1e-30 { loudHiZ1R = 0 }
         if abs(loudHiZ2R) < 1e-30 { loudHiZ2R = 0 }
+        if abs(guardLoZ1L) < 1e-30 { guardLoZ1L = 0 }
+        if abs(guardLoZ2L) < 1e-30 { guardLoZ2L = 0 }
+        if abs(guardLoZ1R) < 1e-30 { guardLoZ1R = 0 }
+        if abs(guardLoZ2R) < 1e-30 { guardLoZ2R = 0 }
+        if abs(guardEnv) < 1e-20 { guardEnv = 0 }
+
+        if p.guardOn {
+            os_unfair_lock_lock(meterLock)
+            guardMaxRedDb = max(guardMaxRedDb, guardLocalRedDb)
+            os_unfair_lock_unlock(meterLock)
+        }
 
         if loudRunning, !p.loudActive, loudWet < 1e-6 {
             loudLowCur = .passthrough

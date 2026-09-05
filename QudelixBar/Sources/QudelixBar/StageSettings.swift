@@ -44,6 +44,9 @@ struct StageSettings: Codable, Equatable {
     var loudness: Bool?
     var loudnessStrength: Double?
 
+    var bassGuard: Bool?
+    var bassGuardStrength: Double?
+
     var impulseFile: String?
     var impulseMix: Double?
 
@@ -60,6 +63,8 @@ struct StageSettings: Codable, Equatable {
     var limiterValue: Bool { limiter ?? false }
     var loudnessValue: Bool { loudness ?? false }
     var loudnessStrengthValue: Double { loudnessStrength ?? 1 }
+    var bassGuardValue: Bool { bassGuard ?? false }
+    var bassGuardStrengthValue: Double { bassGuardStrength ?? 1 }
     var impulseFileValue: String { impulseFile ?? "" }
     var impulseMixValue: Double { impulseMix ?? 1 }
     var hasImpulse: Bool { !impulseFileValue.isEmpty }
@@ -94,6 +99,8 @@ struct StageSettings: Codable, Equatable {
             && limiterValue == other.limiterValue
             && loudnessValue == other.loudnessValue
             && loudnessStrengthValue == other.loudnessStrengthValue
+            && bassGuardValue == other.bassGuardValue
+            && bassGuardStrengthValue == other.bassGuardStrengthValue
             && impulseFileValue == other.impulseFileValue
             && impulseMixValue == other.impulseMixValue
     }
@@ -111,7 +118,7 @@ struct StageSettings: Codable, Equatable {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0
             && balanceDbValue == 0 && alignMsValue == 0 && !limiterValue
-            && !loudnessValue && !hasImpulse
+            && !loudnessValue && !bassGuardValue && !hasImpulse
     }
 
     /// The file this comes from is user-writable, so everything headed to
@@ -150,6 +157,9 @@ struct StageSettings: Codable, Equatable {
         if s.loudness == false { s.loudness = nil }
         s.loudnessStrength = unit(s.loudnessStrength)
         if s.loudnessStrength == 1 { s.loudnessStrength = nil }
+        if s.bassGuard == false { s.bassGuard = nil }
+        s.bassGuardStrength = unit(s.bassGuardStrength)
+        if s.bassGuardStrength == 1 { s.bassGuardStrength = nil }
         s.impulseFile = IRLibrary.safeName(s.impulseFile)
         s.impulseMix = s.impulseFile == nil ? nil : unit(s.impulseMix)
         if s.impulseMix == 1 { s.impulseMix = nil }
