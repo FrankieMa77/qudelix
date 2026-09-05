@@ -5,7 +5,7 @@ import Foundation
 /// re-arm so a battery reading that jitters around a threshold can't nag.
 @MainActor
 final class BatteryAlerts {
-    static let lowThreshold = 20
+    nonisolated static let lowThreshold = 20
     static let veryLowThreshold = 10
 
     /// Shortest gap between two alerts of the same kind. Every latch below is
