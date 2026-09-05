@@ -27,8 +27,8 @@ final class ToneTester: ObservableObject {
     // MARK: Safety
 
     /// Nothing this class emits may exceed this. Enforced in one place.
-    static let maxLevelDBFS: Double = -12
-    static let minLevelDBFS: Double = -90
+    nonisolated static let maxLevelDBFS: Double = -12
+    nonisolated static let minLevelDBFS: Double = -90
 
     static func clamp(_ dbfs: Double) -> Double {
         min(max(dbfs, minLevelDBFS), maxLevelDBFS)
@@ -37,13 +37,25 @@ final class ToneTester: ObservableObject {
     /// Absolute threshold of hearing for normal-hearing listeners, dB SPL, at the
     /// 5K's band centres (ISO 226-ish). The exact figures matter far less than the
     /// ~60 dB shape between 31 Hz and 4 kHz.
-    static let reference: [Int: Double] = [
+    nonisolated static let reference: [Int: Double] = [
         31: 60, 63: 40, 125: 22, 250: 11, 500: 4,
         1000: 2, 2000: -1, 4000: -5, 8000: 2, 16000: 15,
     ]
 
     /// Mid frequencies first, so the listener learns the task before the extremes.
     static let order = [1000, 2000, 500, 4000, 250, 8000, 125, 16000, 63, 31]
+
+    nonisolated static let minCatchTrials = 6
+
+    nonisolated static let minFalseAlarms = 2
+
+    nonisolated static let unreliableFalseAlarmRate = 1.0 / 3.0
+
+    nonisolated static let cautionFalseAlarmRate = 0.2
+
+    nonisolated static let maxDeviationSpread: Double = 30
+
+    nonisolated static let withinTestNoiseSpread: Double = 8
 
     enum Phase: Equatable { case idle, running, finished }
 
@@ -65,13 +77,21 @@ final class ToneTester: ObservableObject {
     @Published private(set) var catchFalsePositives = 0
     /// True while a tone may be sounding, so the UI can prompt.
     @Published private(set) var listening = false
+    @Published private(set) var note: String?
 
     private var heard = false
     private var task: Task<Void, Never>?
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
-    private var sampleRate: Double = 44100
+    private var sampleRate: Double = fallbackRate
+
+    nonisolated static let fallbackRate: Double = 44100
+    nonisolated static let plausibleRates: ClosedRange<Double> = 8000...768000
+
+    nonisolated static func plausibleRate(_ rate: Double) -> Double {
+        rate.isFinite && plausibleRates.contains(rate) ? rate : fallbackRate
+    }
 
     // MARK: Preconditions
 
@@ -126,14 +146,24 @@ final class ToneTester: ObservableObject {
 
     /// EQ is switched off for the duration, otherwise the measurement includes it.
     private var restoreEqEnabled = true
+    private var sessionGroup: QxEqGroup = .user
 
     func start(_ c: QudelixController) {
-        guard Self.blocker(c) == nil, phase != .running else { return }
+        guard Self.blocker(c) == nil, phase == .idle else { return }
+        note = nil
+        interrupted = nil
         thresholds = [:]; suggestion = []; bandsDone = 0
         catchPlayed = 0; catchFalsePositives = 0
         restoreEqEnabled = c.eqEnabled
-        c.setEqEnabled(false)
+        sessionGroup = c.eqGroup
+        c.setEqEnabled(false, persistToFlash: false)
         startEngine()
+        guard engine.isRunning else {
+            c.setEqEnabled(restoreEqEnabled, persistToFlash: false)
+            note = "Couldn't start the tone player, so nothing was measured. Try again."
+            return
+        }
+        c.setByEarSessionActive(true)
         phase = .running
         task = Task { [weak self] in await self?.runAll(c) }
     }
@@ -142,27 +172,69 @@ final class ToneTester: ObservableObject {
         task?.cancel(); task = nil
         listening = false
         engine.stop()
-        c.setEqEnabled(restoreEqEnabled)
-        phase = .idle
+        restoreDevice(c)
+        endSession(c)
     }
 
     /// The listener says they heard the tone.
     func reportHeard() { heard = true }
 
+    private func restoreDevice(_ c: QudelixController) {
+        guard c.eqGroup == sessionGroup else { return }
+        c.setEqEnabled(restoreEqEnabled, persistToFlash: false)
+    }
+
+    private func endSession(_ c: QudelixController) {
+        c.setByEarSessionActive(false)
+        phase = .idle
+    }
+
     private func startEngine() {
         guard !engine.isRunning else { return }
         engine.attach(player)
-        sampleRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        sampleRate = Self.plausibleRate(
+            engine.outputNode.outputFormat(forBus: 0).sampleRate)
         engine.connect(player, to: engine.mainMixerNode, format: nil)
         engine.prepare()
         try? engine.start()
     }
 
+    private var interrupted: SessionInterruption?
+
+    nonisolated static func interruption(connected: Bool, compatible: Bool,
+                                         voiceCall: Bool, eqModeChanged: Bool,
+                                         playerRunning: Bool,
+                                         outputIsDevice: Bool) -> SessionInterruption? {
+        if !connected { return .disconnected }
+        if !compatible { return .unsupported }
+        if voiceCall { return .voiceCall }
+        if eqModeChanged { return .eqModeChanged }
+        if !playerRunning { return .playerStopped }
+        if !outputIsDevice { return .outputChanged }
+        return nil
+    }
+
+    private func interruption(_ c: QudelixController) -> SessionInterruption? {
+        var connected = false
+        if case .connected = c.connection { connected = true }
+        let voice = (c.inputSource?.hasPrefix("HFP") ?? false) || c.sampleRate == "16 kHz"
+        let output = Self.defaultOutputName()
+        return Self.interruption(
+            connected: connected,
+            compatible: c.compatibility == .ok,
+            voiceCall: voice,
+            eqModeChanged: c.eqGroup != sessionGroup,
+            playerRunning: engine.isRunning,
+            outputIsDevice: output?.localizedCaseInsensitiveContains("qudelix") ?? false)
+    }
+
     private func runAll(_ c: QudelixController) async {
         for hz in Self.order {
             if Task.isCancelled { return }
+            if let reason = interruption(c) { abort(c, reason); return }
             currentHz = hz
-            let t = await threshold(hz: hz)
+            let t = await threshold(hz: hz, c)
+            if let reason = interrupted { abort(c, reason); return }
             thresholds[hz] = t
             bandsDone += 1
         }
@@ -170,10 +242,21 @@ final class ToneTester: ObservableObject {
         finish(c)
     }
 
+    private func abort(_ c: QudelixController, _ reason: SessionInterruption) {
+        task = nil
+        interrupted = nil
+        listening = false
+        engine.stop()
+        restoreDevice(c)
+        note = "Tone test stopped — \(reason.reason)."
+        endSession(c)
+    }
+
     private func finish(_ c: QudelixController) {
         listening = false
         engine.stop()
-        c.setEqEnabled(restoreEqEnabled)
+        restoreDevice(c)
+        c.setByEarSessionActive(false)
         let results = Self.order.sorted().map { ($0, thresholds[$0] ?? nil) }
         suggestion = Self.suggest(results)
         phase = .finished
@@ -184,13 +267,60 @@ final class ToneTester: ObservableObject {
     /// Modified Hughson-Westlake: descend in 10 dB steps until the tone is missed,
     /// then ascend in 5 dB steps and accept the lowest level heard twice. The
     /// clinical standard, and far more repeatable than a "can you hear this?" sweep.
-    private func threshold(hz: Int) async -> Double? {
-        var level = -40.0
-        var heardCount: [Double: Int] = [:]
-        var descending = true
+    struct Staircase {
+        private(set) var level: Double = -40
+        private var heardCount: [Double: Int] = [:]
+        private var descending = true
+        private var missesAtCap = 0
+
+        enum Outcome: Equatable {
+            case ask(Double)
+            case settled(Double?)
+        }
+
+        mutating func answer(_ didHear: Bool) -> Outcome {
+            if didHear { heardCount[level, default: 0] += 1 }
+
+            if descending {
+                if didHear {
+                    if level - 10 < ToneTester.minLevelDBFS { return .settled(level) }
+                    level -= 10
+                } else {
+                    descending = false
+                    level += 5
+                }
+            } else {
+                if didHear {
+                    missesAtCap = 0
+                    if heardCount[level, default: 0] >= 2 { return .settled(level) }
+                    level -= 5
+                    if level < ToneTester.minLevelDBFS { return .settled(nil) }
+                    descending = true
+                } else {
+                    if level == ToneTester.maxLevelDBFS {
+                        missesAtCap += 1
+                        if missesAtCap >= 2 { return .settled(nil) }
+                    }
+                    level = min(level + 5, ToneTester.maxLevelDBFS)
+                }
+            }
+            return .ask(level)
+        }
+
+        var bestRepeated: Double? {
+            heardCount.filter { $0.value >= 2 }.keys.min()
+        }
+    }
+
+    private func threshold(hz: Int, _ c: QudelixController) async -> Double? {
+        var staircase = Staircase()
 
         for _ in 0..<34 {
             if Task.isCancelled { return nil }
+            if let reason = interruption(c) {
+                interrupted = reason
+                return nil
+            }
             // Randomised gap so no rhythm can be anticipated, plus silent trials
             // to catch over-eager pressing.
             try? await Task.sleep(for: .milliseconds(Int.random(in: 400...1300)))
@@ -200,30 +330,10 @@ final class ToneTester: ObservableObject {
                 continue
             }
 
-            let didHear = await present(hz: hz, level: level)
-            if didHear { heardCount[level, default: 0] += 1 }
-
-            if descending {
-                if didHear {
-                    if level - 10 < Self.minLevelDBFS { return level }
-                    level -= 10
-                } else {
-                    descending = false
-                    level += 5
-                }
-            } else {
-                if didHear {
-                    if heardCount[level, default: 0] >= 2 { return level }
-                    level -= 5
-                    if level < Self.minLevelDBFS { return nil }
-                    descending = true
-                } else {
-                    level += 5
-                    if level > Self.maxLevelDBFS { return nil }
-                }
-            }
+            let didHear = await present(hz: hz, level: staircase.level)
+            if case .settled(let t) = staircase.answer(didHear) { return t }
         }
-        return heardCount.keys.filter { heardCount[$0]! >= 2 }.min()
+        return staircase.bestRepeated
     }
 
     /// Play one pulsed tone (or nothing, for a catch trial) and report whether the
@@ -231,7 +341,7 @@ final class ToneTester: ObservableObject {
     private func present(hz: Int, level: Double?) async -> Bool {
         heard = false
         listening = true
-        if let level, let buf = buffer(hz: Double(hz), dbfs: level) {
+        if let level, engine.isRunning, let buf = buffer(hz: Double(hz), dbfs: level) {
             player.scheduleBuffer(buf, at: nil, options: [],
                                   completionCallbackType: .dataPlayedBack) { _ in }
             if !player.isPlaying { player.play() }
@@ -319,11 +429,15 @@ final class ToneTester: ObservableObject {
     /// shape survives — and a mean taken from one or two frequencies is not a
     /// reference, it is one of the points being measured. Below this the honest
     /// output is nothing at all.
-    static let minThresholds = 3
+    nonisolated static let minThresholds = 3
 
-    /// Frequencies that produced a threshold, whether or not there were enough
-    /// of them to derive a correction from.
-    var measuredCount: Int { thresholds.values.filter { $0 != nil }.count }
+    var readingCount: Int {
+        Self.readingCount(in: Self.order.sorted().map { ($0, thresholds[$0] ?? nil) })
+    }
+
+    nonisolated static func readingCount(in results: [(Int, Double?)]) -> Int {
+        results.filter { $0.1 != nil && reference[$0.0] != nil }.count
+    }
 
     /// True when the session ended without enough thresholds to compare against
     /// anything: a room too noisy to hear the tones in, or a listener who
@@ -333,7 +447,7 @@ final class ToneTester: ObservableObject {
     /// that collected nothing has an empty suggestion, an empty suggestion has a
     /// deviation spread of zero, and zero spread otherwise reads as "your
     /// hearing is typical" — a failed test presented as a clean bill of health.
-    var measurementFailed: Bool { suggestion.isEmpty }
+    var measurementFailed: Bool { verdict == .tooFewReadings }
 
     /// How far apart the deviations are. Inside test noise means "nothing to
     /// correct". Only measured frequencies count: an unmeasured row carries a
@@ -351,6 +465,45 @@ final class ToneTester: ObservableObject {
         catchPlayed == 0 ? 0 : Double(catchFalsePositives) / Double(catchPlayed)
     }
 
+    enum Verdict: Equatable {
+        case tooFewReadings
+        case unreliable
+        case tooScattered(spread: Double)
+        case withinTestNoise
+        case usable
+    }
+
+    var verdict: Verdict {
+        Self.verdict(readings: readingCount, catchTrials: catchPlayed,
+                     falseAlarms: catchFalsePositives, spread: deviationSpread)
+    }
+
+    nonisolated static func verdict(readings: Int, catchTrials: Int,
+                                    falseAlarms: Int, spread: Double) -> Verdict {
+        if readings < minThresholds { return .tooFewReadings }
+        if catchTrials >= minCatchTrials, falseAlarms >= minFalseAlarms,
+           rate(falseAlarms, of: catchTrials) >= unreliableFalseAlarmRate {
+            return .unreliable
+        }
+        if spread > maxDeviationSpread { return .tooScattered(spread: spread) }
+        if spread < withinTestNoiseSpread { return .withinTestNoise }
+        return .usable
+    }
+
+    var falseAlarmsElevated: Bool {
+        Self.falseAlarmsElevated(catchTrials: catchPlayed, falseAlarms: catchFalsePositives)
+    }
+
+    nonisolated static func falseAlarmsElevated(catchTrials: Int, falseAlarms: Int) -> Bool {
+        let r = rate(falseAlarms, of: catchTrials)
+        return catchTrials >= minCatchTrials && falseAlarms >= minFalseAlarms
+            && r > cautionFalseAlarmRate && r < unreliableFalseAlarmRate
+    }
+
+    private nonisolated static func rate(_ alarms: Int, of trials: Int) -> Double {
+        trials == 0 ? 0 : Double(alarms) / Double(trials)
+    }
+
     /// Write the derived curve to the device, keeping each band's existing shape.
     ///
     /// Matched to each band's own centre frequency, not to its position. The
@@ -361,6 +514,7 @@ final class ToneTester: ObservableObject {
     /// measured points are interpolated on log frequency, which is how the
     /// ear spaces them and how the test chose them.
     func applySuggestion(_ c: QudelixController) {
+        guard verdict == .usable else { return }
         // No point writing a correction the device will not apply.
         c.setEqEnabled(true)
         c.beginUndoStep("hearing correction")
@@ -372,13 +526,14 @@ final class ToneTester: ObservableObject {
         let points = suggestion.filter(\.measured)
             .map { (hz: Double($0.hz), gain: $0.gain) }
             .sorted { $0.hz < $1.hz }
-        guard !points.isEmpty else { phase = .idle; return }
-        for i in 0..<min(c.bandCount, c.bands.count) {
+        guard !points.isEmpty else { endSession(c); return }
+        for i in 0..<min(c.bandCount, c.bands.count)
+        where c.bands[i].filter.rendersGain {
             var band = c.bands[i]
             band.gain = min(max(Self.gain(at: Double(band.freq), from: points), -12), 12)
             c.updateBand(i, band, recordUndo: false)
         }
-        phase = .idle
+        endSession(c)
     }
 
     /// The measured correction at an arbitrary frequency. Outside the measured

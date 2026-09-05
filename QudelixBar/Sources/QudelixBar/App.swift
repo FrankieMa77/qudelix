@@ -23,6 +23,8 @@ struct QudelixBarApp: App {
     /// Also app-owned: it has to notice an output change while the popover is
     /// closed, which is when swapping headphones actually happens.
     @StateObject private var profileRules = ProfileRules()
+    @StateObject private var abTuner = ABTuner()
+    @StateObject private var toneTester = ToneTester()
     /// The menu bar label's `onAppear` can fire more than once; starting twice
     /// would replace the BLE central while the old one still held the link.
     @State private var started = false
@@ -39,6 +41,8 @@ struct QudelixBarApp: App {
                 .environmentObject(controller)
                 .environmentObject(stageState)
                 .environmentObject(profileRules)
+                .environmentObject(abTuner)
+                .environmentObject(toneTester)
         } label: {
             // One composed template image, not an HStack of Images — the
             // menu bar item drops all but the first SF symbol when handed
@@ -74,6 +78,7 @@ struct QudelixBarApp: App {
                     // false an automatic rule degrades to asking.
                     profileRules.canApplyNow = { [weak controller, weak profileRules] in
                         guard let controller, controller.canWriteNow,
+                              !controller.byEarSessionActive,
                               controller.activePreset != nil else { return false }
                         return profileRules?.editingNow != true
                     }

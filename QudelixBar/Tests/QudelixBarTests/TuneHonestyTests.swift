@@ -215,8 +215,9 @@ final class TuneHonestyTests: XCTestCase {
     /// listener on their hearing.
     func testATesterThatMeasuredNothingIsNotACleanBillOfHealth() {
         let tester = ToneTester()
-        XCTAssertEqual(tester.measuredCount, 0)
+        XCTAssertEqual(tester.readingCount, 0)
         XCTAssertTrue(tester.measurementFailed)
+        XCTAssertEqual(tester.verdict, .tooFewReadings)
         // The spread on its own cannot tell the two endings apart, which is the
         // whole reason the failure needs a state of its own.
         XCTAssertLessThan(tester.deviationSpread, 8)
@@ -267,6 +268,258 @@ final class TuneHonestyTests: XCTestCase {
         ]
         XCTAssertEqual(ToneTester.spread(of: wide), 18, accuracy: 1e-9)
         XCTAssertEqual(ToneTester.spread(of: []), 0, accuracy: 1e-9)
+    }
+
+    func testAnUnreliableRunIsRefusedHoweverTidyItsNumbersLook() {
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 15,
+                                          falseAlarms: 6, spread: 15), .unreliable)
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 15,
+                                          falseAlarms: 6, spread: 45), .unreliable,
+                       "unreliable outranks scattered — neither is applicable, "
+                           + "and the reason given must be the deeper one")
+        XCTAssertEqual(ToneTester.verdict(readings: 2, catchTrials: 15,
+                                          falseAlarms: 6, spread: 15), .tooFewReadings,
+                       "nothing was measured, so there is nothing to disbelieve")
+    }
+
+    func testAFewPressesOnSilenceDoNotCondemnARun() {
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 3,
+                                          falseAlarms: 3, spread: 15), .usable,
+                       "three silent checks cannot support a rate")
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 16,
+                                          falseAlarms: 1, spread: 15), .usable)
+    }
+
+    func testScatterBeyondHearingIsRefusedAndNamed() {
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0,
+                                          falseAlarms: 0, spread: 45),
+                       .tooScattered(spread: 45))
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0,
+                                          falseAlarms: 0,
+                                          spread: ToneTester.maxDeviationSpread), .usable,
+                       "the limit itself is still believable")
+    }
+
+    func testFlatEnoughIsSaidPlainlyRatherThanApplied() {
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0,
+                                          falseAlarms: 0, spread: 3), .withinTestNoise)
+        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0, falseAlarms: 0,
+                                          spread: ToneTester.withinTestNoiseSpread),
+                       .usable, "the boundary is where a correction starts being worth it")
+    }
+
+    func testElevatedFalseAlarmsAreSaidWithoutRefusingTheRun() {
+        XCTAssertTrue(ToneTester.falseAlarmsElevated(catchTrials: 20, falseAlarms: 5))
+        XCTAssertFalse(ToneTester.falseAlarmsElevated(catchTrials: 20, falseAlarms: 1),
+                       "an ordinary run says nothing")
+        XCTAssertFalse(ToneTester.falseAlarmsElevated(catchTrials: 20, falseAlarms: 8),
+                       "past the gate the run is refused outright, not cautioned")
+        XCTAssertFalse(ToneTester.falseAlarmsElevated(catchTrials: 4, falseAlarms: 2),
+                       "too few checks to say anything about a rate")
+    }
+
+    func testApplyingARefusedRunWritesNothing() {
+        let base = correction()
+        let c = connected(bands: base)
+        let tester = ToneTester()
+        XCTAssertEqual(tester.verdict, .tooFewReadings)
+
+        tester.applySuggestion(c)
+        XCTAssertEqual(c.bands, base, "a run that measured nothing must not write a curve")
+        XCTAssertTrue(c.undoStack.isEmpty)
+    }
+
+    func testAThresholdInTheTopFewDecibelsIsStillFound() {
+        var staircase = ToneTester.Staircase()
+        var presented: [Double] = [staircase.level]
+        var settled: Double??
+
+        for _ in 0..<40 {
+            let didHear = staircase.level >= ToneTester.maxLevelDBFS
+            if case .settled(let t) = staircase.answer(didHear) { settled = t; break }
+            presented.append(staircase.level)
+        }
+
+        XCTAssertTrue(presented.contains(ToneTester.maxLevelDBFS),
+                      "the cap has to be presented before it can be ruled out")
+        XCTAssertEqual(settled ?? nil, ToneTester.maxLevelDBFS)
+    }
+
+    func testTwoMissesAtTheCapEndTheFrequency() {
+        var staircase = ToneTester.Staircase()
+        var missesAtCap = 0
+        var settled: Double?? = nil
+
+        for _ in 0..<40 {
+            if staircase.level == ToneTester.maxLevelDBFS { missesAtCap += 1 }
+            if case .settled(let t) = staircase.answer(false) { settled = t; break }
+            XCTAssertLessThanOrEqual(staircase.level, ToneTester.maxLevelDBFS,
+                                     "the level clamps at the cap rather than running past it")
+        }
+
+        XCTAssertNotNil(settled, "a listener who hears nothing must not loop forever")
+        XCTAssertEqual(settled ?? -1, nil)
+        XCTAssertEqual(missesAtCap, 2)
+    }
+
+    func testAnOrdinaryThresholdIsTheLowestLevelHeardTwice() {
+        var staircase = ToneTester.Staircase()
+        var settled: Double??
+
+        for _ in 0..<40 {
+            let didHear = staircase.level >= -45
+            if case .settled(let t) = staircase.answer(didHear) { settled = t; break }
+        }
+        XCTAssertEqual(settled ?? nil, -45)
+    }
+
+    func testAThresholdWithNothingToCompareItAgainstIsNotAReading() {
+        let results: [(Int, Double?)] = [
+            (250, -30), (1000, -45), (3000, -40), (4000, nil),
+        ]
+        XCTAssertEqual(ToneTester.readingCount(in: results), 2)
+        XCTAssertNil(ToneTester.reference[3000])
+    }
+
+    func testAnImpossibleSampleRateFallsBackInsteadOfSilencingTheTest() {
+        XCTAssertEqual(ToneTester.plausibleRate(0), ToneTester.fallbackRate)
+        XCTAssertEqual(ToneTester.plausibleRate(-48000), ToneTester.fallbackRate)
+        XCTAssertEqual(ToneTester.plausibleRate(.nan), ToneTester.fallbackRate)
+        XCTAssertEqual(ToneTester.plausibleRate(.infinity), ToneTester.fallbackRate)
+        XCTAssertEqual(ToneTester.plausibleRate(1_000_000), ToneTester.fallbackRate)
+        XCTAssertEqual(ToneTester.plausibleRate(48000), 48000)
+        XCTAssertEqual(ToneTester.plausibleRate(384_000), 384_000)
+    }
+
+    func testASessionIsFoldedForTheDeeperReasonFirst() {
+        XCTAssertNil(ABTuner.interruption(connected: true, compatible: true,
+                                          voiceCall: false, eqModeChanged: false))
+        XCTAssertEqual(ABTuner.interruption(connected: false, compatible: false,
+                                            voiceCall: true, eqModeChanged: true),
+                       .disconnected)
+        XCTAssertEqual(ABTuner.interruption(connected: true, compatible: true,
+                                            voiceCall: true, eqModeChanged: true),
+                       .voiceCall)
+        XCTAssertEqual(ABTuner.interruption(connected: true, compatible: true,
+                                            voiceCall: false, eqModeChanged: true),
+                       .eqModeChanged)
+    }
+
+    func testAToneRunNoticesItsPlayerAndItsOutput() {
+        XCTAssertNil(ToneTester.interruption(connected: true, compatible: true,
+                                             voiceCall: false, eqModeChanged: false,
+                                             playerRunning: true, outputIsDevice: true))
+        XCTAssertEqual(ToneTester.interruption(connected: true, compatible: true,
+                                               voiceCall: false, eqModeChanged: false,
+                                               playerRunning: false, outputIsDevice: true),
+                       .playerStopped)
+        XCTAssertEqual(ToneTester.interruption(connected: true, compatible: true,
+                                               voiceCall: false, eqModeChanged: false,
+                                               playerRunning: true, outputIsDevice: false),
+                       .outputChanged)
+        XCTAssertEqual(ToneTester.interruption(connected: true, compatible: true,
+                                               voiceCall: false, eqModeChanged: true,
+                                               playerRunning: false, outputIsDevice: false),
+                       .eqModeChanged,
+                       "a mode change is about the curve, and outranks the audio path")
+    }
+
+    func testOnlyBandsThatShapeTheSoundCountAsGainCapable() {
+        XCTAssertTrue(QxFilter.peak.rendersGain)
+        XCTAssertTrue(QxFilter.lowShelf.rendersGain)
+        XCTAssertTrue(QxFilter.highShelf.rendersGain)
+        XCTAssertFalse(QxFilter.bypass.rendersGain)
+        XCTAssertFalse(QxFilter.lpf.rendersGain)
+        XCTAssertFalse(QxFilter.hpf.rendersGain)
+    }
+
+    func testACurveWithNothingToTiltIsRefusedRatherThanRun() {
+        let passFilters = QxEq.defaultFreqs.enumerated().map { i, hz in
+            QxEqBandValue(filter: i.isMultiple(of: 2) ? .bypass : .hpf,
+                          freq: hz, gain: 0, q: 1.0)
+        }
+        XCTAssertEqual(ABTuner.blocker(connected(bands: passFilters)), .noGainBand)
+
+        var oneUsable = passFilters
+        oneUsable[3] = peak(oneUsable[3].freq, 0)
+        XCTAssertNil(ABTuner.blocker(connected(bands: oneUsable)))
+    }
+
+    func testTiltsSkipTheBandsThatWouldIgnoreThem() {
+        var base = correction()
+        base[0] = QxEqBandValue(filter: .hpf, freq: base[0].freq, gain: 0, q: 0.7)
+        base[9] = QxEqBandValue(filter: .bypass, freq: base[9].freq, gain: 0, q: 1.0)
+
+        let c = connected(bands: base)
+        let tuner = ABTuner()
+        tuner.start(c)
+        runSession(tuner, c) { _ in false }
+
+        XCTAssertEqual(tuner.resultBands[0], base[0], "a pass filter is left exactly alone")
+        XCTAssertEqual(tuner.resultBands[9], base[9])
+        XCTAssertGreaterThan(zip(base, tuner.resultBands).dropFirst()
+                                .map { abs($1.gain - $0.gain) }.max() ?? 0, 0,
+                             "the bands that can render the tilt still get it")
+    }
+
+    func testAKeptSessionCostsExactlyOneUndoStep() {
+        let c = connected(bands: correction())
+        c.setPreGain(-3)
+        let before = c.undoStack.count
+
+        let tuner = ABTuner()
+        tuner.start(c)
+        runSession(tuner, c) { _ in false }
+        tuner.keepResult(c)
+
+        XCTAssertEqual(c.undoStack.count, before + 1)
+        XCTAssertEqual(c.undoStack.last?.label, "by-ear tuning")
+    }
+
+    func testADiscardedSessionCostsTheSameOneStep() {
+        let c = connected(bands: correction())
+        let tuner = ABTuner()
+        tuner.start(c)
+        runSession(tuner, c) { _ in false }
+        tuner.discardResult(c)
+
+        XCTAssertEqual(c.undoStack.count, 1)
+        XCTAssertEqual(c.bands, correction(), "the curve comes back")
+    }
+
+    func testKeepingWhatWasNeverFinishedDoesNothing() {
+        let c = connected(bands: correction())
+        c.setPreGain(-4)
+        let tuner = ABTuner()
+
+        tuner.keepResult(c)
+        XCTAssertEqual(c.preGain, -4, accuracy: 0.001)
+        XCTAssertTrue(tuner.resultBands.isEmpty)
+    }
+
+    func testTheDeviceKnowsWhenASessionIsHoldingTheCurve() {
+        let c = connected(bands: correction())
+        XCTAssertFalse(c.byEarSessionActive)
+
+        let tuner = ABTuner()
+        tuner.start(c)
+        XCTAssertTrue(c.byEarSessionActive)
+
+        runSession(tuner, c) { _ in false }
+        XCTAssertTrue(c.byEarSessionActive, "the result screen still holds a trial curve")
+
+        tuner.keepResult(c)
+        XCTAssertFalse(c.byEarSessionActive)
+    }
+
+    func testStoppingASessionHandsTheCurveBack() {
+        let c = connected(bands: correction())
+        let tuner = ABTuner()
+        tuner.start(c)
+        tuner.cancel(c)
+
+        XCTAssertFalse(c.byEarSessionActive)
+        XCTAssertEqual(c.bands, correction())
     }
 
     /// The file already argues that past the ends of the measured range the

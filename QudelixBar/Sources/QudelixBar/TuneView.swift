@@ -10,8 +10,8 @@ import SwiftUI
 struct TuneView: View {
     @EnvironmentObject var controller: QudelixController
     @EnvironmentObject var stageState: StageState
-    @StateObject private var tuner = ABTuner()
-    @StateObject private var tones = ToneTester()
+    @EnvironmentObject var tuner: ABTuner
+    @EnvironmentObject var tones: ToneTester
 
     /// Two quite different methods live here. Comparing settings measures what you
     /// prefer; the tone test measures what you can hear. They answer different
@@ -60,6 +60,13 @@ struct TuneView: View {
         .onChange(of: tones.phase) { _, phase in
             stageState.engine.processor.setMuted(phase == .running)
         }
+        .onAppear {
+            if tones.phase != .idle {
+                method = .tones
+            } else if tuner.phase != .idle {
+                method = .compare
+            }
+        }
         .onDisappear {
             stageState.engine.processor.setMuted(false)
             // The sessions are view-owned and die with the popover — but
@@ -91,6 +98,13 @@ struct TuneView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let note = tones.note {
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let blocker = ToneTester.blocker(controller) {
                 HStack(alignment: .top, spacing: 5) {
@@ -157,38 +171,50 @@ struct TuneView: View {
         }
     }
 
-    /// Two quite different endings share this screen, and they must never be
-    /// confused: a measurement that found your hearing unremarkable, and a
-    /// measurement that found nothing at all. The second one used to render as
-    /// an empty table under the first one's reassuring sentence.
+    @ViewBuilder
     private var toneResult: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if tones.measurementFailed {
-                toneFailure
-            } else {
-                toneReadings
+            switch tones.verdict {
+            case .tooFewReadings:           toneFailure
+            case .unreliable:               toneUnreliable
+            case .tooScattered(let spread): toneScattered(spread)
+            case .withinTestNoise, .usable: toneReadings
             }
 
-            if tones.falsePositiveRate > 0.3 {
-                Text(String(format: "You responded on %.0f%% of the silent trials, so "
-                            + "these numbers are unreliable. Worth repeating.",
-                            tones.falsePositiveRate * 100))
+            if tones.falseAlarmsElevated {
+                Text("You pressed on the silent checks more often than the task "
+                     + "needs, so read this as a rough shape rather than a "
+                     + "measurement.")
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Text(catchSummary)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
             HStack(spacing: 8) {
-                if !tones.measurementFailed {
+                if tones.verdict == .usable {
                     Button("Apply") { tones.applySuggestion(controller) }
                         .controlSize(.small)
-                        .disabled(tones.deviationSpread < 8)
                 }
                 Spacer()
-                Button(tones.measurementFailed ? "Close" : "Discard") { tones.stop(controller) }
-                    .controlSize(.small)
+                Button(tones.verdict == .usable ? "Discard" : "Close") {
+                    tones.stop(controller)
+                }
+                .controlSize(.small)
             }
         }
+    }
+
+    private var catchSummary: String {
+        let checks = tones.catchPlayed == 1
+            ? "1 silent check" : "\(tones.catchPlayed) silent checks"
+        let alarms = tones.catchFalsePositives == 1
+            ? "1 press on silence" : "\(tones.catchFalsePositives) presses on silence"
+        return "\(checks), \(alarms)"
     }
 
     private var toneFailure: some View {
@@ -196,7 +222,7 @@ struct TuneView: View {
             Text("Couldn't measure your hearing")
                 .font(.system(size: 12, weight: .medium))
 
-            Text("\(tones.measuredCount) of the \(ToneTester.order.count) frequencies "
+            Text("\(tones.readingCount) of the \(ToneTester.order.count) frequencies "
                  + "gave a reading — too few to compare against anything. This says "
                  + "nothing about your hearing either way; the test simply didn't "
                  + "get an answer.")
@@ -212,49 +238,103 @@ struct TuneView: View {
         }
     }
 
+    private var toneUnreliable: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Can't trust this run")
+                .font(.system(size: 12, weight: .medium))
+
+            Text("Your presses landed on the silent checks often enough that the "
+                 + "test can't tell them from real ones. The readings below were "
+                 + "collected, but none of them can be believed, so there is "
+                 + "nothing here to apply.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("That is almost always guessing — background noise, or tiredness "
+                 + "near the end of a long test. Press only when you're sure, and "
+                 + "let the silences pass.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            readingsTable
+                .opacity(0.5)
+        }
+    }
+
+    private func toneScattered(_ spread: Double) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Readings too scattered")
+                .font(.system(size: 12, weight: .medium))
+
+            Text(String(format: "The frequencies came out %.0f dB apart end to end "
+                        + "— further than hearing itself stretches. That is a "
+                        + "measurement problem rather than a curve, so there is "
+                        + "nothing here to apply.", spread))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Usually the fit changed partway through, or the room was quiet "
+                 + "for some frequencies and not others. Reseat the headphones, "
+                 + "keep the volume steady, and run it again.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            readingsTable
+                .opacity(0.5)
+        }
+    }
+
     private var toneReadings: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Compared with typical hearing")
                 .font(.system(size: 12, weight: .medium))
 
-            VStack(spacing: 4) {
-                ForEach(tones.suggestion, id: \.hz) { s in
-                    HStack(spacing: 8) {
-                        Text(s.hz >= 1000 ? "\(s.hz / 1000)k" : "\(s.hz)")
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 34, alignment: .trailing)
-                        if s.measured {
-                            Text(String(format: "%+.0f dB", s.deviation))
-                                .font(.system(size: 10).monospacedDigit())
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 52, alignment: .trailing)
-                            Text(String(format: "EQ %+.1f", s.gain))
-                                .font(.system(size: 11).monospacedDigit())
-                                .frame(width: 66, alignment: .trailing)
-                        } else {
-                            // Not zero. A frequency that gave no reading is a gap
-                            // in the measurement, and "+0 dB, EQ +0.0" would read
-                            // as having measured perfectly ordinary hearing there.
-                            Text("no reading")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 126, alignment: .trailing)
-                        }
-                        Spacer()
-                    }
-                }
-            }
+            readingsTable
 
-            if tones.deviationSpread < 8 {
+            if tones.verdict == .withinTestNoise {
                 Text("Your hearing is within test noise of typical "
-                     + (tones.measuredCount < ToneTester.order.count
+                     + (tones.readingCount < ToneTester.order.count
                         ? "wherever it could be measured" : "across the range")
                      + " — there is no personal correction to make. A headphone "
                      + "correction will do far more.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var readingsTable: some View {
+        VStack(spacing: 4) {
+            ForEach(tones.suggestion, id: \.hz) { s in
+                HStack(spacing: 8) {
+                    Text(s.hz >= 1000 ? "\(s.hz / 1000)k" : "\(s.hz)")
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, alignment: .trailing)
+                    if s.measured {
+                        Text(String(format: "%+.0f dB", s.deviation))
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 52, alignment: .trailing)
+                        Text(String(format: "EQ %+.1f", s.gain))
+                            .font(.system(size: 11).monospacedDigit())
+                            .frame(width: 66, alignment: .trailing)
+                    } else {
+                        // Not zero. A frequency that gave no reading is a gap
+                        // in the measurement, and "+0 dB, EQ +0.0" would read
+                        // as having measured perfectly ordinary hearing there.
+                        Text("no reading")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 126, alignment: .trailing)
+                    }
+                    Spacer()
+                }
             }
         }
     }
@@ -272,6 +352,13 @@ struct TuneView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let note = tuner.note {
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let blocker = ABTuner.blocker(controller) {
                 HStack(alignment: .top, spacing: 5) {
@@ -379,14 +466,17 @@ struct TuneView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if tuner.consistencyPoor {
-                Text("\(tuner.sameTrials) of the pairs were the same setting twice, and "
-                     + "you picked a winner on \(tuner.sameGuesses) of them. Some of "
-                     + "these answers are noise rather than preference, so treat the "
-                     + "result as weak.")
+                Text("Some of these answers are noise rather than preference, so "
+                     + "treat the result as weak.")
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Text(consistencySummary)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
                 Button("Keep") { tuner.keepResult(controller) }
@@ -406,6 +496,14 @@ struct TuneView: View {
                     .controlSize(.small)
             }
         }
+    }
+
+    private var consistencySummary: String {
+        let checks = tuner.sameTrials == 1
+            ? "1 repeated setting" : "\(tuner.sameTrials) repeated settings"
+        let guesses = tuner.sameGuesses == 1
+            ? "1 named a winner" : "\(tuner.sameGuesses) named a winner"
+        return "\(checks), \(guesses)"
     }
 
     /// One tilt: name, a bar either side of centre, and the value.

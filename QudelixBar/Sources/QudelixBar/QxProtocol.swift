@@ -206,6 +206,13 @@ enum QxFilter: UInt8, CaseIterable, Identifiable, Codable {
         case .peak: return "Peak"
         }
     }
+
+    var rendersGain: Bool {
+        switch self {
+        case .peak, .lowShelf, .highShelf: return true
+        case .bypass, .lpf, .hpf: return false
+        }
+    }
 }
 
 enum QxScale {

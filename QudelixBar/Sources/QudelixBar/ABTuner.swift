@@ -1,6 +1,26 @@
 import Foundation
 import SwiftUI
 
+enum SessionInterruption: Equatable {
+    case disconnected
+    case unsupported
+    case voiceCall
+    case eqModeChanged
+    case playerStopped
+    case outputChanged
+
+    var reason: String {
+        switch self {
+        case .disconnected: return "the 5K disconnected"
+        case .unsupported: return "the device stopped accepting EQ writes"
+        case .voiceCall: return "the link dropped to hands-free (voice) mode"
+        case .eqModeChanged: return "the device changed EQ mode"
+        case .playerStopped: return "the tone player stopped"
+        case .outputChanged: return "sound moved to another output device"
+        }
+    }
+}
+
 /// Blind A/B EQ preference tuning.
 ///
 /// Why preference rather than a hearing test: a threshold test through an
@@ -73,11 +93,13 @@ final class ABTuner: ObservableObject {
     @Published private(set) var sameGuesses = 0
     /// Macros the listener could not hear, zeroed rather than guessed at.
     @Published private(set) var inaudible: Set<String> = []
+    @Published private(set) var note: String?
 
     /// What was loaded before the session, restored on cancel or discard.
     private var baseline: [QxEqBandValue] = []
     private var baselinePreGain: Double = 0
     private var sessionPreGain: Double = 0
+    private var sessionGroup: QxEqGroup = .user
 
     private var steps: [String: Double] = [:]
     /// How often the listener could not tell the two options apart, per macro.
@@ -93,6 +115,7 @@ final class ABTuner: ObservableObject {
         case notConnected
         case unsupported
         case voiceCall
+        case noGainBand
 
         var message: String {
             switch self {
@@ -101,6 +124,9 @@ final class ABTuner: ObservableObject {
             case .voiceCall:
                 return "The link is in hands-free (voice) mode at 16 kHz. "
                     + "Audio quality is too low to judge — close whatever is using the microphone."
+            case .noGainBand:
+                return "Every band is switched off or a pass filter, so both options "
+                    + "would be the same sound. Add a peak or shelf band first."
             }
         }
     }
@@ -112,7 +138,38 @@ final class ABTuner: ObservableObject {
         guard c.compatibility == .ok else { return .unsupported }
         if let src = c.inputSource, src.hasPrefix("HFP") { return .voiceCall }
         if c.sampleRate == "16 kHz" { return .voiceCall }
+        guard c.bands.prefix(c.bandCount).contains(where: { $0.filter.rendersGain }) else {
+            return .noGainBand
+        }
         return nil
+    }
+
+    nonisolated static func interruption(connected: Bool, compatible: Bool,
+                                         voiceCall: Bool,
+                                         eqModeChanged: Bool) -> SessionInterruption? {
+        if !connected { return .disconnected }
+        if !compatible { return .unsupported }
+        if voiceCall { return .voiceCall }
+        if eqModeChanged { return .eqModeChanged }
+        return nil
+    }
+
+    private func interruption(_ c: QudelixController) -> SessionInterruption? {
+        var connected = false
+        if case .connected = c.connection { connected = true }
+        let voice = (c.inputSource?.hasPrefix("HFP") ?? false) || c.sampleRate == "16 kHz"
+        return Self.interruption(connected: connected,
+                                 compatible: c.compatibility == .ok,
+                                 voiceCall: voice,
+                                 eqModeChanged: c.eqGroup != sessionGroup)
+    }
+
+    private func stillValid(_ c: QudelixController) -> Bool {
+        guard let interruption = interruption(c) else { return true }
+        if interruption != .eqModeChanged { restoreBaseline(c) }
+        endSession(c)
+        note = "Comparison stopped — \(interruption.reason)."
+        return false
     }
 
     // MARK: - Session
@@ -139,12 +196,14 @@ final class ABTuner: ObservableObject {
     }
 
     func start(_ c: QudelixController) {
-        guard Self.blocker(c) == nil else { return }
+        guard Self.blocker(c) == nil, phase == .idle else { return }
 
+        note = nil
         // One step for the whole session, taken before anything moves.
         c.beginUndoStep("by-ear tuning")
         baseline = c.bands
         baselinePreGain = c.preGain
+        sessionGroup = c.eqGroup
         values = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, 0.0) })
         steps = Dictionary(uniqueKeysWithValues: Self.macros.map { ($0.name, $0.range) })
         sameTrials = 0; sameGuesses = 0; trialsDone = 0; round = 1
@@ -173,20 +232,26 @@ final class ABTuner: ObservableObject {
         }
         trialsTotal = queue.count
 
-        c.setPreGain(sessionPreGain)
+        c.setPreGain(sessionPreGain, persistToFlash: false, recordUndo: false)
+        c.setByEarSessionActive(true)
         phase = .running
         nextTrial(c)
     }
 
     func cancel(_ c: QudelixController) {
         restoreBaseline(c)
+        endSession(c)
+    }
+
+    private func endSession(_ c: QudelixController) {
+        c.setByEarSessionActive(false)
         phase = .idle
     }
 
     /// Swap which of the two candidates is playing. The listener can do this as
     /// often as they like before committing.
     func toggleSide(_ c: QudelixController) {
-        guard phase == .running else { return }
+        guard phase == .running, stillValid(c) else { return }
         showingA.toggle()
         apply(showingA ? curveA : curveB, to: c)
     }
@@ -198,7 +263,7 @@ final class ABTuner: ObservableObject {
     /// someone with no preference in a band ends up with a tilt of up to half the
     /// search range purely from coin flips.
     func noDifference(_ c: QudelixController) {
-        guard phase == .running else { return }
+        guard phase == .running, stillValid(c) else { return }
         if isConsistencyCheck {
             // The right answer on an identical pair: counted, but not held
             // against the listener.
@@ -218,7 +283,7 @@ final class ABTuner: ObservableObject {
     }
 
     func choose(preferA: Bool, _ c: QudelixController) {
-        guard phase == .running else { return }
+        guard phase == .running, stillValid(c) else { return }
         let preferredHigh = (preferA == highIsA)
 
         if isConsistencyCheck {
@@ -356,19 +421,22 @@ final class ABTuner: ObservableObject {
     }
 
     func keepResult(_ c: QudelixController) {
+        guard phase == .finished, !resultBands.isEmpty else { return }
         // Leave the curve applied, but hand pre-gain back to the user's value if
         // the result does not actually need the extra headroom.
-        c.setPreGain(Self.safePreGain(for: resultBands, notAbove: baselinePreGain))
-        phase = .idle
+        c.setPreGain(Self.safePreGain(for: resultBands, notAbove: baselinePreGain),
+                     recordUndo: false)
+        endSession(c)
     }
 
     func discardResult(_ c: QudelixController) {
+        guard phase == .finished else { return }
         restoreBaseline(c)
-        phase = .idle
+        endSession(c)
     }
 
     private func restoreBaseline(_ c: QudelixController) {
-        c.setPreGain(baselinePreGain)
+        c.setPreGain(baselinePreGain, persistToFlash: false, recordUndo: false)
         apply(baseline, to: c)
     }
 
@@ -403,22 +471,22 @@ final class ABTuner: ObservableObject {
     private func curve(_ v: [String: Double]) -> [QxEqBandValue] {
         let count = baseline.count
         guard count > 0 else { return [] }
+        let eligible = (0..<count).filter { baseline[$0].filter.rendersGain }
+        guard !eligible.isEmpty else { return baseline }
         var tilt = [Double](repeating: 0, count: count)
         for m in Self.macros {
             let amount = v[m.name] ?? 0
             guard amount != 0 else { continue }
-            for i in 0..<count {
+            for i in eligible {
                 tilt[i] += amount * Self.weight(m.shape, atHz: baseline[i].freq)
             }
         }
         // Remove the average so a tilt never changes overall loudness.
-        let mean = tilt.reduce(0, +) / Double(count)
-        var out: [QxEqBandValue] = []
-        for i in 0..<count {
-            var band = baseline[i]
+        let mean = eligible.map { tilt[$0] }.reduce(0, +) / Double(eligible.count)
+        var out = baseline
+        for i in eligible {
             let shaped = min(max(tilt[i] - mean, -Self.tiltCap), Self.tiltCap)
-            band.gain = min(max(band.gain + shaped, -12), 12)
-            out.append(band)
+            out[i].gain = min(max(baseline[i].gain + shaped, -12), 12)
         }
         return out
     }
