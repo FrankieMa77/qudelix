@@ -1709,11 +1709,12 @@ final class QudelixController: ObservableObject {
         // mode would fit them.
         let applied = min(file.bands.count, bandCount)
         let dropped = file.droppedBands + max(0, file.bands.count - bandCount)
-        lastImportSummary = "Applied \(applied) band(s), pre-gain "
+        lastImportSummary = (["Applied \(applied) band(s), pre-gain "
             + String(format: "%+.1f dB", file.preamp)
             + (dropped > 0 ? " · \(dropped) band(s) dropped"
                 + (file.bands.count > bandCount && eqGroup != .b20
-                   ? " (fit in 20-band mode)" : "") : "")
+                   ? " (fit in 20-band mode)" : "") : "")]
+            + file.notes).joined(separator: " · ")
         DebugLog.shared.log("import: \(lastImportSummary ?? "")")
         sourceCurve = bands
         sourcePreGain = preGain

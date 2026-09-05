@@ -185,6 +185,17 @@ enum QxFilter: UInt8, CaseIterable, Identifiable, Codable {
     case peak   = 5
 
     var id: UInt8 { rawValue }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        guard let raw = try? container.decode(UInt8.self),
+              let known = QxFilter(rawValue: raw) else {
+            self = .bypass
+            return
+        }
+        self = known
+    }
+
     var label: String {
         switch self {
         case .bypass: return "Bypass"

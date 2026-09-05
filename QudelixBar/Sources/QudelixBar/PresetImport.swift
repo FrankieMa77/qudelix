@@ -18,57 +18,125 @@ struct ParametricEQFile {
     /// Bands beyond what the device supports, dropped during parsing.
     var droppedBands = 0
 
+    var notes: [String] = []
+
+    static let defaultShelfQ = 0.71
+
+    static let maxLineLength = 4096
+
+    private static let preampPattern =
+        #/(?i)preamp\s*:?\s*([+-]?[\d.]+)\s*dB/#
+    private static let filterPattern =
+        #/(?i)filter\s*\d*\s*:?\s*(ON|OFF)\s+(PK|PEQ|MODAL|LSC|LSQ|LS|HSC|HSQ|HS|LPQ|LPF|LP|HPQ|HPF|HP)\s+Fc\s+([\d.,]+)\s*Hz\s+Gain\s+([+-]?[\d.,]+)\s*dB(?:\s+Q\s+([\d.,]+))?/#
+    private static let passPattern =
+        #/(?i)filter\s*\d*\s*:?\s*(ON|OFF)\s+(LPQ|LPF|LP|HPQ|HPF|HP)\s+Fc\s+([\d.,]+)\s*Hz(?:\s+Q\s+([\d.,]+))?/#
+
     static func parse(_ text: String) -> ParametricEQFile? {
         var out = ParametricEQFile()
         var parsed: [QxEqBandValue] = []
+        var unreadable = 0
 
         for rawLine in text.split(whereSeparator: \.isNewline) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard rawLine.count <= maxLineLength else { continue }
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty || line.hasPrefix("#") { continue }
 
-            if line.lowercased().hasPrefix("preamp:") {
-                let p = firstDouble(after: ":", in: line) ?? 0
+            if let m = try? preampPattern.firstMatch(in: line),
+               let p = number(m.1) {
                 // Deliberately wider than the ±12 the device accepts. This is a
                 // sanity bound on a parsed file, not a device bound: clamping
                 // to the device range here would erase the overflow, and the
                 // overflow is exactly what the caller warns the user about
                 // before `apply` clamps it for the wire.
-                out.preamp = p.isFinite ? max(-24, min(24, p)) : 0
+                out.preamp = max(-24, min(24, p))
                 continue
             }
-            guard line.lowercased().hasPrefix("filter") else { continue }
 
-            // Skip disabled filters ("Filter 3: OFF ...").
-            let tokens = line.split(separator: " ").map(String.init)
-            guard let onIdx = tokens.firstIndex(where: { $0 == "ON" || $0 == "OFF" }),
-                  tokens[onIdx] == "ON",
-                  onIdx + 1 < tokens.count else { continue }
+            if let m = try? filterPattern.firstMatch(in: line),
+               m.1.uppercased() == "ON",
+               let filter = filterType(String(m.2)),
+               let fc = number(m.3), fc >= 1, fc <= 100_000,
+               let gain = number(m.4) {
+                let q = m.5.flatMap { number($0) } ?? defaultShelfQ
+                parsed.append(QxEqBandValue(
+                    filter: filter,
+                    freq: Int(fc.rounded()),
+                    gain: filter.hasGain ? max(-24, min(24, gain)) : 0,
+                    q: max(0.05, min(20, q))))
+                continue
+            }
 
-            guard let filter = filterType(tokens[onIdx + 1]) else { continue }
-            // `Double("inf")`, `Double("nan")` and `Double("1e400")` all parse,
-            // and `Int(inf)` traps — so every number is range-checked here, at
-            // the boundary, before it can reach an Int conversion.
-            guard let fc = value(after: "Fc", in: tokens), fc.isFinite,
-                  fc >= 1, fc <= 100_000,
-                  let gain = value(after: "Gain", in: tokens), gain.isFinite,
-                  let q = value(after: "Q", in: tokens), q.isFinite else { continue }
+            if let m = try? passPattern.firstMatch(in: line),
+               m.1.uppercased() == "ON",
+               let filter = filterType(String(m.2)),
+               let fc = number(m.3), fc >= 1, fc <= 100_000 {
+                let q = m.4.flatMap { number($0) } ?? defaultShelfQ
+                parsed.append(QxEqBandValue(filter: filter, freq: Int(fc.rounded()),
+                                            gain: 0, q: max(0.05, min(20, q))))
+                continue
+            }
 
-            parsed.append(QxEqBandValue(
-                filter: filter,
-                freq: Int(fc.rounded()),
-                gain: max(-24, min(24, gain)),
-                q: max(0.05, min(20, q))
-            ))
+            if line.lowercased().hasPrefix("filter") { unreadable += 1 }
         }
 
         guard !parsed.isEmpty else { return nil }
+        if unreadable > 0 {
+            out.notes.append("skipped \(unreadable) filter line"
+                + (unreadable == 1 ? "" : "s")
+                + " — an unsupported type, or a missing Fc, Gain or Q")
+        }
+        if abs(out.preamp) > EQHeadroom.range.upperBound + 0.05 {
+            out.notes.append(String(
+                format: "pre-gain %+.1f dB is beyond this device's ±%.0f dB and will be "
+                    + "clamped — a strong boost may clip at full volume",
+                out.preamp, EQHeadroom.range.upperBound))
+        }
+        let clamped = parsed.filter { $0.filter.hasGain && abs($0.gain) > 12.05 }.count
+        if clamped > 0 {
+            out.notes.append("\(clamped) gain\(clamped == 1 ? "" : "s") beyond ±12 dB "
+                + "\(clamped == 1 ? "was" : "were") clamped")
+        }
+
         // Cap at the LARGEST band count any EQ group supports — which mode
         // the device is in isn't known here. The apply step trims to the
         // active mode's count and reports what didn't fit.
         if parsed.count > QxEq.maxBandCount {
             out.droppedBands = parsed.count - QxEq.maxBandCount
-            parsed = Array(parsed.prefix(QxEq.maxBandCount))
+            parsed = strongest(parsed, keeping: QxEq.maxBandCount)
+            out.notes.append("kept the \(QxEq.maxBandCount) filters doing the most work")
         }
-        out.bands = parsed
+        out.bands = nudgingDuplicateCentres(parsed)
+        return out
+    }
+
+    static func strongest(_ bands: [QxEqBandValue], keeping count: Int) -> [QxEqBandValue] {
+        guard bands.count > count else { return bands }
+        func work(_ band: QxEqBandValue) -> Double {
+            band.filter.hasGain ? abs(band.gain) : .infinity
+        }
+        return bands.enumerated()
+            .sorted { a, b in
+                work(a.element) == work(b.element)
+                    ? a.offset < b.offset
+                    : work(a.element) > work(b.element)
+            }
+            .prefix(count)
+            .sorted { $0.offset < $1.offset }
+            .map(\.element)
+    }
+
+    static func nudgingDuplicateCentres(_ bands: [QxEqBandValue]) -> [QxEqBandValue] {
+        guard bands.count > 1 else { return bands }
+        var out = bands
+        let byFrequency = out.indices.sorted {
+            out[$0].freq == out[$1].freq ? $0 < $1 : out[$0].freq < out[$1].freq
+        }
+        for k in 1..<byFrequency.count {
+            let previous = out[byFrequency[k - 1]].freq
+            guard out[byFrequency[k]].freq <= previous else { continue }
+            out[byFrequency[k]].freq = max(previous + 1,
+                                           Int((Double(previous) * 1.005).rounded()))
+        }
         return out
     }
 
@@ -83,17 +151,10 @@ struct ParametricEQFile {
         }
     }
 
-    /// The number following a keyword token, e.g. "Fc 105 Hz" → 105.
-    private static func value(after keyword: String, in tokens: [String]) -> Double? {
-        guard let i = tokens.firstIndex(of: keyword), i + 1 < tokens.count else { return nil }
-        return Double(tokens[i + 1].replacingOccurrences(of: ",", with: "."))
-    }
-
-    private static func firstDouble(after sep: String, in line: String) -> Double? {
-        guard let range = line.range(of: sep) else { return nil }
-        let rest = line[range.upperBound...]
-        let numeric = rest.split(separator: " ").first.map(String.init) ?? ""
-        return Double(numeric)
+    private static func number(_ text: Substring) -> Double? {
+        guard let value = Double(text.replacingOccurrences(of: ",", with: ".")),
+              value.isFinite else { return nil }
+        return value
     }
 }
 

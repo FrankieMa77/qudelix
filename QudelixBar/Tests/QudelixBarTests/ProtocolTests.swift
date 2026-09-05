@@ -223,6 +223,116 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(file?.bands.first?.freq, 1000)
     }
 
+    func testParametricParseIsCaseInsensitive() {
+        let file = ParametricEQFile.parse("""
+            preamp: -3.5 db
+            filter 1: on pk fc 1000 hz gain 3.0 db q 1.00
+            """)
+        XCTAssertEqual(file?.preamp, -3.5)
+        XCTAssertEqual(file?.bands.first?.filter, .peak)
+        XCTAssertEqual(file?.bands.first?.gain, 3.0)
+    }
+
+    func testParametricParseToleratesTabsAndRunsOfSpaces() {
+        let file = ParametricEQFile.parse(
+            "Filter 1:\tON\tPK\tFc\t1000\tHz\tGain\t3.0\tdB\tQ\t1.00")
+        XCTAssertEqual(file?.bands.count, 1)
+        XCTAssertEqual(file?.bands.first?.freq, 1000)
+        XCTAssertEqual(ParametricEQFile.parse(
+            "Filter  1:   ON   PK   Fc  1000 Hz  Gain  3.0 dB  Q  1.00")?.bands.count, 1)
+    }
+
+    func testParametricParseAcceptsGainlessPassFiltersAndQlessShelves() {
+        let file = ParametricEQFile.parse("""
+            Filter 1: ON HPQ Fc 30 Hz
+            Filter 2: ON LPQ Fc 16000 Hz Q 0.5
+            Filter 3: ON LSC Fc 105 Hz Gain 6.4 dB
+            """)
+        XCTAssertEqual(file?.bands.count, 3)
+        XCTAssertEqual(file?.bands[0].filter, .hpf)
+        XCTAssertEqual(file?.bands[0].q, ParametricEQFile.defaultShelfQ)
+        XCTAssertEqual(file?.bands[1].q, 0.5)
+        XCTAssertEqual(file?.bands[2].filter, .lowShelf)
+        XCTAssertEqual(file?.bands[2].q, ParametricEQFile.defaultShelfQ)
+    }
+
+    func testAPassFilterCarriesNoGainOutOfTheFile() {
+        let file = ParametricEQFile.parse("Filter 1: ON LPQ Fc 8000 Hz Gain -9.0 dB Q 0.7")
+        XCTAssertEqual(file?.bands.first?.filter, .lpf)
+        XCTAssertEqual(file?.bands.first?.gain, 0)
+    }
+
+    func testParametricParseAcceptsAColonlessPreambleAndNoSpaceBeforeDB() {
+        XCTAssertEqual(ParametricEQFile.parse("Preamp -6.4dB\nFilter 1: ON PK Fc 100 Hz "
+                                              + "Gain 1 dB Q 1")?.preamp, -6.4)
+    }
+
+    func testParametricParseSkipsCommentsAndHostileMegaLines() {
+        let monster = "Filter 1: ON PK Fc 100 Hz Gain "
+            + String(repeating: "1", count: ParametricEQFile.maxLineLength) + " dB Q 1"
+        let file = ParametricEQFile.parse("""
+            # oratory1990's correction, do not edit
+            \(monster)
+            Filter 2: ON PK Fc 1000 Hz Gain 3.0 dB Q 1.0
+            """)
+        XCTAssertEqual(file?.bands.count, 1)
+        XCTAssertEqual(file?.bands.first?.freq, 1000)
+    }
+
+    func testDuplicateCentresAreNudgedApartWithoutReorderingTheBands() {
+        let file = ParametricEQFile.parse("""
+            Filter 1: ON PK Fc 1000 Hz Gain 3.0 dB Q 1.0
+            Filter 2: ON PK Fc 1000 Hz Gain -2.0 dB Q 1.0
+            Filter 3: ON PK Fc 1000 Hz Gain 1.0 dB Q 1.0
+            """)
+        let freqs = file?.bands.map(\.freq) ?? []
+        XCTAssertEqual(Set(freqs).count, 3, "every band needs its own centre: \(freqs)")
+        XCTAssertEqual(file?.bands.map(\.gain), [3.0, -2.0, 1.0])
+    }
+
+    func testTrimmingKeepsTheFiltersDoingTheMostWork() {
+        func gain(_ i: Int) -> Double { (Double(i) * 4).rounded() / 10 }
+        var lines: [String] = []
+        for i in 1...25 {
+            lines.append(String(format: "Filter %d: ON PK Fc %d Hz Gain %.1f dB Q 1.00",
+                                i, 100 * i, gain(i)))
+        }
+        let file = ParametricEQFile.parse(lines.joined(separator: "\n"))
+        XCTAssertEqual(file?.bands.count, 20)
+        XCTAssertEqual(file?.droppedBands, 5)
+        XCTAssertEqual(file?.bands.map(\.gain), (6...25).map(gain))
+    }
+
+    func testAPassFilterIsNeverTrimmedAwayAsWeak() {
+        var lines = ["Filter 1: ON HPQ Fc 30 Hz Q 0.7"]
+        for i in 1...25 {
+            lines.append("Filter \(i + 1): ON PK Fc \(100 * i) Hz Gain 5.0 dB Q 1.00")
+        }
+        let file = ParametricEQFile.parse(lines.joined(separator: "\n"))
+        XCTAssertEqual(file?.bands.first?.filter, .hpf)
+    }
+
+    func testTheFileSaysWhatItCouldNotHonour() {
+        let file = ParametricEQFile.parse("""
+            Preamp: -18.0 dB
+            Filter 1: ON BP Fc 1000 Hz Gain 3.0 dB Q 1.0
+            Filter 2: ON PK Fc 2000 Hz Gain 3.0 dB
+            Filter 3: ON PK Fc 4000 Hz Gain -20.0 dB Q 1.0
+            """)
+        let notes = file?.notes ?? []
+        XCTAssertTrue(notes.contains { $0.contains("skipped 1 filter line") }, "\(notes)")
+        XCTAssertTrue(notes.contains { $0.contains("pre-gain") }, "\(notes)")
+        XCTAssertTrue(notes.contains { $0.contains("clamped") }, "\(notes)")
+    }
+
+    func testAFileWithNothingToReportSaysNothing() {
+        let file = ParametricEQFile.parse("""
+            Preamp: -6.1 dB
+            Filter 1: ON PK Fc 1000 Hz Gain 3.0 dB Q 1.0
+            """)
+        XCTAssertEqual(file?.notes, [])
+    }
+
     // MARK: - String scrubbing
 
     @MainActor

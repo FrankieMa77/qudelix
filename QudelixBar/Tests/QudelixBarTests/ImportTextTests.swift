@@ -141,6 +141,26 @@ final class ImportTextTests: XCTestCase {
         XCTAssertEqual(c.bands, before)
     }
 
+    func testWhatTheFileAskedForAndDidNotGetIsSaidOutLoud() {
+        let c = connected()
+        c.importText("""
+            Preamp: -18.0 dB
+            Filter 1: ON BP Fc 1000 Hz Gain 3.0 dB Q 1.0
+            Filter 2: ON PK Fc 2000 Hz Gain -20.0 dB Q 1.0
+            """)
+        let summary = c.lastImportSummary ?? ""
+        XCTAssertTrue(summary.contains("Applied 1 band(s)"), summary)
+        XCTAssertTrue(summary.contains("skipped 1 filter line"), summary)
+        XCTAssertTrue(summary.contains("pre-gain"), summary)
+        XCTAssertTrue(summary.contains("clamped"), summary)
+    }
+
+    func testACleanFileGetsNoExtraNoise() {
+        let c = connected()
+        c.importText(realCorrection)
+        XCTAssertEqual(c.lastImportSummary, "Applied 3 band(s), pre-gain -6.1 dB")
+    }
+
     func testNothingIsAppliedWhileDisconnected() {
         let c = QudelixController()
         let before = c.bands

@@ -153,6 +153,29 @@ final class EqSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(EqSnapshotFile.load(from: url)[0]?.bands.count, QxEq.maxBandCount)
     }
 
+    func testAnUnknownFilterValueCostsOneBandRatherThanEveryCurve() {
+        let url = tempFileURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + ".recovered"))
+        }
+        let json = """
+        {"groups":{
+          "0":{"groupRaw":0,"preGain":-3.0,"enabled":true,"name":"ten band",
+               "bands":[{"filter":5,"freq":1000,"gain":2.0,"q":1.0},
+                        {"filter":99,"freq":4000,"gain":-3.0,"q":1.0}]},
+          "2":{"groupRaw":2,"preGain":-1.0,"enabled":true,"name":"twenty band",
+               "bands":[{"filter":3,"freq":105,"gain":4.0,"q":0.7}]}}}
+        """
+        try? Data(json.utf8).write(to: url)
+
+        let store = EqSnapshotFile.load(from: url)
+        XCTAssertEqual(store[0]?.bands.map(\.filter), [.peak, .bypass])
+        XCTAssertEqual(store[0]?.bands[1].gain, -3.0, "the rest of the band survives")
+        XCTAssertEqual(store[2]?.name, "twenty band",
+                       "the other group's curve must not go with it")
+    }
+
     func testAnOversizedFileIsRefusedOutright() {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
