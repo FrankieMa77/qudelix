@@ -44,6 +44,9 @@ struct StageSettings: Codable, Equatable {
     var loudness: Bool?
     var loudnessStrength: Double?
 
+    var bassGuard: Bool?
+    var bassGuardStrength: Double?
+
     var distanceValue: Double { distance ?? 0.35 }
     var spanValue: Double { span ?? 0.5 }
     var centerValue: Double { center ?? 0 }
@@ -57,6 +60,8 @@ struct StageSettings: Codable, Equatable {
     var limiterValue: Bool { limiter ?? false }
     var loudnessValue: Bool { loudness ?? false }
     var loudnessStrengthValue: Double { loudnessStrength ?? 1 }
+    var bassGuardValue: Bool { bassGuard ?? false }
+    var bassGuardStrengthValue: Double { bassGuardStrength ?? 1 }
 
     static let music = StageSettings(enabled: true, width: 115, crossfeed: 0.35,
                                      dialogue: 0, room: 0.1,
@@ -88,6 +93,8 @@ struct StageSettings: Codable, Equatable {
             && limiterValue == other.limiterValue
             && loudnessValue == other.loudnessValue
             && loudnessStrengthValue == other.loudnessStrengthValue
+            && bassGuardValue == other.bassGuardValue
+            && bassGuardStrengthValue == other.bassGuardStrengthValue
     }
 
     /// True when these settings differ from a fresh default in ANY audible
@@ -103,7 +110,7 @@ struct StageSettings: Codable, Equatable {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0
             && balanceDbValue == 0 && alignMsValue == 0 && !limiterValue
-            && !loudnessValue
+            && !loudnessValue && !bassGuardValue
     }
 
     /// The file this comes from is user-writable, so everything headed to
@@ -142,6 +149,9 @@ struct StageSettings: Codable, Equatable {
         if s.loudness == false { s.loudness = nil }
         s.loudnessStrength = unit(s.loudnessStrength)
         if s.loudnessStrength == 1 { s.loudnessStrength = nil }
+        if s.bassGuard == false { s.bassGuard = nil }
+        s.bassGuardStrength = unit(s.bassGuardStrength)
+        if s.bassGuardStrength == 1 { s.bassGuardStrength = nil }
         return s
     }
 }

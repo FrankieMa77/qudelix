@@ -79,7 +79,9 @@ struct LevelView: View {
     private var stageMetersRow: some View {
         let inserted = stageState.stage.enabled && stageState.engine.isRunning
             && stageState.engine.mode == .insert
-        if inserted, stageState.stage.limiterValue || stageState.stage.loudnessValue {
+        let guarding = stageState.stage.bassGuardValue && !stageState.bassGuardInert
+        if inserted, stageState.stage.limiterValue || stageState.stage.loudnessValue
+            || guarding {
             HStack(spacing: 10) {
                 if stageState.stage.limiterValue {
                     HStack(spacing: 6) {
@@ -110,9 +112,34 @@ struct LevelView: View {
                           + "second, from the estimate below. Treble rides "
                           + "along at a third of it.")
                 }
+                if guarding {
+                    HStack(spacing: 6) {
+                        Text("Bass guard")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(bassGuardText)
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(stageState.bassGuardGainReductionDb > 0.1
+                                             ? AnyShapeStyle(.orange)
+                                             : AnyShapeStyle(.tertiary))
+                        Text(String(format: "of %.1f dB boost",
+                                    stageState.bassGuardBoostDb))
+                            .font(.system(size: 9).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    .help("How much of the bass the 5K is about to add this "
+                          + "app is holding back right now, so the loudest "
+                          + "passages don't reach the driver with the whole "
+                          + "boost on them.")
+                }
                 Spacer()
             }
         }
+    }
+
+    private var bassGuardText: String {
+        let gr = stageState.bassGuardGainReductionDb
+        return gr > 0.1 ? String(format: "\u{2212}%.1f dB", gr) : "idle"
     }
 
     private var loudnessText: String {
