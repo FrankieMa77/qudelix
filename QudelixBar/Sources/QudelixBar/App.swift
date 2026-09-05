@@ -65,6 +65,9 @@ struct QudelixBarApp: App {
                         guard let controller else { return nil }
                         return (controller.activeCall, controller.inputSource)
                     }
+                    stageState.qudelixVolumeDb = { [weak controller] in
+                        controller?.reportedVolumeDb
+                    }
                     stageState.start()
 
                     // The rules engine decides *what* should happen and this

@@ -58,10 +58,24 @@ final class StageState: ObservableObject {
     /// which width and crossfeed cannot widen — the UI says so.
     @Published private(set) var sourceCorrelation: Double?
 
+    @Published private(set) var earLevel: EarLevelEstimate = .unavailable
+    @Published private(set) var earLevelAverageDb: Double?
+    @Published private(set) var earCalibrationDb = EarLevel.defaultCalibrationDb
+    @Published private(set) var earAnchor: EarVolumeAnchor?
+    var earLevelDb: Double? {
+        if case .estimated(let db) = earLevel { return db }
+        return nil
+    }
+    var qudelixVolumeDb: (() -> Double?)?
+    private var shortTerm = ShortTermLoudness()
+    private var earAverage = AveragedLoudness()
+    private var earCalibrationByDevice: [String: Double] = [:]
+
     static let silenceFloorDb: Double = -55
     static let loudThresholdDb: Double = -12
 
     private var stageByDevice: [String: StageSettings] = [:]
+    static let maxCalibratedDevices = 64
     private var meterTimer: Timer?
     private var meterTicksSinceSave = 0
     private var saveWork: DispatchWorkItem?
@@ -112,6 +126,12 @@ final class StageState: ObservableObject {
             autoRate = saved.autoRate ?? true
             if let rate = saved.manualRateHz, AudioOutputs.isPlausibleRate(rate) {
                 manualRateHz = rate
+            }
+            if let calibrations = saved.earCalibrationByDevice {
+                earCalibrationByDevice = Dictionary(uniqueKeysWithValues:
+                    calibrations.sorted { $0.key < $1.key }
+                        .prefix(Self.maxCalibratedDevices)
+                        .map { ($0.key, EarLevel.clampedCalibration($0.value)) })
             }
             // The file is user-writable: clamp what comes off it so a
             // hand-edited value can't trap Int() in the Level pane, drop
@@ -175,6 +195,44 @@ final class StageState: ObservableObject {
             return
         }
         setStage(settings)
+    }
+
+    func setEarCalibration(_ db: Double) {
+        let clamped = EarLevel.clampedCalibration(db)
+        guard clamped != earCalibrationDb else { return }
+        earCalibrationDb = clamped
+        if let uid = outputUID {
+            if earCalibrationByDevice[uid] == nil,
+               earCalibrationByDevice.count >= Self.maxCalibratedDevices {
+                earCalibrationByDevice.removeValue(forKey:
+                    earCalibrationByDevice.keys.sorted()[0])
+            }
+            earCalibrationByDevice[uid] = clamped
+        }
+        scheduleSave()
+    }
+
+    func setEarCalibration(_ db: Double, editedFor uid: String?) {
+        guard uid == outputUID else {
+            DebugLog.shared.log("ear calibration edit dropped: output device changed mid-edit")
+            return
+        }
+        setEarCalibration(db)
+    }
+
+    private func adoptEarCalibration(for uid: String?) {
+        let next = EarLevel.clampedCalibration(
+            uid.flatMap { earCalibrationByDevice[$0] } ?? EarLevel.defaultCalibrationDb)
+        if earCalibrationDb != next { earCalibrationDb = next }
+        clearEarLevel()
+    }
+
+    private func clearEarLevel() {
+        shortTerm.reset()
+        earAverage.reset()
+        if earLevel != .unavailable { earLevel = .unavailable }
+        if earLevelAverageDb != nil { earLevelAverageDb = nil }
+        if earAnchor != nil { earAnchor = nil }
     }
 
     func setLevelTracking(_ on: Bool) {
@@ -333,6 +391,7 @@ final class StageState: ObservableObject {
                 }
             }
         }
+        if uid != lastOutputUID { adoptEarCalibration(for: uid) }
         lastOutputUID = uid
 
         // A disconnect-reconnect can settle on the same default output while
@@ -364,8 +423,14 @@ final class StageState: ObservableObject {
     func previewSet(stage: StageSettings, exposure: [DayExposure],
                     currentDb: Double?, correlation: Double? = nil,
                     levelTracking: Bool = false,
-                    verdict: QualityAnalyzer.Verdict? = nil) {
+                    verdict: QualityAnalyzer.Verdict? = nil,
+                    earLevel: EarLevelEstimate = .unavailable,
+                    earAnchor: EarVolumeAnchor? = nil,
+                    earCalibrationDb: Double = EarLevel.defaultCalibrationDb) {
         persistenceDisabled = true
+        self.earLevel = earLevel
+        self.earAnchor = earAnchor
+        self.earCalibrationDb = EarLevel.clampedCalibration(earCalibrationDb)
         self.stage = stage
         exposureDays = exposure
         currentLevelDb = currentDb
@@ -385,7 +450,8 @@ final class StageState: ObservableObject {
             levelTracking: levelTracking,
             detectQuality: detectQuality,
             autoRate: autoRate,
-            manualRateHz: manualRateHz))
+            manualRateHz: manualRateHz,
+            earCalibrationByDevice: earCalibrationByDevice))
     }
 
     // MARK: - Metering
@@ -411,6 +477,26 @@ final class StageState: ObservableObject {
     private var correlationSmoothed: Double?
 
     private var callTicks = 0
+
+    private var earDiag: String {
+        let lufs = shortTerm.lufs.map { String(format: "%.1f", $0) } ?? "nil"
+        let anchor: String
+        switch earAnchor {
+        case .qudelix(let db): anchor = String(format: "5k/%.1f", db)
+        case .system(let db): anchor = String(format: "system/%.1f", db)
+        case nil: anchor = "none"
+        }
+        let estimate: String
+        switch earLevel {
+        case .unavailable: estimate = "nil"
+        case .tooQuiet: estimate = "quiet"
+        case .estimated(let db): estimate = String(format: "%.0f", db)
+        }
+        let average = earLevelAverageDb.map { String(format: "%.0f", $0) } ?? "nil"
+        return "ear: lufs=\(lufs) anchor=\(anchor) "
+            + String(format: "cal=%.0f ", earCalibrationDb)
+            + "est=\(estimate) avg=\(average)"
+    }
 
     private func meterTick() {
         callTicks += 1
@@ -439,7 +525,8 @@ final class StageState: ObservableObject {
                          stage.crossLowTrimValue, stage.crossMidTrimValue,
                          stage.crossHighTrimValue, stage.balanceDbValue,
                          stage.alignMsValue)
-                + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug)")
+                + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
+                + earDiag)
             if engine.isRunning || content != lastDiagContent {
                 let repeats = diagSuppressed
                 diagSuppressed = 0
@@ -471,6 +558,7 @@ final class StageState: ObservableObject {
             if currentLevelDb != nil { currentLevelDb = nil }
             if sourceCorrelation != nil { sourceCorrelation = nil }
             correlationSmoothed = nil
+            clearEarLevel()
             clearVerdict()
             qualityRate = nil
             return
@@ -485,6 +573,7 @@ final class StageState: ObservableObject {
         }
 
         qualityTick()
+        updateEarLevel()
 
         let (sumSquares, frames) = engine.processor.drainMeter()
         guard frames > 0 else {
@@ -509,6 +598,51 @@ final class StageState: ObservableObject {
             meterTicksSinceSave = 0
             scheduleSave()
         }
+    }
+
+    private func updateEarLevel() {
+        let (sumSquares, frames) = engine.processor.drainLoudnessMeter()
+        shortTerm.add(sumSquares: sumSquares, frames: frames)
+
+        let anchor = volumeAnchor()
+        if earAnchor != anchor { earAnchor = anchor }
+
+        let next = EarLevel.estimate(shortTermLUFS: shortTerm.lufs,
+                                     volumeDb: anchor?.db,
+                                     calibrationDb: earCalibrationDb)
+        if earLevel != next { earLevel = next }
+
+        if case .estimated = next, let lufs = shortTerm.lufs { earAverage.add(lufs) }
+        let average: Double? = earAverage.lufs.flatMap {
+            if case .estimated(let db) = EarLevel.estimate(
+                shortTermLUFS: $0, volumeDb: anchor?.db,
+                calibrationDb: earCalibrationDb) { return db }
+            return nil
+        }
+        if earLevelAverageDb != average { earLevelAverageDb = average }
+    }
+
+    func volumeAnchor() -> EarVolumeAnchor? {
+        let onQudelix = outputUID != nil && outputUID == qudelixOutput?.uid
+        return Self.volumeAnchor(
+            playingToQudelix: onQudelix,
+            qudelixVolumeDb: onQudelix ? qudelixVolumeDb?() : nil,
+            systemVolumeDb: watcher.defaultOutput
+                .flatMap { AudioOutputs.outputVolumeDb($0.id) }
+                .map(Double.init))
+    }
+
+    static func volumeAnchor(playingToQudelix: Bool, qudelixVolumeDb: Double?,
+                             systemVolumeDb: @autoclosure () -> Double?
+    ) -> EarVolumeAnchor? {
+        if playingToQudelix, let db = qudelixVolumeDb,
+           EarLevel.plausibleVolumeDb.contains(db) {
+            return .qudelix(db)
+        }
+        guard let db = systemVolumeDb(), EarLevel.plausibleVolumeDb.contains(db) else {
+            return nil
+        }
+        return .system(db)
     }
 
     /// The pure half of one metering second: the history that should exist

@@ -1,11 +1,6 @@
 import SwiftUI
 
 /// Live output level and listening history, measured on the Mac.
-///
-/// Everything here is digital signal level (dBFS), not sound pressure — the
-/// app cannot know the headphone's sensitivity or the analog volume. Trends
-/// and durations are honest; absolute loudness claims would not be, so the
-/// pane never makes any.
 struct LevelView: View {
     @EnvironmentObject var stageState: StageState
 
@@ -56,6 +51,8 @@ struct LevelView: View {
 
             meter
 
+            earLevelSection
+
             Divider()
 
             qualitySection
@@ -73,6 +70,79 @@ struct LevelView: View {
             Divider()
 
             exposureSection
+        }
+    }
+
+    private var earLevelSection: some View {
+        let uid = stageState.outputUID
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Estimated level at ear")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer()
+                Text(earLevelText)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text(earDisclaimer)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Text("Reads loud or quiet? Nudge it")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Stepper(value: Binding(
+                    get: { stageState.earCalibrationDb },
+                    set: { stageState.setEarCalibration($0, editedFor: uid) }),
+                        in: EarLevel.calibrationRange, step: 1) {
+                    Text(String(format: "%+.0f dB",
+                                stageState.earCalibrationDb - EarLevel.defaultCalibrationDb))
+                        .font(.system(size: 10).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .controlSize(.mini)
+                .fixedSize()
+                .accessibilityLabel("Ear level calibration")
+                .help("Shifts the estimate for headphones that play louder or "
+                      + "quieter than the typical sensitivity it assumes. "
+                      + "Kept per output device.")
+                if stageState.earCalibrationDb != EarLevel.defaultCalibrationDb {
+                    Button("Reset") {
+                        stageState.setEarCalibration(EarLevel.defaultCalibrationDb,
+                                                     editedFor: uid)
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 10))
+                    .help("Back to the typical-headphone assumption for this output.")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private var earLevelText: String {
+        guard stageState.engine.isRunning else { return "—" }
+        switch stageState.earLevel {
+        case .unavailable: return "—"
+        case .tooQuiet: return "too quiet to estimate"
+        case .estimated(let db): return String(format: "~%.0f dB (estimate)", db)
+        }
+    }
+
+    private var earDisclaimer: String {
+        switch stageState.earAnchor {
+        case .qudelix:
+            return "An estimate, not a measurement. It rests on the 5K's own "
+                + "volume setting and on a typical headphone's sensitivity — "
+                + "not on this pair."
+        case .system:
+            return "An estimate, not a measurement. It rests on where your "
+                + "Mac's volume for this output is set and on a typical "
+                + "headphone's sensitivity — not on this pair."
+        case nil:
+            return "An estimate, not a measurement. It needs a volume reading "
+                + "to anchor it, and this output offers none this app can read."
         }
     }
 
@@ -144,8 +214,9 @@ struct LevelView: View {
                 }
             }
 
-            Text("Levels are the digital signal (dBFS). How loud that is in "
-                 + "your ears depends on the 5K's volume and your headphones.")
+            Text("Recorded as digital signal level (dBFS), not as sound "
+                 + "pressure — the estimate above is the closest this app "
+                 + "gets to that.")
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)

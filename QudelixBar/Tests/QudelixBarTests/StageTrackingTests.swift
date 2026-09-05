@@ -230,6 +230,43 @@ final class StageTrackingTests: XCTestCase {
     private let qudelix = AudioOutput(id: 42, uid: "qudelix-uid",
                                       name: "Qudelix 5K", sampleRate: 48000)
 
+    func testTheQudelixOwnVolumeIsTheAnchorWhileTheMacPlaysToIt() {
+        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: true,
+                                               qudelixVolumeDb: -22,
+                                               systemVolumeDb: 0),
+                       .qudelix(-22))
+    }
+
+    func testAnyOtherOutputIsAnchoredByItsOwnVolume() {
+        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: false,
+                                               qudelixVolumeDb: -22,
+                                               systemVolumeDb: -8),
+                       .system(-8))
+    }
+
+    func testASilentControlLinkFallsBackToTheOutputsOwnVolume() {
+        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: true,
+                                               qudelixVolumeDb: nil,
+                                               systemVolumeDb: -8),
+                       .system(-8))
+    }
+
+    func testAnImplausibleDeviceReadingIsNotAnAnchor() {
+        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: true,
+                                               qudelixVolumeDb: 1e9,
+                                               systemVolumeDb: -8),
+                       .system(-8))
+        XCTAssertNil(StageState.volumeAnchor(playingToQudelix: true,
+                                             qudelixVolumeDb: .nan,
+                                             systemVolumeDb: nil))
+    }
+
+    func testNoVolumeAnywhereLeavesNothingToAnchorTo() {
+        XCTAssertNil(StageState.volumeAnchor(playingToQudelix: false,
+                                             qudelixVolumeDb: -22,
+                                             systemVolumeDb: nil))
+    }
+
     private func target(verdict: QualityAnalyzer.Verdict = .losslessLike(cutoffKHz: 21.9),
                         measuredOn: String?,
                         availableRates: [Double] = [44100, 48000, 88200, 96000],

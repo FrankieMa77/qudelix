@@ -1267,6 +1267,12 @@ final class QudelixController: ObservableObject {
         transportSend(.reqDevConfig, [0xC0])   // sys2 | eq → this group's cfg + name mask
     }
 
+    var reportedVolumeDb: Double? {
+        guard case .connected = connection, receivingReports, !muted,
+              volumeDb.isFinite else { return nil }
+        return min(max(volumeDb, volumeRange.lowerBound), volumeRange.upperBound)
+    }
+
     // MARK: - Actions
 
     /// Single gate for everything that writes to the hardware.
