@@ -25,8 +25,11 @@ final class StageState: ObservableObject {
     @Published private(set) var levelTracking = false
 
     @Published private(set) var callActive = false
+    private(set) var callActiveLive = false
 
     var deviceCallState: (() -> (activeCall: Bool?, inputSource: String?)?)?
+
+    var onStatusChange: (() -> Void)?
 
     private var a2dpGuardModeRaw = A2dpGuard.Mode.ask.rawValue
     var savedA2dpGuardMode: A2dpGuard.Mode {
@@ -44,6 +47,7 @@ final class StageState: ObservableObject {
     @Published private(set) var autoRate = true
     /// Verdict after hysteresis — what the UI shows. nil while unknown.
     @Published private(set) var qualityVerdict: QualityAnalyzer.Verdict?
+    private(set) var qualityVerdictLive: QualityAnalyzer.Verdict?
     private let analyzer = QualityAnalyzer()
     private var rawVerdict: QualityAnalyzer.Verdict?
     private var rawVerdictStreak = 0
@@ -64,7 +68,9 @@ final class StageState: ObservableObject {
 
     // Listening exposure (digital level, dBFS — not calibrated SPL).
     @Published private(set) var currentLevelDb: Double?
+    private(set) var currentLevelDbLive: Double?
     @Published private(set) var exposureDays: [DayExposure] = []
+    private(set) var exposureDaysLive: [DayExposure] = []
     /// Smoothed L/R correlation of what's playing: ~1 means mono content,
     /// which width and crossfeed cannot widen — the UI says so.
     @Published private(set) var sourceCorrelation: Double?
@@ -82,6 +88,29 @@ final class StageState: ObservableObject {
     private var shortTerm = ShortTermLoudness()
     private var earAverage = AveragedLoudness()
     private var earCalibrationByDevice: [String: Double] = [:]
+
+    private(set) var sourceCorrelationLive: Double?
+
+    private var uiVisible = false
+
+    func setUIVisible(_ visible: Bool) {
+        uiVisible = visible
+        if visible { flushMirrors() }
+    }
+
+    private func mirror<T: Equatable>(_ value: T,
+                                      into keyPath: ReferenceWritableKeyPath<StageState, T>) {
+        guard uiVisible, self[keyPath: keyPath] != value else { return }
+        self[keyPath: keyPath] = value
+    }
+
+    private func flushMirrors() {
+        mirror(currentLevelDbLive, into: \.currentLevelDb)
+        mirror(sourceCorrelationLive, into: \.sourceCorrelation)
+        mirror(exposureDaysLive, into: \.exposureDays)
+        mirror(qualityVerdictLive, into: \.qualityVerdict)
+        mirror(callActiveLive, into: \.callActive)
+    }
 
     static let silenceFloorDb: Double = -55
     static let loudThresholdDb: Double = -12
@@ -162,6 +191,7 @@ final class StageState: ObservableObject {
             }
             .filter { seenDays.insert($0.day).inserted }
             .suffix(14))
+            exposureDaysLive = exposureDays
         }
     }
 
@@ -172,7 +202,7 @@ final class StageState: ObservableObject {
         engine.onDeviceConfigurationChange = { [weak self] in
             guard let self else { return }
             self.refreshCallState()
-            if self.engine.isRunning, !self.callActive,
+            if self.engine.isRunning, !self.callActiveLive,
                let device = self.watcher.defaultOutput,
                AudioOutputs.currentNominalRate(device.id) != self.engine.runningSampleRate {
                 self.engine.stop()
@@ -192,7 +222,9 @@ final class StageState: ObservableObject {
     // MARK: - Edits
 
     func setStage(_ settings: StageSettings) {
+        let wasEnabled = stage.enabled
         stage = settings.clamped()
+        if stage.enabled != wasEnabled { onStatusChange?() }
         if let uid = outputUID { stageByDevice[uid] = stage }
         engine.processor.applyStage(stage)
         reconcile()
@@ -267,7 +299,10 @@ final class StageState: ObservableObject {
     }
 
     private func clearVerdict() {
-        if qualityVerdict != nil { qualityVerdict = nil }
+        let had = qualityVerdictLive?.isLosslessClass
+        qualityVerdictLive = nil
+        mirror(qualityVerdictLive, into: \.qualityVerdict)
+        if had != nil { onStatusChange?() }
         verdictDeviceUID = nil
         rawVerdict = nil
         rawVerdictStreak = 0
@@ -304,7 +339,7 @@ final class StageState: ObservableObject {
     }
 
     private var desiredMode: StageEngine.Mode? {
-        guard !callActive else { return nil }
+        guard !callActiveLive else { return nil }
         return wantedMode
     }
 
@@ -326,7 +361,7 @@ final class StageState: ObservableObject {
     /// Called after every edit and every device event; safe to call twice.
     private func reconcile() {
         let device = watcher.defaultOutput
-        let hold = callActive && wantedMode != nil && device != nil
+        let hold = callActiveLive && wantedMode != nil && device != nil
         let desired = desiredMode
 
         if engine.isRunning, !hold {
@@ -361,8 +396,10 @@ final class StageState: ObservableObject {
         let active = Self.callIsActive(outputOnCall: outputOnCall,
                                        deviceActiveCall: reported?.activeCall,
                                        deviceInputSource: reported?.inputSource)
-        if active != callActive {
-            callActive = active
+        if active != callActiveLive {
+            callActiveLive = active
+            mirror(active, into: \.callActive)
+            onStatusChange?()
             DebugLog.shared.log("call state → \(active ? "on a call" : "clear")")
         }
     }
@@ -403,6 +440,7 @@ final class StageState: ObservableObject {
                 if !deviceStage.audiblyEquals(stage) || deviceStage.enabled != stage.enabled {
                     stage = deviceStage
                     engine.processor.applyStage(stage)
+                    onStatusChange?()
                 }
             }
         }
@@ -449,11 +487,25 @@ final class StageState: ObservableObject {
         self.earCalibrationDb = EarLevel.clampedCalibration(earCalibrationDb)
         self.stage = stage
         exposureDays = exposure
+        exposureDaysLive = exposure
         currentLevelDb = currentDb
+        currentLevelDbLive = currentDb
         sourceCorrelation = correlation
+        sourceCorrelationLive = correlation
         self.levelTracking = levelTracking
         self.limiterGainReductionDb = limiterGainReductionDb
         qualityVerdict = verdict
+        qualityVerdictLive = verdict
+    }
+
+    func previewPublishLevel(_ db: Double?) {
+        currentLevelDbLive = db
+        mirror(db, into: \.currentLevelDb)
+    }
+
+    func previewPublishVerdict(_ verdict: QualityAnalyzer.Verdict?) {
+        qualityVerdictLive = verdict
+        mirror(verdict, into: \.qualityVerdict)
     }
     #else
     private let persistenceDisabled = false
@@ -463,7 +515,7 @@ final class StageState: ObservableObject {
         guard !persistenceDisabled else { return }
         StageStateFile.save(PersistedStageState(
             stageByDevice: stageByDevice,
-            exposure: exposureDays,
+            exposure: exposureDaysLive,
             levelTracking: levelTracking,
             detectQuality: detectQuality,
             autoRate: autoRate,
@@ -540,7 +592,7 @@ final class StageState: ObservableObject {
             // the output device's name, which for Bluetooth is a
             // radio-supplied string — a newline in it forges heartbeat lines.
             let content = DebugLog.sanitized(
-                "running=\(engine.isRunning) call=\(callActive) "
+                "running=\(engine.isRunning) call=\(callActiveLive) "
                 + "hold=\(engine.callHold) "
                 + (guardDiagnostics.map { $0() + " " } ?? "")
                 + "status=\"\(engine.status)\" "
@@ -551,7 +603,7 @@ final class StageState: ObservableObject {
                          stage.crossHighTrimValue, stage.balanceDbValue,
                          stage.alignMsValue)
                 + limiterDiag + " "
-                + "quality=\(qualityVerdict.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
+                + "quality=\(qualityVerdictLive.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
                 + earDiag)
             if engine.isRunning || content != lastDiagContent {
                 let repeats = diagSuppressed
@@ -581,8 +633,10 @@ final class StageState: ObservableObject {
         }
 
         guard engine.isRunning else {
-            if currentLevelDb != nil { currentLevelDb = nil }
-            if sourceCorrelation != nil { sourceCorrelation = nil }
+            currentLevelDbLive = nil
+            mirror(currentLevelDbLive, into: \.currentLevelDb)
+            sourceCorrelationLive = nil
+            mirror(sourceCorrelationLive, into: \.sourceCorrelation)
             if limiterGainReductionDb != 0 { limiterGainReductionDb = 0 }
             correlationSmoothed = nil
             clearEarLevel()
@@ -594,8 +648,10 @@ final class StageState: ObservableObject {
             // Light smoothing so a quiet moment doesn't flicker the notice.
             let smoothed = 0.7 * (correlationSmoothed ?? corr) + 0.3 * corr
             correlationSmoothed = smoothed
-            if sourceCorrelation == nil || abs(smoothed - (sourceCorrelation ?? 0)) > 0.001 {
-                sourceCorrelation = smoothed
+            if sourceCorrelationLive == nil
+                || abs(smoothed - (sourceCorrelationLive ?? 0)) > 0.001 {
+                sourceCorrelationLive = smoothed
+                mirror(smoothed, into: \.sourceCorrelation)
             }
         }
 
@@ -605,19 +661,24 @@ final class StageState: ObservableObject {
 
         let (sumSquares, frames) = engine.processor.drainMeter()
         guard frames > 0 else {
-            if currentLevelDb != nil { currentLevelDb = nil }
+            currentLevelDbLive = nil
+            mirror(currentLevelDbLive, into: \.currentLevelDb)
             return
         }
         let power = sumSquares / Double(frames)
         guard power.isFinite else { return }
         let db = power > 0 ? 10 * log10(power) : -120
         let level = max(db, -80)
-        if currentLevelDb != level { currentLevelDb = level }
+        if currentLevelDbLive != level {
+            currentLevelDbLive = level
+            mirror(level, into: \.currentLevelDb)
+        }
 
-        let updated = Self.exposureAfterTick(exposureDays, db: db, power: power,
+        let updated = Self.exposureAfterTick(exposureDaysLive, db: db, power: power,
                                              tracking: levelTracking, today: Self.dayKey())
-        guard updated != exposureDays else { return }
-        exposureDays = updated
+        guard updated != exposureDaysLive else { return }
+        exposureDaysLive = updated
+        mirror(updated, into: \.exposureDays)
 
         // Once a second is too often for disk; every 30 audible seconds is
         // plenty, and the regular edit/quit paths save the rest.
@@ -724,8 +785,9 @@ final class StageState: ObservableObject {
     /// kind of surprise, so the pane says plainly that nothing new is being
     /// added and puts the delete one click away.
     func clearExposureHistory() {
-        guard !exposureDays.isEmpty else { return }
-        exposureDays = []
+        guard !exposureDaysLive.isEmpty else { return }
+        exposureDaysLive = []
+        mirror(exposureDaysLive, into: \.exposureDays)
         meterTicksSinceSave = 0
         saveWork?.cancel()
         saveNow()
@@ -795,7 +857,7 @@ final class StageState: ObservableObject {
         // class boundary that flips the DISPLAYED verdict back and forth.
         // A standing lossless verdict holds through ambiguous-zone readings.
         var effective = raw
-        if let cur = qualityVerdict, case .losslessLike = cur,
+        if let cur = qualityVerdictLive, case .losslessLike = cur,
            case .lossyHigh(let k) = raw, k >= 19.7 {
             effective = .losslessLike(cutoffKHz: k)
         }
@@ -810,15 +872,17 @@ final class StageState: ObservableObject {
         rawVerdict = effective
         guard rawVerdictStreak >= 3 else { return }
 
-        let kindChanged = qualityVerdict?.kind != effective.kind
+        let kindChanged = qualityVerdictLive?.kind != effective.kind
         if kindChanged {
             DebugLog.shared.log("stream quality verdict → \(effective) [\(analyzer.lastDebug)]")
         }
-        let previousClass = qualityVerdict?.isLosslessClass
-        qualityVerdict = effective
+        let previousClass = qualityVerdictLive?.isLosslessClass
+        qualityVerdictLive = effective
+        mirror(effective, into: \.qualityVerdict)
         verdictDeviceUID = engine.runningDeviceUID
         if effective.isLosslessClass != previousClass {
             verdictStableSince = effective.isLosslessClass != nil ? Date() : nil
+            onStatusChange?()
         }
         autoSwitchIfDue()
     }
@@ -831,14 +895,14 @@ final class StageState: ObservableObject {
 
         let now = Date()
         guard let target = Self.autoRateTarget(
-            verdict: qualityVerdict,
+            verdict: qualityVerdictLive,
             measuredOn: verdictDeviceUID,
             device: device,
             availableRates: AudioOutputs.availableNominalRates(device.id),
             manualRateHz: manualRateHz,
             autoRate: autoRate,
             stageEnabled: stage.enabled,
-            callActive: callActive,
+            callActive: callActiveLive,
             secondsStable: verdictStableSince.map { now.timeIntervalSince($0) },
             secondsSinceLastSwitch: now.timeIntervalSince(lastAutoSwitch))
         else { return }
@@ -856,7 +920,7 @@ final class StageState: ObservableObject {
         lastAutoSwitch = now
         DebugLog.shared.log(String(format:
             "stream quality %@ — switching USB rate to %g kHz",
-            qualityVerdict?.isLosslessClass == true ? "lossless-class" : "lossy",
+            qualityVerdictLive?.isLosslessClass == true ? "lossless-class" : "lossy",
             target / 1000))
         if setNominalRate(target, for: device) {
             autoSetRate = target

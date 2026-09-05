@@ -55,6 +55,11 @@ struct PopoverView: View {
             DeviceHeader()
             Divider()
                 .onAppear { if let p = controller.previewPane { pane = p } }
+                .onChange(of: controller.paneRequests) { _, _ in
+                    guard let p = controller.paneRequest,
+                          fullPanes || !p.needsDevice else { return }
+                    pane = p
+                }
 
             if case .unsupported(let title, let detail) = controller.compatibility, connected {
                 // The notice explains what this app will not do with *this*
@@ -203,6 +208,11 @@ struct PopoverView: View {
     private var connected: Bool {
         if case .connected = controller.connection { return true }
         return false
+    }
+
+    private var fullPanes: Bool {
+        if case .unsupported = controller.compatibility { return false }
+        return connected
     }
 
     @ViewBuilder

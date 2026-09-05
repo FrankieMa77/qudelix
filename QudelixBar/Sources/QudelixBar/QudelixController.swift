@@ -181,8 +181,13 @@ final class QudelixController: ObservableObject {
     /// an answer to a question the user just asked.
     @Published private(set) var requestedCorrection: ParametricEQFile?
 
-    /// Set only by UIPreview to force a starting pane when rendering mocks.
     var previewPane: PopoverView.Pane?
+    private(set) var paneRequest: PopoverView.Pane?
+    @Published private(set) var paneRequests = 0
+    func requestPane(_ pane: PopoverView.Pane) {
+        paneRequest = pane
+        paneRequests &+= 1
+    }
     /// Set only by UIPreview: seeds the AutoEq list so it renders offline.
     var previewAutoEq: (entries: [AutoEqEntry], query: String)?
     static let presetCount = QxEq.presetCount

@@ -109,7 +109,100 @@ enum UIPreview {
                 window.close()
             }
         }
+        renderIconStates(into: dir)
         print("shots written to \(dir.path)")
+    }
+
+    @MainActor
+    private static func iconStates() -> [(String, StatusIcon.State)] {
+        var eqOn = StatusIcon.State(); eqOn.connected = true
+        var bypassed = eqOn; bypassed.eqEnabled = false
+        var withStage = eqOn; withStage.stageOn = true
+        var lossless = eqOn; lossless.quality = .hi
+        var lossy = eqOn; lossy.quality = .low
+        var stageLossless = withStage; stageLossless.quality = .hi
+        var batteryLow = eqOn; batteryLow.batteryLow = true
+        var charging = eqOn; charging.charging = true
+        var lowAndCharging = eqOn
+        lowAndCharging.batteryLow = true; lowAndCharging.charging = true
+        var onCall = lossless; onCall.onCall = true
+        var awayOnCall = StatusIcon.State()
+        awayOnCall.onCall = true; awayOnCall.batteryLow = true
+        var worstCase = eqOn
+        worstCase.eqEnabled = false; worstCase.stageOn = true
+        worstCase.quality = .low; worstCase.batteryLow = true
+
+        return [
+            ("01-away", StatusIcon.State()),
+            ("02-eq-on", eqOn),
+            ("03-eq-off", bypassed),
+            ("04-stage", withStage),
+            ("05-lossless", lossless),
+            ("06-lossy", lossy),
+            ("07-stage-lossless", stageLossless),
+            ("08-battery-low", batteryLow),
+            ("09-charging", charging),
+            ("10-low-and-charging", lowAndCharging),
+            ("11-on-call", onCall),
+            ("12-away-on-call", awayOnCall),
+            ("13-eq-off-stage-lossy-low", worstCase),
+        ]
+    }
+
+    @MainActor
+    private static func rasterize(size: NSSize, draw: (NSRect) -> Void) -> NSBitmapImageRep {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width),
+                                   pixelsHigh: Int(size.height), bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                   colorSpaceName: .deviceRGB, bitmapFormat: [],
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        draw(NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    @MainActor
+    private static func tinted(_ image: NSImage, color: NSColor, size: NSSize) -> NSBitmapImageRep {
+        rasterize(size: size) { rect in
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.compositingOperation = .sourceIn
+            color.setFill()
+            rect.fill()
+        }
+    }
+
+    @MainActor
+    private static func renderIconStates(into dir: URL) {
+        let states = iconStates()
+        let cell: CGFloat = 144
+        let cols = CGFloat(states.count)
+        let sheet = rasterize(size: NSSize(width: cell * cols, height: cell * 2)) { _ in
+            NSColor(white: 0.93, alpha: 1).setFill()
+            NSRect(x: 0, y: cell, width: cell * cols, height: cell).fill()
+            NSColor(white: 0.12, alpha: 1).setFill()
+            NSRect(x: 0, y: 0, width: cell * cols, height: cell).fill()
+            for (i, (_, state)) in states.enumerated() {
+                let image = StatusIcon.image(for: state)
+                let x = CGFloat(i) * cell
+                let cellSize = NSSize(width: cell, height: cell)
+                tinted(image, color: .black, size: cellSize)
+                    .draw(in: NSRect(x: x, y: cell, width: cell, height: cell),
+                          from: .zero, operation: .sourceOver, fraction: 1,
+                          respectFlipped: true, hints: nil)
+                tinted(image, color: .white, size: cellSize)
+                    .draw(in: NSRect(x: x, y: 0, width: cell, height: cell),
+                          from: .zero, operation: .sourceOver, fraction: 1,
+                          respectFlipped: true, hints: nil)
+            }
+        }
+        if let data = sheet.representation(using: .png, properties: [:]) {
+            try? data.write(to: dir.appendingPathComponent("icon-states.png"))
+        }
+        for (name, state) in states {
+            print("icon \(name): \(StatusIcon.describe(state))")
+        }
     }
 
     @MainActor
