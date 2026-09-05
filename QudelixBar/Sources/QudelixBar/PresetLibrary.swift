@@ -98,12 +98,15 @@ extension LibraryPreset: Codable {
 struct PresetLibraryDocument: Equatable {
     var schemaVersion: Int
     var headphoneName: String
+    var suggestedHeadphones: [String]
     var presets: [LibraryPreset]
 
     init(schemaVersion: Int = PresetLibraryFile.currentSchemaVersion,
-         headphoneName: String = "", presets: [LibraryPreset] = []) {
+         headphoneName: String = "", suggestedHeadphones: [String] = [],
+         presets: [LibraryPreset] = []) {
         self.schemaVersion = schemaVersion
         self.headphoneName = headphoneName
+        self.suggestedHeadphones = suggestedHeadphones
         self.presets = presets
     }
 }
@@ -115,13 +118,15 @@ private struct FailableDecodable<T: Decodable>: Decodable {
 
 extension PresetLibraryDocument: Codable {
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, headphoneName, presets
+        case schemaVersion, headphoneName, suggestedHeadphones, presets
     }
 
     init(from decoder: Decoder) throws {
         if let c = try? decoder.container(keyedBy: CodingKeys.self) {
             schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? 0
             headphoneName = (try? c.decode(String.self, forKey: .headphoneName)) ?? ""
+            suggestedHeadphones = (try? c.decode([String].self,
+                                                 forKey: .suggestedHeadphones)) ?? []
             let rows = (try? c.decode([FailableDecodable<LibraryPreset>].self,
                                       forKey: .presets)) ?? []
             presets = rows.compactMap(\.value)
@@ -131,6 +136,7 @@ extension PresetLibraryDocument: Codable {
             .decode([FailableDecodable<LibraryPreset>].self)
         schemaVersion = 0
         headphoneName = ""
+        suggestedHeadphones = []
         presets = rows.compactMap(\.value)
     }
 
@@ -138,6 +144,7 @@ extension PresetLibraryDocument: Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(PresetLibraryFile.currentSchemaVersion, forKey: .schemaVersion)
         try c.encode(headphoneName, forKey: .headphoneName)
+        try c.encode(suggestedHeadphones, forKey: .suggestedHeadphones)
         try c.encode(presets, forKey: .presets)
     }
 }
@@ -151,6 +158,7 @@ enum PresetLibraryFile {
     static let maxPresets = 512
     static let maxNameLength = 64
     static let maxOutputUIDBytes = 512
+    static let maxSuggestedNames = 64
     private static let maxBytes = 2_000_000
 
     static func load(from fileURL: URL = url) -> PresetLibraryDocument? {
@@ -199,7 +207,21 @@ enum PresetLibraryFile {
             schemaVersion: currentSchemaVersion,
             headphoneName: QudelixController.displayName(document.headphoneName,
                                                          limit: maxNameLength),
+            suggestedHeadphones: trimmedSuggestions(document.suggestedHeadphones),
             presets: out)
+    }
+
+    static func trimmedSuggestions(_ raw: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for name in raw.reversed() {
+            let key = String(SafeText.scrubbed(name, limit: maxNameLength)
+                .prefix(maxNameLength))
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            out.append(key)
+            if out.count == maxSuggestedNames { break }
+        }
+        return out.reversed()
     }
 
     static func clamped(_ band: QxEqBandValue) -> QxEqBandValue {
@@ -229,6 +251,7 @@ final class PresetLibrary: ObservableObject {
 
     @Published private(set) var presets: [LibraryPreset] = []
     @Published private(set) var headphoneName = ""
+    @Published private(set) var suggestedHeadphones: [String] = []
     @Published private(set) var lastMessage: String?
 
     var currentCurve: (() -> LiveCurve?)?
@@ -250,6 +273,7 @@ final class PresetLibrary: ObservableObject {
         }
         presets = document.presets
         headphoneName = document.headphoneName
+        suggestedHeadphones = document.suggestedHeadphones
     }
 
     var currentGroup: QxEqGroup? { currentCurve?()?.group }
@@ -423,6 +447,19 @@ final class PresetLibrary: ObservableObject {
         persist()
     }
 
+    func hasSuggested(_ key: String) -> Bool {
+        !key.isEmpty && suggestedHeadphones.contains(key)
+    }
+
+    func markSuggested(_ key: String) {
+        guard !key.isEmpty else { return }
+        suggestedHeadphones.removeAll { $0 == key }
+        suggestedHeadphones.append(key)
+        let over = suggestedHeadphones.count - PresetLibraryFile.maxSuggestedNames
+        if over > 0 { suggestedHeadphones.removeFirst(over) }
+        persist()
+    }
+
     func clearMessage() { lastMessage = nil }
 
     private func cleaned(_ name: String, fallback: String) -> String {
@@ -447,16 +484,19 @@ final class PresetLibrary: ObservableObject {
 
     private func persist() {
         guard persistable else { return }
-        PresetLibraryFile.save(PresetLibraryDocument(headphoneName: headphoneName,
-                                                     presets: presets),
-                               to: fileURL)
+        PresetLibraryFile.save(
+            PresetLibraryDocument(headphoneName: headphoneName,
+                                  suggestedHeadphones: suggestedHeadphones,
+                                  presets: presets),
+            to: fileURL)
     }
 
     #if DEBUG
     func previewSet(presets: [LibraryPreset], headphoneName: String = "",
-                    message: String? = nil) {
+                    suggestedHeadphones: [String] = [], message: String? = nil) {
         self.presets = presets
         self.headphoneName = headphoneName
+        self.suggestedHeadphones = suggestedHeadphones
         lastMessage = message
         started = true
         persistable = false

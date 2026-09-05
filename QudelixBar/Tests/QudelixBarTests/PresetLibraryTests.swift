@@ -556,4 +556,82 @@ final class PresetLibraryTests: XCTestCase {
         XCTAssertEqual(library.presets.count, PresetLibraryFile.maxPresets)
         XCTAssertNotNil(library.lastMessage)
     }
+
+    @MainActor
+    func testSuggestedNamesSurviveAReload() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let (first, _) = self.library(at: url)
+        first.start(fileURL: url)
+        first.setHeadphoneName("Sennheiser HD 650")
+        first.markSuggested("sennheiserhd650")
+        XCTAssertTrue(first.hasSuggested("sennheiserhd650"))
+
+        let (second, _) = self.library(at: url)
+        second.start(fileURL: url)
+        XCTAssertEqual(second.headphoneName, "Sennheiser HD 650")
+        XCTAssertTrue(second.hasSuggested("sennheiserhd650"))
+        XCTAssertFalse(second.hasSuggested("beyerdynamicdt770"))
+        XCTAssertFalse(second.hasSuggested(""))
+    }
+
+    @MainActor
+    func testSuggestedNamesAreBoundedAndDropTheOldestFirst() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let (library, _) = self.library(at: url)
+        library.start(fileURL: url)
+        for i in 0..<(PresetLibraryFile.maxSuggestedNames + 5) {
+            library.markSuggested("name\(i)")
+        }
+        XCTAssertEqual(library.suggestedHeadphones.count,
+                       PresetLibraryFile.maxSuggestedNames)
+        XCTAssertFalse(library.hasSuggested("name0"))
+        XCTAssertFalse(library.hasSuggested("name4"))
+        XCTAssertTrue(library.hasSuggested("name5"))
+        XCTAssertTrue(library.hasSuggested(
+            "name\(PresetLibraryFile.maxSuggestedNames + 4)"))
+    }
+
+    @MainActor
+    func testRepeatingASuggestedNameMovesItToTheFreshEnd() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let (library, _) = self.library(at: url)
+        library.start(fileURL: url)
+        library.markSuggested("alpha")
+        library.markSuggested("beta")
+        library.markSuggested("alpha")
+        XCTAssertEqual(library.suggestedHeadphones, ["beta", "alpha"])
+        library.markSuggested("")
+        XCTAssertEqual(library.suggestedHeadphones, ["beta", "alpha"])
+    }
+
+    func testASuggestedNameListIsSanitisedOnTheWayIn() {
+        let over = (0..<(PresetLibraryFile.maxSuggestedNames + 8)).map { "n\($0)" }
+        let trimmed = PresetLibraryFile.trimmedSuggestions(over + ["", "n0", "a\u{0}b"])
+        XCTAssertEqual(trimmed.count, PresetLibraryFile.maxSuggestedNames)
+        XCTAssertEqual(trimmed.last, "ab")
+        XCTAssertFalse(trimmed.contains(""))
+        XCTAssertEqual(Set(trimmed).count, trimmed.count)
+    }
+
+    func testAFileWithoutTheSuggestedFieldStillDecodes() throws {
+        let json = Data("""
+            {"schemaVersion": 1, "headphoneName": "HD 650", "presets": []}
+            """.utf8)
+        let document = try JSONDecoder().decode(PresetLibraryDocument.self, from: json)
+        XCTAssertEqual(document.headphoneName, "HD 650")
+        XCTAssertTrue(document.suggestedHeadphones.isEmpty)
+    }
+
+    func testAMalformedSuggestedFieldIsIgnoredRatherThanFatal() throws {
+        let json = Data("""
+            {"schemaVersion": 1, "headphoneName": "HD 650",
+             "suggestedHeadphones": {"nope": 1}, "presets": []}
+            """.utf8)
+        let document = try JSONDecoder().decode(PresetLibraryDocument.self, from: json)
+        XCTAssertEqual(document.headphoneName, "HD 650")
+        XCTAssertTrue(document.suggestedHeadphones.isEmpty)
+    }
 }

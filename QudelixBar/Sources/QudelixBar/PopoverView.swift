@@ -11,6 +11,7 @@ struct PopoverView: View {
     @State private var selectedBand: Int?
     @EnvironmentObject private var profileRules: ProfileRules
     @EnvironmentObject private var micGuard: A2dpGuard
+    @EnvironmentObject private var suggestions: HeadphoneSuggestions
 
     enum Pane: String, CaseIterable, Identifiable {
         // "EQ", not "Equalizer": six segments share the popover's width now,
@@ -61,10 +62,13 @@ struct PopoverView: View {
                     pane = p
                 }
 
-            if micGuard.hijack != nil {
-                micGuardBanner
-                    .padding(.horizontal, 14)
-                    .padding(.top, 14)
+            if micGuard.hijack != nil || suggestions.banner != nil {
+                VStack(spacing: 8) {
+                    if micGuard.hijack != nil { micGuardBanner }
+                    if let offered = suggestions.banner { suggestionBanner(offered) }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
             }
 
             if case .unsupported(let title, let detail) = controller.compatibility, connected {
@@ -258,6 +262,79 @@ struct PopoverView: View {
     private var connectedName: String? {
         guard case .connected(let name) = controller.connection else { return nil }
         return name
+    }
+
+    @ViewBuilder
+    private func suggestionBanner(_ offered: HeadphoneSuggestions.Suggestion) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "wand.and.stars")
+                    .accessibilityHidden(true)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: HeadphoneSuggestions.headline(offered.entry.title))
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                    Text(verbatim: HeadphoneSuggestions.bannerDetail(
+                        source: offered.entry.source, bandCount: controller.bandCount))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                if suggestions.busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Apply") { suggestions.accept(offered.entry) }
+                        .controlSize(.small)
+                        .disabled(!controller.canEditEqNow)
+                    if offered.alternatives.count > 1 {
+                        Menu {
+                            ForEach(offered.alternatives) { entry in
+                                Button {
+                                    suggestions.accept(entry)
+                                } label: {
+                                    Text(verbatim: "\(entry.title) (\(entry.source))")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 11))
+                                .accessibilityLabel("Other measurements for these headphones")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .frame(width: 18)
+                        .disabled(!controller.canEditEqNow)
+                    }
+                }
+                Button { suggestions.dismiss() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                        .accessibilityLabel("Don\u{2019}t offer this correction")
+                }
+                .buttonStyle(.plain)
+                .help("Hide this \u{2014} it won\u{2019}t be offered again for this name")
+            }
+            if controller.activePreset == nil {
+                Text("Your current EQ is a custom setting that isn\u{2019}t saved to a "
+                    + "slot \u{2014} applying this will replace it.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let why = suggestions.lastError {
+                Text(verbatim: why)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 7)
+            .fill(Color.accentColor.opacity(0.08)))
     }
 }
 
