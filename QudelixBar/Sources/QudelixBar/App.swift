@@ -89,7 +89,15 @@ struct QudelixBarApp: App {
                     // logic in them is inert.
                     profileRules.currentEqGroupRaw = controller.eqGroup.rawValue
                     profileRules.start()
-                    quitDelegate.onTerminate = { [weak stageState, weak controller] in
+                    quitDelegate.onTerminate = { [weak stageState, weak controller, weak abTuner, weak toneTester] in
+                        if let controller {
+                            if let abTuner, abTuner.phase == .running || abTuner.phase == .finished {
+                                abTuner.cancel(controller)
+                            }
+                            if let toneTester, toneTester.phase == .running {
+                                toneTester.stop(controller)
+                            }
+                        }
                         // A stale EQ snapshot doesn't just lose the last
                         // edit — the next connect restores over it.
                         controller?.flushEqSnapshot()
