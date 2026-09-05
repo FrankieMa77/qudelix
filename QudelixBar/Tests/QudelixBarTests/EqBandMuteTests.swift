@@ -263,15 +263,27 @@ final class EqBandMuteTests: XCTestCase {
         XCTAssertFalse(c.isBandMuted(4))
     }
 
-    /// Flatten writes a live peak filter to every band, which ends every mute
-    /// through the same rule any other edit follows.
     @MainActor
-    func testFlattenClearsTheMute() {
+    func testFlattenLeavesTheMuteAlone() {
         let c = authorised()
         c.updateBand(2, band(.peak, 500, -8, 3))
         c.setBandMuted(2, true)
 
         c.flatten()
+
+        XCTAssertTrue(c.isBandMuted(2))
+        XCTAssertEqual(c.mutedBands[2], .peak)
+        XCTAssertEqual(c.bands[2].filter, .bypass)
+        XCTAssertEqual(c.bands[2].freq, 500)
+    }
+
+    @MainActor
+    func testResettingTheBandLayoutClearsTheMute() {
+        let c = authorised()
+        c.updateBand(2, band(.peak, 500, -8, 3))
+        c.setBandMuted(2, true)
+
+        c.resetBandLayout()
 
         XCTAssertTrue(c.mutedBands.isEmpty)
         XCTAssertEqual(c.bands[2].filter, .peak)

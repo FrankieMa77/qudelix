@@ -391,6 +391,14 @@ struct EQCurveView: View {
     /// the ordinary case, which is why it defaults.
     var mutedBands: [Int: QxFilter] = [:]
 
+    var enabled: Bool = true
+
+    var selectedBand: Int?
+
+    var onSelectBand: ((Int?) -> Void)?
+
+    var onZeroBand: ((Int) -> Void)?
+
     /// Called with a band's new value as it is dragged. Absent — the default —
     /// leaves the curve read-only, which is what the render harness and any
     /// non-editing use of this view want.
@@ -561,8 +569,10 @@ struct EQCurveView: View {
             fill.addLine(to: CGPoint(x: size.width, y: y(0)))
             fill.addLine(to: CGPoint(x: 0, y: y(0)))
             fill.closeSubpath()
+            let tint: Color = enabled ? .accentColor : .secondary
             ctx.fill(fill, with: .linearGradient(
-                Gradient(colors: [.accentColor.opacity(0.34), .accentColor.opacity(0.05)]),
+                Gradient(colors: [tint.opacity(enabled ? 0.34 : 0.16),
+                                  tint.opacity(0.05)]),
                 startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
 
             // What was asked for, where the device couldn't give it.
@@ -621,7 +631,7 @@ struct EQCurveView: View {
                 }
             }
 
-            ctx.stroke(curve, with: .color(.accentColor), lineWidth: 1.8)
+            ctx.stroke(curve, with: .color(tint), lineWidth: 1.8)
 
             // The band the pointer is over: a ring, not a bigger dot, so it
             // reads as "this is what you'd grab" rather than as a state the
@@ -632,20 +642,26 @@ struct EQCurveView: View {
                 let ring = Path(ellipseIn: CGRect(x: hx - 7,
                                                   y: y(EQCurveView.markerGain(bands[h])) - 7,
                                                   width: 14, height: 14))
-                ctx.stroke(ring, with: .color(.accentColor.opacity(0.45)), lineWidth: 1)
+                ctx.stroke(ring, with: .color(tint.opacity(0.45)), lineWidth: 1)
             }
 
             // Band markers.
             for (i, band) in bands.enumerated() where band.filter != .bypass {
                 let dotX = CGFloat(EQCurve.fraction(of: Double(band.freq))) * size.width
+                let dotY = y(EQCurveView.markerGain(band))
                 let isOn = highlighted == i
-                let r: CGFloat = isOn ? 4 : 2.5
-                let dot = Path(ellipseIn: CGRect(x: dotX - r,
-                                                 y: y(EQCurveView.markerGain(band)) - r,
+                let picked = selectedBand == i
+                let r: CGFloat = isOn || picked ? 4 : 2.5
+                let dot = Path(ellipseIn: CGRect(x: dotX - r, y: dotY - r,
                                                  width: r * 2, height: r * 2))
-                ctx.fill(dot, with: .color(isOn ? .accentColor : .accentColor.opacity(0.55)))
+                ctx.fill(dot, with: .color(isOn || picked ? tint : tint.opacity(0.55)))
                 if isOn {
                     ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: 1.2)
+                }
+                if picked {
+                    let halo = Path(ellipseIn: CGRect(x: dotX - 7, y: dotY - 7,
+                                                      width: 14, height: 14))
+                    ctx.stroke(halo, with: .color(tint.opacity(0.8)), lineWidth: 1.2)
                 }
             }
         }
@@ -665,23 +681,66 @@ struct EQCurveView: View {
             }
         }
         .gesture(onBandChanged == nil ? nil : dragGesture(range: plot.range))
-        .help(onBandChanged == nil ? "" : "Drag a point to shape the curve: up and "
-              + "down for gain, sideways for frequency. Hold Option and drag up or "
-              + "down for Q. Hold Shift for fine adjustment.")
+        .gesture(onSelectBand == nil ? nil : selectGesture(range: plot.range))
+        .gesture(onZeroBand == nil ? nil : zeroGesture(range: plot.range))
+        .help(onBandChanged == nil ? "" : "Click a point to select it, double-click to "
+              + "zero it, drag to shape the curve: up and down for gain, sideways for "
+              + "frequency. Hold Option and drag up or down for Q. Hold Shift for fine "
+              + "adjustment.")
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topLeading) {
-            Text("±\(Int(plot.range)) dB")
-                .font(.system(size: 8))
+            Text(axisText(range: plot.range))
+                .font(.system(size: 8).monospacedDigit())
                 .foregroundStyle(.secondary)
                 .padding(4)
         }
         .overlay(alignment: .topTrailing) {
-            if abs(preGain) >= 0.05 {
-                Text(String(format: "pre-gain %+.1f dB", preGain))
-                    .font(.system(size: 8))
+            if let i = readoutBand {
+                Text(readoutText(i))
+                    .font(.system(size: 8).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 3))
                     .padding(4)
+                    .allowsHitTesting(false)
             }
+        }
+    }
+
+    private func axisText(range: Double) -> String {
+        let axis = "±\(Int(range)) dB"
+        guard abs(preGain) >= 0.05 else { return axis }
+        return axis + String(format: "   pre-gain %+.1f dB", preGain)
+    }
+
+    private var readoutBand: Int? {
+        for candidate in [dragging, hovering, selectedBand] {
+            if let candidate, bands.indices.contains(candidate),
+               bands[candidate].filter != .bypass { return candidate }
+        }
+        return nil
+    }
+
+    private func readoutText(_ i: Int) -> String {
+        let band = bands[i]
+        let amount = band.filter.hasGain
+            ? String(format: "%+.1f dB", band.gain)
+            : band.filter.shortLabel
+        return "\(i + 1)   " + amount + String(format: "   Q %.2f", band.q)
+    }
+
+    private func selectGesture(range: Double) -> some Gesture {
+        SpatialTapGesture(coordinateSpace: .local).onEnded { tap in
+            onSelectBand?(nearestBand(to: tap.location, range: range))
+        }
+    }
+
+    private func zeroGesture(range: Double) -> some Gesture {
+        SpatialTapGesture(count: 2, coordinateSpace: .local).onEnded { tap in
+            guard let hit = nearestBand(to: tap.location, range: range) else { return }
+            onSelectBand?(hit)
+            onZeroBand?(hit)
         }
     }
 

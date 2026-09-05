@@ -8,6 +8,7 @@ struct PopoverView: View {
     @State private var showDeviceSettings = false
     @State private var showAbout = false
     @State private var editingBand: Int?
+    @State private var selectedBand: Int?
     @EnvironmentObject private var profileRules: ProfileRules
 
     enum Pane: String, CaseIterable, Identifiable {
@@ -46,7 +47,7 @@ struct PopoverView: View {
     /// 10-band EQ table, plus the two USB-audio rows; every other pane
     /// top-aligns into the same space, and Stage/Level scroll internally if
     /// they ever exceed it.
-    static let contentHeight: CGFloat = 613
+    static let contentHeight: CGFloat = 675
 
     var body: some View {
         VStack(spacing: 0) {
@@ -96,12 +97,20 @@ struct PopoverView: View {
                                 highlighted: editingBand,
                                 requested: controller.requestedCorrection,
                                 mutedBands: controller.mutedBands,
+                                enabled: controller.eqEnabled,
+                                selectedBand: selectedBand,
+                                onSelectBand: { selectedBand = $0 },
+                                onZeroBand: { controller.zeroBand($0) },
                                 // Straight through `updateBand`, so a drag is
                                 // gated, clamped and coalesced exactly like the
                                 // slider it replaces — no second write path.
                                 onBandChanged: { controller.updateBand($0, $1) },
                                 onDragBand: { editingBand = $0 })
                         .frame(height: 104)
+
+                    if pane == .equalizer {
+                        BandInspector(selected: $selectedBand)
+                    }
 
                     VolumeControl()
 
@@ -610,6 +619,9 @@ struct EqEditorView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
 
+                undoButton
+                redoButton
+
                 Spacer()
 
                 Text("Pre-gain").font(.system(size: 10)).foregroundStyle(.secondary)
@@ -632,31 +644,11 @@ struct EqEditorView: View {
 
             HStack {
                 Button("Flatten") { controller.flatten() }
-                // Visible buttons, not just a shortcut. Dragging the curve
-                // makes a wrong move cheap, and an undo nobody can see is an
-                // undo most people never find — the same trap this app has
-                // fallen into twice with hidden controls.
-                Button {
-                    controller.undoEqEdit()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
-                        .accessibilityLabel(controller.undoLabel.map { "Undo \($0)" } ?? "Undo")
-                }
-                .controlSize(.mini)
-                .disabled(!controller.canUndo || !controller.canEditEqNow)
-                .keyboardShortcut("z", modifiers: .command)
-                .help(controller.undoLabel.map { "Undo \($0)" } ?? "Nothing to undo")
-
-                Button {
-                    controller.redoEqEdit()
-                } label: {
-                    Image(systemName: "arrow.uturn.forward").font(.system(size: 9))
-                        .accessibilityLabel(controller.redoLabel.map { "Redo \($0)" } ?? "Redo")
-                }
-                .controlSize(.mini)
-                .disabled(!controller.canRedo || !controller.canEditEqNow)
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .help(controller.redoLabel.map { "Redo \($0)" } ?? "Nothing to redo")
+                    .help("Take every band's gain to zero, keeping the "
+                          + "frequencies, filter types and Q they have now.")
+                Button("Reset") { controller.resetBandLayout() }
+                    .help("Put the bands back to the factory layout for this mode: "
+                          + "peak filters on the default frequencies, 0 dB, Q 1.")
                 // Reflects the device's mode and asks it to switch; the
                 // selection only moves once the device confirms, so a brief
                 // lag after clicking is the round trip, not a lost click.
@@ -672,11 +664,13 @@ struct EqEditorView: View {
                 .frame(width: 76)
                 .help("EQ bands. The two modes keep separate presets, so "
                       + "switching changes the active curve.")
-                Text("bands")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
                 Spacer()
-                Menu("Save to preset…") {
+                if let active = controller.activePreset {
+                    Button("Update") { controller.savePreset(active) }
+                        .disabled(!controller.canWriteNow)
+                        .help("Overwrite \(controller.presetLabel(active)) with the current EQ")
+                }
+                Menu("Save to…") {
                     ForEach(0..<QudelixController.presetCount, id: \.self) { i in
                         Button(controller.presetLabel(i)) { controller.savePreset(i) }
                     }
@@ -686,6 +680,32 @@ struct EqEditorView: View {
             .controlSize(.small)
             .font(.system(size: 11))
         }
+    }
+
+    private var undoButton: some View {
+        Button {
+            controller.undoEqEdit()
+        } label: {
+            Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
+                .accessibilityLabel(controller.undoLabel.map { "Undo \($0)" } ?? "Undo")
+        }
+        .controlSize(.mini)
+        .disabled(!controller.canUndo || !controller.canEditEqNow)
+        .keyboardShortcut("z", modifiers: .command)
+        .help(controller.undoLabel.map { "Undo \($0)" } ?? "Nothing to undo")
+    }
+
+    private var redoButton: some View {
+        Button {
+            controller.redoEqEdit()
+        } label: {
+            Image(systemName: "arrow.uturn.forward").font(.system(size: 9))
+                .accessibilityLabel(controller.redoLabel.map { "Redo \($0)" } ?? "Redo")
+        }
+        .controlSize(.mini)
+        .disabled(!controller.canRedo || !controller.canEditEqNow)
+        .keyboardShortcut("z", modifiers: [.command, .shift])
+        .help(controller.redoLabel.map { "Redo \($0)" } ?? "Nothing to redo")
     }
 }
 
@@ -755,6 +775,108 @@ extension EqEditorView {
                 .frame(height: 250)
         } else {
             grid
+        }
+    }
+}
+
+struct BandInspector: View {
+    @EnvironmentObject var controller: QudelixController
+    @Binding var selected: Int?
+
+    static let height: CGFloat = 48
+    static let qFloor = 0.25
+    static let qCeiling = 10.0
+
+    var body: some View {
+        Group {
+            if let i = selected, controller.bands.indices.contains(i),
+               i < controller.bandCount {
+                detail(i, controller.bands[i])
+            } else {
+                VStack(spacing: 1) {
+                    Text("Click a point on the curve to edit that band here")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text("Double-click one to take it back to nothing.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(height: Self.height)
+        .frame(maxWidth: .infinity)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        .opacity(controller.eqEnabled ? 1 : 0.45)
+        .disabled(!controller.eqEnabled)
+    }
+
+    @ViewBuilder
+    private func detail(_ i: Int, _ band: QxEqBandValue) -> some View {
+        let editsGain = band.filter == .bypass || band.filter.hasGain
+        VStack(spacing: 3) {
+            HStack(spacing: 7) {
+                Text("Band " + String(i + 1))
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                Picker("", selection: Binding(get: { band.filter },
+                                              set: set(i) { $0.filter = $1 })) {
+                    ForEach(QxFilter.allCases) { f in Text(f.shortLabel).tag(f) }
+                }
+                .labelsHidden()
+                .controlSize(.mini)
+                .frame(width: 58)
+                Text(String(band.freq) + " Hz")
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Flat") { controller.zeroBand(i) }
+                    .controlSize(.mini)
+                    .font(.system(size: 10))
+                    .help("Take this band back to nothing")
+                Button { selected = nil } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityLabel("Done with band \(i + 1)")
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: 7) {
+                Text("Gain")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(get: { band.gain }, set: set(i) { $0.gain = $1 }),
+                       in: -12...12)
+                    .controlSize(.mini)
+                    .disabled(!editsGain)
+                Text(editsGain ? String(format: "%+.1f", band.gain) : "—")
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(editsGain ? .primary : .secondary)
+                    .frame(width: 30, alignment: .trailing)
+                Text("Q")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(get: { log10(min(max(band.q, Self.qFloor),
+                                                       Self.qCeiling)) },
+                                      set: set(i) { $0.q = (pow(10, $1) * 100).rounded() / 100 }),
+                       in: log10(Self.qFloor)...log10(Self.qCeiling))
+                    .controlSize(.mini)
+                Text(String(format: "%.2f", band.q))
+                    .font(.system(size: 10).monospacedDigit())
+                    .frame(width: 28, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+    }
+
+    private func set<T>(_ index: Int,
+                        _ apply: @escaping (inout QxEqBandValue, T) -> Void) -> (T) -> Void {
+        { newValue in
+            guard controller.bands.indices.contains(index) else { return }
+            var b = controller.bands[index]
+            apply(&b, newValue)
+            controller.updateBand(index, b)
         }
     }
 }

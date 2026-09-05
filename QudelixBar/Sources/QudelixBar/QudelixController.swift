@@ -1487,23 +1487,54 @@ final class QudelixController: ObservableObject {
         presetNames[index] ?? "Preset \(index + 1)"
     }
 
-    /// Reset every band to flat (0 dB, default frequencies) and clear pre-gain.
     func flatten() {
         guard canWriteEq else { return }
         checkpoint("flatten", discrete: true)
         suppressUndo = true
         defer { suppressUndo = false }
+        forgetSource()
+        setPreGain(0)
+        for i in 0..<bandCount where bands.indices.contains(i) {
+            var b = bands[i]
+            guard b.gain != 0 else { continue }
+            b.gain = 0
+            updateBand(i, b)
+        }
+        lastImportSummary = "Band gains zeroed"
+    }
+
+    func resetBandLayout() {
+        guard canWriteEq else { return }
+        checkpoint("reset band layout", discrete: true)
+        suppressUndo = true
+        defer { suppressUndo = false }
+        forgetSource()
+        setPreGain(0)
+        let defaults = eqGroup.defaultFreqs
+        for i in 0..<bandCount where defaults.indices.contains(i) {
+            updateBand(i, QxEqBandValue(filter: .peak, freq: defaults[i], gain: 0, q: 1.0))
+        }
+        lastImportSummary = "Band layout reset"
+    }
+
+    func zeroBand(_ index: Int) {
+        guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
+        var b = bands[index]
+        if b.filter != .bypass, !b.filter.hasGain { b.filter = .peak }
+        b.gain = 0
+        guard b != bands[index] else { return }
+        checkpoint("zero band \(index + 1)", discrete: true)
+        suppressUndo = true
+        defer { suppressUndo = false }
+        updateBand(index, b)
+    }
+
+    private func forgetSource() {
         eqSourceName = nil
         sourceCurve = nil
         sourcePreGain = nil
         lastImportSummary = nil
         requestedCorrection = nil
-        setPreGain(0)
-        let defaults = eqGroup.defaultFreqs
-        for i in 0..<bandCount {
-            updateBand(i, QxEqBandValue(filter: .peak, freq: defaults[i], gain: 0, q: 1.0))
-        }
-        lastImportSummary = "Reset to flat"
     }
 
     func savePreset(_ index: Int) {

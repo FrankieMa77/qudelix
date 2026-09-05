@@ -86,8 +86,10 @@ enum UIPreview {
                 if name == "light" {
                     switch pane {
                     case "eq", "b20":
-                        reportPaneFit(pane, EqEditorView(editingBand: .constant(nil)),
-                                      controller, stage)
+                        reportPaneFit(pane, VStack(spacing: 14) {
+                            BandInspector(selected: .constant(0))
+                            EqEditorView(editingBand: .constant(nil))
+                        }, controller, stage)
                     case "presets":
                         reportPaneFit(pane, PresetsView(), controller, stage)
                     case "import":
@@ -115,6 +117,8 @@ enum UIPreview {
             .environmentObject(controller)
             .environmentObject(stage)
             .environmentObject(ProfileRules())
+            .environmentObject(ABTuner())
+            .environmentObject(ToneTester())
             .frame(width: 372)
         let host = NSHostingView(rootView: AnyView(root))
         host.layoutSubtreeIfNeeded()
