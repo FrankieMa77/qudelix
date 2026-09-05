@@ -35,6 +35,29 @@ final class SignalPathTests: XCTestCase {
         XCTAssertEqual(row.indicator, .altering)
     }
 
+    /// Inserting the stage with every control at its no-op value costs a tap
+    /// and a render pass and shapes nothing; "processing the stereo mix"
+    /// claimed work the DSP was not doing. The four named controls below
+    /// cannot tell on their own — Center, Distance and Night act with all
+    /// four of them neutral.
+    func testInsertModeWithEveryControlNeutralSaysSo() {
+        var stage = StageSettings()
+        stage.enabled = true
+        stage.width = 100
+        stage.crossfeed = 0
+        stage.dialogue = 0
+        stage.room = 0
+        stage.distance = 0
+        stage.center = 0
+        stage.night = 0
+        let inert = row("app", .init(engineMode: .insert, stage: stage))
+        XCTAssertEqual(inert.state, "Soundstage inserted — every control at neutral")
+
+        stage.center = -2
+        let shaping = row("app", .init(engineMode: .insert, stage: stage))
+        XCTAssertNotEqual(shaping.state, "Soundstage inserted — every control at neutral")
+    }
+
     func testInsertModeNamesWhichControlsAreActive() {
         var stage = StageSettings()
         stage.enabled = true

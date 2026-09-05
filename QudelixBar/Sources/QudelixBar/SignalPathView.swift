@@ -207,6 +207,14 @@ enum SignalPath {
     /// What the Stage is actually doing, named rather than just "on" — the
     /// four audible controls that are above their neutral value.
     private static func stageDescription(_ s: StageSettings) -> String {
+        // Every control at its no-op value is a chain that costs a tap and a
+        // render pass and shapes nothing. Saying "processing the stereo mix"
+        // there claims work the DSP isn't doing — and the four named controls
+        // below can't tell on their own, because Center, Distance and Night
+        // act with all four of them neutral.
+        guard !s.isAudiblyNeutral else {
+            return "Soundstage inserted — every control at neutral"
+        }
         var parts: [String] = []
         if s.width != 100 { parts.append("width") }
         if s.crossfeed > 0 { parts.append("crossfeed") }
@@ -273,13 +281,13 @@ enum SignalPath {
 
     // MARK: - Shared
 
-    /// Longest fragment this view will render from a device- or
-    /// radio-supplied field (preset name, Bluetooth codec, rate label).
-    /// These already pass through length-capping and control-character
-    /// filtering elsewhere (`QudelixController.displayName`, the fixed codec
-    /// tables in `QxStatusParser`), but this view renders them independently
-    /// of that code and doesn't get to assume it — the cap holds even if a
-    /// caller changes.
+    /// Longest fragment this view will render from a device-, driver- or
+    /// radio-supplied field (preset name, output device name, Bluetooth
+    /// codec, rate label). These already pass through length-capping and
+    /// control-character filtering elsewhere (`QudelixController.displayName`
+    /// on the way in, the fixed codec tables in `QxStatusParser`), but this
+    /// view renders them independently of that code and doesn't get to assume
+    /// it — the cap holds even if a caller changes.
     private static let maxFieldLength = 40
 
     private static func cap(_ s: String?) -> String? {

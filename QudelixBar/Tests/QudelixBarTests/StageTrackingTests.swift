@@ -111,10 +111,24 @@ final class StageTrackingTests: XCTestCase {
                               measuredOn: qudelix.uid), 96000)
     }
 
-    func testHiResFallsBackTo441WhenTheDeviceDoesNotOffer96k() {
+    /// 88.2 is the 44.1-family hi-res rate, and pinning a device to it is a
+    /// thing people do. Falling through to the lossless branch skipped it and
+    /// picked 96; taking the highest offered rate at or above 88.2 keeps the
+    /// content in its own family.
+    func testHiResPrefers882WhenThatIsTheHighestOnOffer() {
         XCTAssertEqual(target(verdict: .hiRes(cutoffKHz: 24.5),
                               measuredOn: qudelix.uid,
-                              availableRates: [44100, 48000]), 44100)
+                              availableRates: [44100, 48000, 88200]), 88200)
+    }
+
+    /// The defect this replaces: hi-res content on an output offering nothing
+    /// above 48 fell through to the lossless branch and switched to 44.1 —
+    /// DOWNSAMPLING audio the analyzer had just measured as extending past
+    /// the 44.1 family. Nothing high enough to go to means nothing to do.
+    func testHiResHoldsRatherThanDownsamplingWhenNothingHighIsOffered() {
+        XCTAssertNil(target(verdict: .hiRes(cutoffKHz: 24.5),
+                            measuredOn: qudelix.uid,
+                            availableRates: [44100, 48000]))
     }
 
     func testLossyReturnsToTheRateTheUserPickedByHand() {
@@ -165,6 +179,61 @@ final class StageTrackingTests: XCTestCase {
             device: nil, availableRates: [44100, 48000], manualRateHz: nil,
             autoRate: true, stageEnabled: false,
             secondsStable: 30, secondsSinceLastSwitch: 300))
+    }
+
+    // MARK: - The line that narrates the automation resolves the same rate
+
+    /// The popover's commentary used to name 44.1 itself and say "switching
+    /// shortly…" forever whenever 44.1 was not on offer — the normal state of
+    /// a 5K pinned to a single rate over USB. Both now read the same
+    /// function, so they cannot disagree about where a device is headed.
+    func testTheNarrationAndTheSwitchResolveTheSameRate() {
+        let rates = [44100.0, 48000, 88200, 96000]
+        for verdict in [QualityAnalyzer.Verdict.losslessLike(cutoffKHz: 21.9),
+                        .hiRes(cutoffKHz: 24.5), .lossy(cutoffKHz: 16.4)] {
+            let narrated = StageState.rateForVerdict(
+                verdict, availableRates: rates,
+                manualRateHz: 44100, deviceRate: 48000)
+            let acted = target(verdict: verdict, measuredOn: qudelix.uid,
+                               availableRates: rates, manualRateHz: 44100,
+                               deviceRate: 48000)
+            XCTAssertNotNil(narrated, "\(verdict)")
+            XCTAssertEqual(narrated, acted, "\(verdict)")
+        }
+    }
+
+    func testVerdictsThatAbstainResolveNoRateAtAll() {
+        for verdict in [QualityAnalyzer.Verdict.tooQuiet, .noTreble,
+                        .natural(cutoffKHz: 18), .lossyHigh(cutoffKHz: 19.9)] {
+            XCTAssertNil(StageState.rateForVerdict(
+                verdict, availableRates: [44100, 48000, 96000],
+                manualRateHz: nil, deviceRate: 48000), "\(verdict)")
+        }
+    }
+
+    /// The 5K pinned to "96 only" over USB: 44.1 simply is not on offer, and
+    /// the narration has to say it is holding rather than promise a switch.
+    func testLosslessOnAnOutputWithoutFortyFourPointOneStillResolvesToIt() {
+        XCTAssertEqual(
+            StageState.rateForVerdict(.losslessLike(cutoffKHz: 21.9),
+                                      availableRates: [96000],
+                                      manualRateHz: nil, deviceRate: 96000),
+            44100)
+        XCTAssertNil(target(measuredOn: qudelix.uid, availableRates: [96000],
+                            deviceRate: 96000))
+    }
+
+    // MARK: - Rates that could not physically exist
+
+    func testImplausibleRatesAreRejectedAtTheDeviceBoundary() {
+        for rate in [Double.infinity, -.infinity, .nan, 0, -48000, 7999, 768_001, 1e12] {
+            XCTAssertFalse(AudioOutputs.isPlausibleRate(rate), "\(rate)")
+            XCTAssertEqual(AudioOutputs.plausibleRate(rate), AudioOutputs.fallbackRate)
+        }
+        for rate in [8000.0, 44100, 48000, 96000, 768_000] {
+            XCTAssertTrue(AudioOutputs.isPlausibleRate(rate), "\(rate)")
+            XCTAssertEqual(AudioOutputs.plausibleRate(rate), rate)
+        }
     }
 
     // MARK: - Helpers

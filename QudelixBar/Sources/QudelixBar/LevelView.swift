@@ -126,11 +126,21 @@ struct LevelView: View {
                 .suffix(7)).reversed()
             if !history.isEmpty {
                 DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(history), id: \.day) { day in
-                            historyRow(day)
+                    // The pane is a fixed-height region, so a full week of
+                    // rows expanded at once pushes the footer below it out of
+                    // sight. Four rows show and the rest scroll in the same
+                    // space; the row height is pinned so the frame arithmetic
+                    // here and the layout inside cannot drift apart.
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(history), id: \.day) { day in
+                                historyRow(day)
+                                    .frame(height: Self.historyRowHeight)
+                            }
                         }
                     }
+                    .frame(height: CGFloat(min(history.count, 4))
+                        * (Self.historyRowHeight + 4) - 4)
                     .padding(.top, 4)
                 } label: {
                     Text("Previous \(history.count) day\(history.count == 1 ? "" : "s")")
@@ -299,6 +309,8 @@ struct LevelView: View {
                 .foregroundStyle(highlight ? .orange : .primary)
         }
     }
+
+    private static let historyRowHeight: CGFloat = 13
 
     private func historyRow(_ day: DayExposure) -> some View {
         let maxSeconds = max(stageState.exposureDays.map(\.audibleSeconds).max() ?? 1, 1)

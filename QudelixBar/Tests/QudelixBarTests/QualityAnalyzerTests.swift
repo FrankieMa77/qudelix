@@ -139,4 +139,30 @@ final class QualityAnalyzerTests: XCTestCase {
         a.reset()
         XCTAssertNil(a.classify(sampleRate: 44100))
     }
+
+    /// The counter alone was reset; the max-held levels stayed. The first
+    /// window after a rate change was then max-held against peaks measured
+    /// before it, so a 16 kHz-capped stream kept the old stream's treble and
+    /// read lossless — the reset has to take the levels with it.
+    func testResetDropsTheHeldLevelsAndNotJustTheCounter() throws {
+        let a = QualityAnalyzer()
+        for _ in 0..<3 { a.feed(bandlimitedNoise(cutoffHz: 21900, rate: 44100)) }
+        _ = a.classify(sampleRate: 44100)
+        a.reset()
+        for _ in 0..<3 { a.feed(bandlimitedNoise(cutoffHz: 16000, rate: 44100)) }
+        guard case .lossy = try XCTUnwrap(a.classify(sampleRate: 44100))
+        else { return XCTFail("the previous stream's treble survived the reset") }
+    }
+
+    /// A driver supplies the rate. An infinity makes the top of the band
+    /// infinite, and the 250 Hz cell scan that walks up to it never reaches
+    /// its bound — on the main thread, which is the app hanging rather than
+    /// misreporting.
+    func testARateNoDeviceCouldRunAtIsRefusedRatherThanScanned() {
+        for rate in [Double.infinity, .nan, 0, -44100, 1e12] {
+            let a = QualityAnalyzer()
+            a.feed(bandlimitedNoise(cutoffHz: 16000, rate: 44100))
+            XCTAssertNil(a.classify(sampleRate: rate), "rate \(rate)")
+        }
+    }
 }
