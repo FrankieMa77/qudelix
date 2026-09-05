@@ -1,4 +1,4 @@
-Qudelix for macOS 1.3.0
+Qudelix for macOS 1.4.0
 =======================
 An unofficial menu bar app for configuring the Qudelix 5K over USB or
 Bluetooth.
@@ -49,13 +49,13 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, so the
 "Open Anyway" click above is pure trust. Every release publishes a SHA-256 for
 the DMG. Check the file you downloaded against it:
 
-   shasum -a 256 /path/to/Qudelix-1.3.0.dmg
+   shasum -a 256 /path/to/Qudelix-1.4.0.dmg
 
 Compare that string to the one in the release notes; they must match exactly.
-If a Qudelix-1.3.0.dmg.sha256 file came with the download, this does the same
+If a Qudelix-1.4.0.dmg.sha256 file came with the download, this does the same
 comparison for you and prints "OK":
 
-   cd ~/Downloads && shasum -a 256 -c Qudelix-1.3.0.dmg.sha256
+   cd ~/Downloads && shasum -a 256 -c Qudelix-1.4.0.dmg.sha256
 
 Reading this from inside the mounted DMG? Then the hash is deliberately not
 here — it lives on the release page, because a checksum shipped inside the file
@@ -74,14 +74,25 @@ fills in when it is talking to the device. Click it for:
   - Live status: battery, charging, firmware, sample rate, input source
   - Volume slider and mute, USB sample rate control
   - EQ on/off and the 20 preset slots, which you can name from the app
-  - A 10- or 20-band parametric EQ editor: drag the curve, undo, per-band
-    mute, auto pre-gain, save-to-preset
-  - Preset import from a file, the clipboard, or the AutoEq database
-    (6,000+ headphones), fitted to a target of your choice
+  - A 10- or 20-band parametric EQ editor: drag the curve, click a band to
+    inspect it, undo, per-band mute, auto pre-gain, save-to-preset
+  - A preset library on the Mac beside the twenty device slots, and a
+    Headphones field that unlocks a measured correction for your model
+  - Preset import from a file, the clipboard, a file dropped on the menu bar
+    icon, or the AutoEq database (6,000+ headphones), fitted to a target of
+    your choice
+  - An AI preset studio that designs a preset for your headphones with a
+    provider of your choosing, on your own key, only when you press Generate
   - Profiles that pair an output device with a preset
-  - Tune: find the EQ you prefer by ear
-  - Stage and Level: a soundstage and a listening-level meter, applied on
-    the Mac's audio rather than on the 5K
+  - Per-app EQ: a second curve for one app, applied on the Mac before the
+    audio reaches the 5K
+  - Tune: find the EQ you prefer by ear, four ways
+  - Stage and Level: a soundstage with crossfeed by band, balance, loudness
+    compensation, dynamic bass, your own impulse response and a true-peak
+    limiter, plus a listening-level meter with an estimate of the level at
+    the ear, applied on the Mac's audio rather than on the 5K
+  - A guard for the Bluetooth link: it tells you when an app grabs the
+    headset microphone and drops the link to the voice codec, or fixes it
   - Device settings: channel trim, volume limit, DAC filter
   - A diagnostics panel showing every packet exchanged with the device
 
@@ -101,10 +112,16 @@ Since you are being asked to bypass Gatekeeper on trust, here is every bit of
 network and disk activity in the app:
 
   - It contacts three hosts, each only when you ask: raw.githubusercontent.com
-    and autoeq.app when you open the Import pane, to fetch the headphone list
-    and the correction you pick; api.github.com when you press Check in the
-    About panel, to read the latest release number. Nothing is contacted at
-    launch.
+    and autoeq.app when you open the Import pane or name your headphones, to
+    fetch the headphone list and the correction you pick; api.github.com when
+    you press Check in the About panel, to read the latest release number.
+    Nothing is contacted at launch.
+  - The AI preset studio adds one more, and only if you use it: the provider
+    you picked (api.mistral.ai, api.openai.com, api.anthropic.com or
+    openrouter.ai), reached only while you press Generate. What it sends is
+    the headphone name you typed, the preset kind, your note, and the public
+    AutoEq measurement if there is one. Never your EQ, your presets, your
+    devices or any identifier. Your key lives in the macOS Keychain only.
   - There is no telemetry, no analytics, no identifiers, no crash reporting.
   - It writes a packet log, ~/Library/Logs/QudelixBar.log, containing device
     packets, firmware version, battery and volume. Because it records raw packet

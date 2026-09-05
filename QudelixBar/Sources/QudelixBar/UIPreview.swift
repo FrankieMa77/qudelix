@@ -384,7 +384,7 @@ enum UIPreview {
             LibraryPreset(name: "Desk speakers", scope: .output(uid: "mock-speakers",
                                                                 name: "MacBook Pro Speakers"),
                           group: .user, bands: ten, preGain: 0),
-        ], headphoneName: pane == "suggest" ? "Sennheiser HD 650" : "Alder AR-5",
+        ], headphoneName: "Alder AR-5",
            message: pane == "presets-busy"
             ? "\u{201C}Studio reference\u{201D} was made for the 20-band EQ and the "
               + "device is in 10-band mode. Those are two separate banks with different "
@@ -432,15 +432,15 @@ enum UIPreview {
         let suggestions = HeadphoneSuggestions(library: PresetLibrary())
         guard pane == "suggest" else { return suggestions }
         let entries = [
-            AutoEqEntry(title: "Sennheiser HD 650", source: "oratory1990",
-                        path: "oratory1990/over-ear/Sennheiser%20HD%20650"),
-            AutoEqEntry(title: "Sennheiser HD 650", source: "crinacle",
-                        path: "crinacle/over-ear/Sennheiser%20HD%20650"),
-            AutoEqEntry(title: "Sennheiser HD 6XX", source: "rtings",
-                        path: "rtings/over-ear/Sennheiser%20HD%206XX"),
+            AutoEqEntry(title: "Alder AR-5", source: "oratory1990",
+                        path: "oratory1990/over-ear/Alder%20AR-5"),
+            AutoEqEntry(title: "Alder AR-5", source: "crinacle",
+                        path: "crinacle/over-ear/Alder%20AR-5"),
+            AutoEqEntry(title: "Alder AR-5X", source: "rtings",
+                        path: "rtings/over-ear/Alder%20AR-5X"),
         ]
         suggestions.previewSet(HeadphoneSuggestions.Suggestion(
-            name: "Sennheiser HD 650", entry: entries[0], alternatives: entries))
+            name: "Alder AR-5", entry: entries[0], alternatives: entries))
         return suggestions
     }
 

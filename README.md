@@ -43,15 +43,27 @@ right.
 - **Live response curve** showing the combined filter shape, and — after an
   import the device could not take exactly — the requested shape behind it, so
   you can see where the two part company
+- **Curve editing** — drag a band's dot to shape it, click one to open an
+  inspector for its filter type, gain and Q under the graph, double-click to
+  clear it; undo and redo throughout
 - **Auto pre-gain** — works out how much the boosted bands need pulling back
   and offers the number, rather than moving it for you
 - **Per-band mute** for an instant A/B of one band; the gain is kept
 - **20 preset slots**, which you can name from the app — the name is stored on
   the 5K, so other software sees it too
+- **Preset library** on the Mac, beside the twenty slots on the device — as
+  many curves as you like, global or bound to one output, applied through the
+  same gated path as an import
+- **Headphones field** — name the pair on the end of the 5K, and when the
+  AutoEq project has measured that model a fitted correction is offered once
+- **Per-app EQ** — give a single app a curve of its own from the library,
+  applied on the Mac before the audio reaches the 5K, so a podcast player can
+  run a speech-shaped preset while music keeps the device's curve (see below)
 - **Profiles** — pair an output device with a preset and be offered the switch
   when that output becomes active
 - **Preset import** from a file, from the clipboard — paste the filter list
-  as published sites print it — or from the
+  as published sites print it — from a file dropped onto the menu bar icon,
+  or from the
   [AutoEq](https://github.com/jaakkopasanen/AutoEq) database (6,000+ headphones),
   fitted live to a target curve of your choosing with bass and tilt adjustment
 - **AI preset studio** — design a preset for the headphones you named, with an
@@ -67,10 +79,17 @@ right.
 - **Export** your EQ in the standard parametric format
 - **Update check** in the About panel — on request only, never in the background
 - **Tune** — find the EQ you actually prefer, by ear (see below)
-- **Stage** — a soundstage for headphones: width, crossfeed, dialogue lift and
-  room, applied on the Mac (see below)
-- **Level** — live output level, a 14-day listening history, and a signal path
-  inspector showing what is altering the audio and what is passing it through
+- **Stage** — a soundstage for headphones: width, crossfeed by band, balance,
+  dialogue lift and room, with a true-peak limiter, loudness compensation,
+  dynamic bass and convolution with an impulse response of your own, all
+  applied on the Mac (see below)
+- **Level** — live output level, an estimate of the level at the ear, a 14-day
+  listening history, and a signal path inspector showing what is altering the
+  audio and what is passing it through
+- **Call and microphone awareness** — the Mac-side engine steps aside while
+  the headset is on a call, and a guard tells you when an app grabs the
+  headset's microphone and drops the Bluetooth link to the voice codec, or
+  puts the default input back for you
 - **Stream quality detection** — measures whether what's playing looks lossy
   or lossless (any player: it doesn't ask apps, it analyzes the audio), and
   can auto-match the USB rate: lossless → 44.1 kHz bit-perfect, lossy → your
@@ -83,12 +102,13 @@ right.
 
 Works over **USB or Bluetooth**. USB is used whenever the 5K is plugged in;
 otherwise the app controls the device over Bluetooth LE. Either way it only
-speaks to the 5K's control interface, so playback is unaffected. One feature
-does alter the audio, and only while you switch it on: with the **Stage**
-running, the Mac's audio is processed on its way to the output device (the
-5K's own EQ still runs on the device, untouched). Two others listen to the
-audio without altering it, and one of those is on by default — all three are
-described under [The audio tap](#the-audio-tap).
+speaks to the 5K's control interface, so playback is unaffected. Two features
+do alter the audio, and only while you switch them on: with the **Stage**
+running, or an app assigned under **Per-app EQ**, the Mac's audio is processed
+on its way to the output device (the 5K's own EQ still runs on the device,
+untouched). Two others listen to the audio without altering it, and one of
+those is on by default — all four are described under
+[The audio tap](#the-audio-tap).
 
 ## Install
 
@@ -111,7 +131,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.3.0.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.4.0.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -119,7 +139,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.3.0.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.4.0.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -149,7 +169,9 @@ silently doing the wrong thing:
 ## Tune
 
 EQ is personal, and reading a frequency-response graph tells you very little about
-what you will enjoy. The **Tune** tab offers two ways to settle it by ear.
+what you will enjoy. The **Tune** tab offers four ways to settle it by ear. Every
+pair you hear is matched for loudness on its magnitude response across the
+range where music lives, so the louder option never wins by being louder.
 
 ![Tune](docs/screenshots/tune.png)
 
@@ -170,6 +192,32 @@ comparisons, and ends with a curve you can keep or save to a preset.
 Both options are always matched for loudness and never labelled, so you cannot
 simply prefer the louder one — which is what happens in most casual A/B tests.
 Some pairs are deliberately identical, as a check on how reliable the session was.
+If you named a winner on most of those, the session says so and refuses to
+write a result.
+
+### Shape
+
+A shorter route to a curve: bass, then presence, then overall tilt, one axis at
+a time, three rounds each, halving the step. Three controls settle in twelve
+comparisons where the full Compare takes about twenty, and you are never asked
+about tilt while the bass is still moving underneath it.
+
+Each axis is fitted to your live band centres, so what you hear during the
+session is exactly the curve **Keep** will write — not an approximation of it.
+When the pre-gain headroom cannot carry the full ranges with matched levels,
+the ranges shrink until it can, and the intro says what fraction is being
+explored. Three axes landing within what anyone can reliably hear is reported
+as a real answer: leave it alone.
+
+### Blind check
+
+Does the EQ you already have survive not knowing which side is which? Five
+trials, sides randomised, your curve against a flat one — a flat *curve*,
+never the enable switch, because switching the EQ off takes the pre-gain with
+it and turns the whole thing into a test of which side is louder. Four of five
+is the line for saying which way you leant; anything less is reported as the
+difference not surviving blinding, with all three counts shown. It writes
+nothing whatever the answer.
 
 ### Tones
 
@@ -257,11 +305,47 @@ and **Theater**, plus geometry controls — Distance, Span, Center, Size — and
 
 ![Stage](docs/screenshots/stage.png)
 
+Crossfeed can be trimmed by band — below 800 Hz, where it anchors the image;
+between 800 Hz and 4 kHz; and above 4 kHz, where it mostly dulls the treble —
+and a **Balance** pair corrects a headphone whose two sides have drifted, in
+level and in time. Four further stages sit behind the geometry, each off by
+default and each explained on the pane:
+
+- **Loudness** — an equal-loudness contour, sized from how far the estimated
+  level at the ear sits below a reference, so quiet listening keeps its bass.
+  It follows a thirty-second average of the listening level rather than this
+  second's chorus.
+- **Dynamic bass** — the 5K applies its curve after the Mac, so a bass boost
+  is a promise the driver has to keep. This stage measures what the device's
+  own curve will do to the low band and eases the loudest passages before
+  they reach it; quiet passages keep the whole boost.
+- **Impulse response** — run a WAV, AIFF or CAF impulse response of your own
+  over the output, with a Mix slider: a headphone correction, a measured room,
+  a reverb. Up to two seconds long, with no added latency at any length; a
+  response the output's buffer size cannot afford is refused with the two
+  ways out named.
+- **True-peak limiter** — the stage ends by holding the output under
+  −1 dBTP, estimating the peaks between samples that a DAC or a lossy encoder
+  redraws. The soft clipper shapes; the limiter guarantees.
+
+The order is fixed: room, crossfeed and balance; convolution; loudness
+shelves; dynamic bass; soft clipper; true-peak limiter. The Level pane shows
+what the last three are doing each second.
+
 Unlike everything else in this app, the Stage runs on the Mac, not on the 5K:
 it processes what the Mac plays on its way to the output device, using a
 system audio tap (macOS 14.2 or later, and the System Audio Recording
 permission). The 5K keeps doing its own EQ on-device, so nothing is applied
 twice. Settings are kept per output device.
+
+When the 5K is on a call over Bluetooth, or a call app is holding the headset
+microphone, the engine steps out of the audio path and comes back when the
+call ends, rather than fighting the link while it renegotiates. Separately, a
+**microphone guard** watches for anything making the headset's microphone the
+Mac's default input — which is what drops the link to the 16 kHz voice codec
+and makes everything sound thin. It can stay off, ask with a banner, or put
+the default input back on the built-in microphone for you; two reverts of the
+same device in two minutes and it stops fighting you.
 
 Switching the Stage off takes the processing back out of the audio path
 immediately. It does not necessarily close the tap, because two other features
@@ -282,10 +366,15 @@ conversation with yourself. Metering rides the Stage engine when it runs, or a
 listen-only tap (nothing inserted into the audio path) when you switch **Track
 listening levels** on by itself.
 
-Levels are digital signal level (dBFS), not sound pressure: the app cannot
-know your headphones' sensitivity or the 5K's analog volume, so it reports
-trends and durations honestly instead of pretending to be a dosimeter. Nothing
-is recorded and nothing leaves the Mac.
+The meter itself is digital signal level (dBFS). Beside it sits one number
+about the world rather than the signal: an **estimate of the level at the
+ear**, built from a K-weighted measurement of what is playing, the
+attenuation the 5K itself reports (or the output device's volume when the 5K
+is not the anchor), and a population figure for the headphone that a
+per-output calibration slider lets you shift. Two of the three are measured
+and the third is an assumption, which is why the pane never prints the number
+without the word "estimate", never prints a decimal, and says what it rests
+on. Nothing is recorded and nothing leaves the Mac.
 
 ### Is this actually lossless?
 
@@ -420,7 +509,7 @@ no third-party dependencies.
   in **Fix automatically** mode sets that default to the built-in microphone —
   it never opens a microphone, records nothing, and does nothing else.
 - Everything the app keeps is a local file, readable only by your user
-  account, and never transmitted. Six of them live in
+  account, and never transmitted. They live in
   `~/Library/Application Support/QudelixBar/`:
 
   | File | What is in it |
@@ -431,6 +520,7 @@ no third-party dependencies.
   | `presets.json` | The preset library kept on this Mac, the headphone name you typed, and which app is assigned which curve |
   | `ai-research.json` | What the AI preset studio has researched, keyed by headphone name — the description it got back, and the measurement it was anchored to. Up to 64 headphones, no key material, nothing about you |
   | `diag.txt` | The last 200 lines of an engine heartbeat, for bug reports. It records which phase the studio is in — `ai=idle`, `ai=researching`, `ai=designing` — and never what was asked or answered |
+  | `impulses/` | The app's own copies of the impulse responses you picked for the Soundstage, named by a scrubbed base name and eight hex digits of the content hash. Copies no output's settings still reference are swept at launch |
 
   If one of the five JSON files ever fails to load, it is not overwritten:
   the app copies it aside as `<name>.recovered`, carries on with defaults, and
@@ -483,6 +573,168 @@ Read the source before running them.
   exists, but downloading and installing it is manual.
 
 ## Changelog
+
+### 1.4.0 — 2026-09-06
+
+Equalizer
+
+- **Band inspector.** Click a band's dot to select it; a panel under the graph
+  carries its filter type, gain and a logarithmic Q slider. Double-click a
+  band to clear it. A readout badge in the graph's corner follows the drag,
+  then the pointer, then the selection.
+- **Flatten and Reset are two buttons.** Flatten zeroes the gains and leaves
+  every centre, filter type and Q alone; Reset restores the factory layout
+  for the current mode. Each is one undo step.
+- **Update** writes the curve back into the slot it was loaded from, without a
+  trip through the Save menu.
+- The curve and its markers dim when the equalizer is switched off, as the
+  band table already did.
+- The gain controls stay on an empty or muted band row.
+
+Presets and corrections
+
+- **A preset library on the Mac**, beside the twenty slots on the device,
+  holding as many curves as you care to make. A preset is global or bound to
+  one output device, records which EQ bank it was made for, and applies
+  through the same gated, clamped, single-undo path as an import. It lives in
+  `presets.json`, read and written with the same care as the other state
+  files.
+- **Headphones field.** Name the pair on the end of the 5K. When the AutoEq
+  project has measured that model, a fitted correction is offered once, as a
+  banner and as a line under the field, with the alternative measurements in
+  a menu. A name is looked up once, and only when it changes.
+- **AI preset studio.** Design a preset for the named headphones with an AI
+  provider of your choosing, on your own key: fifteen kinds, from Correction
+  and the published targets to Clarity, Warmth and a V-shape. The draft can
+  be auditioned on the 5K, kept in the library or written into a slot. Silent
+  until you press **Generate**; the key lives in the Keychain and nowhere
+  else; Correction needs no provider at all when a measurement exists. The
+  [Privacy](#privacy) section lists exactly what leaves the machine.
+- **Per-app EQ.** Give a single app a second curve of its own from the
+  library, applied on the Mac before the audio reaches the 5K: a podcast
+  player on a speech-shaped preset while music keeps the curve on the device,
+  with no switching by hand. Up to eight apps, each on any library preset or
+  Default. The section lists what is playing right now, and it inserts the
+  Mac-side engine only while something is assigned.
+- **Drop a preset file onto the menu bar icon** to import it.
+- The parser now reads files the way they are actually published:
+  tab-separated, lower case, pass filters without a gain, shelves without a
+  Q, a preamble without its colon. When a file carries more filters than the
+  device has bands, the ones doing the most work are kept rather than the
+  first twenty, and everything a file asked for and did not get is now said
+  rather than dropped in silence.
+- Fits are cached on the values the sliders actually take, so re-fitting a
+  shape tried a moment ago costs nothing, and the cache keeps the whole
+  result — the clipping warning and the predicted rating included.
+
+Stage
+
+- **Crossfeed by band.** Three trims scale the crossfeed amount below 800 Hz,
+  between 800 Hz and 4 kHz, and above 4 kHz. Trims at 100% are a genuine
+  no-op, sample for sample.
+- **Balance.** Level, ±3 dB split between the sides so the loudness holds, and
+  time, up to 0.5 ms, to correct a pair whose two sides have drifted. Applied
+  last, just before the clipper.
+- **True-peak limiter.** The stage now ends in a limiter that holds the output
+  under −1 dBTP by estimating the peaks between samples. Off by default. It
+  runs after the soft clipper, so the last thing to touch the audio is the
+  one stage that can state a ceiling and keep it.
+- **Loudness compensation.** An equal-loudness contour sized from how far the
+  estimated level at the ear sits below a reference, so quiet listening keeps
+  its bass. It follows a thirty-second average of the listening level, and
+  glides to each new setting rather than stepping. Off by default.
+- **Dynamic bass.** The 5K applies its curve after the Mac, so a bass boost is
+  a promise the driver has to keep. This stage measures what the device's own
+  curve will do to the low band and eases the loudest passages before they
+  get there; quiet passages keep the whole boost. Off by default.
+- **Impulse response.** Run a WAV, AIFF or CAF impulse response of your own
+  over the Mac's output, with a Mix slider, per output device. Up to two
+  seconds, with no added latency at any length; a response the output's
+  buffer size cannot afford is refused with the two ways out named.
+- The chain order is fixed: room, crossfeed and balance; convolution; loudness
+  shelves; dynamic bass; soft clipper; true-peak limiter.
+- **Call awareness.** When the 5K is on a call over Bluetooth, or a call app
+  is holding the headset microphone, the Mac-side engine steps out of the way
+  and comes back when the call ends. The automatic rate switcher never
+  renegotiates under a call, and the stream verdict measured before the call
+  is dropped rather than left voting.
+- **Microphone guard.** When an app makes the headset's microphone the Mac's
+  default input and the Bluetooth link collapses to the voice codec, the app
+  says so, or puts the default input back on the built-in microphone for you.
+  Off, Ask or Fix. Two reverts of the same device in two minutes and it backs
+  off; a Mac with no built-in microphone degrades to asking.
+
+Level
+
+- **Estimated level at the ear.** One number about the world rather than the
+  signal, built from the K-weighted loudness of what is playing, the
+  attenuation the 5K itself reports, and a population figure for the
+  headphone that a per-output calibration slider lets you shift. Always
+  marked as an estimate, never printed with a decimal, and the pane says what
+  it rests on.
+- The live row shows what the limiter, the loudness shelf and the bass guard
+  are doing this second, and the signal path names each stage only while it
+  is actually in the audio path.
+
+Tune
+
+- **Shape.** Bass, then presence, then tilt, one axis at a time, three rounds
+  each: twelve comparisons instead of twenty. What you hear is exactly the
+  curve **Keep** writes. When the pre-gain headroom cannot carry the full
+  ranges with matched levels, the ranges shrink until it can, and the intro
+  says by how much.
+- **Blind check.** Five trials of your curve against a flat one, sides
+  randomised and levels matched. It writes nothing whatever the answer.
+- **Proper level matching.** Pairs are matched on the mean magnitude response
+  from 100 Hz to 8 kHz rather than on the mean of the band gains, so a bass
+  shelf no longer reads as a large change and a treble tilt as a small one.
+  The louder side is trimmed down to the quieter, so matching never makes a
+  session louder than the pre-gain already judged safe.
+- A by-ear session earns a verdict before anything acts on it. Too many
+  presses on the silent checks, readings too far apart, or too few of them
+  refuse the result and show the counts the refusal turned on, on the Tones
+  side and the Compare side alike.
+- A Compare session survives closing the popover.
+
+The app
+
+- **A new shell.** The app owns its status item and popover, so clicking the
+  icon no longer leaves a view graph behind each time, and the per-second
+  meter values republish only while the popover is on screen.
+- **A drawn menu bar icon**: headphones in a circle, with EQ bypass, the
+  Soundstage, the stream verdict, battery and a call composed as marks on it.
+- **Install with a double-click.** The disk image carries an installer that
+  copies the app, clears the download flag and launches it, so Gatekeeper
+  asks once, for the installer, and never again for the app.
+- The footer shows the version and the source revision it was built from.
+- The release build refuses to package a binary that is not universal.
+
+Fixes
+
+- The audio tap consumed the wrong input buffer when the output device had
+  inputs of its own, so a headset or dock microphone was mixed into what the
+  Soundstage wrote back out and metered as the listening level. The tap's
+  buffer is now taken from the end of the list.
+- A tone test could renegotiate the USB rate under itself. Detection sits the
+  session out while the pipeline is muted, and a frozen window is never
+  re-judged as new evidence.
+- Hi-res content was downsampled to 44.1 kHz on outputs that stop at 48 kHz.
+  Auto-rate now takes the highest rate at or above 88.2 kHz the output
+  offers, and holds where there is none.
+- Outputs that appear a few seconds after login are enumerated again three
+  seconds in, so their saved Soundstage settings no longer look lost.
+- Preset and device names are no longer parsed as Markdown in the profile
+  prompt, the microphone banner, or the footer.
+- A pane that outgrows its region is clipped at its edge instead of drawing
+  over the footer.
+- Imported files go through the hardened reader: no symlink is followed, no
+  FIFO can wedge the load, and a short read is a failed read rather than a
+  truncated document parked as recovered.
+- Two bands sitting on the same frequency can no longer be dragged through
+  each other.
+- The microphone guard's alerts, the battery alerts and every other
+  notification share one delivery path with fixed identifiers, so a battery dipping in and out of
+  "low" replaces its warning instead of stacking a column of them.
 
 ### 1.3.0 — 2026-09-05
 
