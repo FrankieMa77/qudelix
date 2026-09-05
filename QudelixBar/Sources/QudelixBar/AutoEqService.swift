@@ -86,6 +86,27 @@ extension CorrectionOptions {
     static func describeCeiling(_ hz: Double) -> String {
         String(format: "%.1f kHz", hz / 1000)
     }
+
+    static let bassRange: ClosedRange<Double> = -6...6
+    static let tiltRange: ClosedRange<Double> = -1...1
+    static let bassStep = 0.5
+    static let tiltStep = 0.05
+
+    func quantized() -> CorrectionOptions {
+        var out = self
+        out.bassBoostGain = Self.snap(bassBoostGain, step: Self.bassStep, into: Self.bassRange)
+        out.tilt = Self.snap(tilt, step: Self.tiltStep, into: Self.tiltRange)
+        out.maxCorrectionHz = maxCorrectionHz.flatMap { $0.isFinite ? $0.rounded() : nil }
+        return out
+    }
+
+    static func snap(_ value: Double, step: Double,
+                     into range: ClosedRange<Double>) -> Double {
+        guard value.isFinite else { return 0 }
+        let stepped = (value / step).rounded() * step
+        let tidied = (stepped * 10000).rounded() / 10000
+        return min(max(tidied, range.lowerBound), range.upperBound)
+    }
 }
 
 /// One thing a user can pick out of a correction source's catalogue.
@@ -137,6 +158,7 @@ enum CorrectionError: LocalizedError {
     case server(host: String, status: Int, detail: String?)
     case badResponse(String)
     case noFilters
+    case nothingToDo
     case unavailable(String)
 
     var errorDescription: String? {
@@ -153,6 +175,10 @@ enum CorrectionError: LocalizedError {
             return "The server sent a response this app couldn't read — \(why)"
         case .noFilters:
             return "The optimizer returned no filters for that measurement."
+        case .nothingToDo:
+            return "The correction that came back is smaller than the smallest step "
+                + "this device can take — applying it would flatten the EQ rather "
+                + "than change what you hear."
         case .unavailable(let why):
             return why
         }
@@ -194,8 +220,12 @@ protocol HTTPTransport: Sendable {
 
 /// Production transport: the shared, host-pinned, size-capped session.
 struct PinnedTransport: HTTPTransport {
+    let hosts: Set<String>
+
+    init(hosts: Set<String> = [AutoEqService.host]) { self.hosts = hosts }
+
     func send(_ request: URLRequest, limit: Int) async throws -> Data {
-        try await PinnedHTTP.fetch(request, limit: limit)
+        try await PinnedHTTP.fetch(request, limit: limit, allowing: hosts)
     }
 }
 
@@ -430,6 +460,12 @@ struct PEQFilter: Decodable {
 /// what falls out is what has gone longest untouched rather than what was
 /// fetched longest ago. A shape being re-fitted repeatedly is exactly the one
 /// a failure would hurt.
+struct CachedCorrection {
+    var file: ParametricEQFile
+    var warnings: [String] = []
+    var preference: PreferenceScore.Reading?
+}
+
 struct LastGoodCorrections {
     /// A session's worth of distinct fits. Small enough that the linear scan
     /// in `touch` stays cheaper than the bookkeeping a linked-list LRU would
@@ -437,7 +473,7 @@ struct LastGoodCorrections {
     /// comparing between falls out from under them.
     static let capacity = 24
 
-    private var byKey: [String: ParametricEQFile] = [:]
+    private var byKey: [String: CachedCorrection] = [:]
     /// Keys in order of use, least recent first.
     private var recency: [String] = []
 
@@ -445,14 +481,14 @@ struct LastGoodCorrections {
 
     /// Reading counts as using: the fallback a user keeps reaching for is the
     /// one to keep.
-    mutating func value(for key: String) -> ParametricEQFile? {
-        guard let file = byKey[key] else { return nil }
+    mutating func value(for key: String) -> CachedCorrection? {
+        guard let cached = byKey[key] else { return nil }
         touch(key)
-        return file
+        return cached
     }
 
-    mutating func store(_ file: ParametricEQFile, for key: String) {
-        byKey[key] = file
+    mutating func store(_ cached: CachedCorrection, for key: String) {
+        byKey[key] = cached
         touch(key)
         while recency.count > Self.capacity {
             byKey.removeValue(forKey: recency.removeFirst())
@@ -529,18 +565,20 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         state = .loading
         loadTask = Task { [weak self] in
             guard let self else { return }
+            async let entries = self.fetchEntries()
+            async let targetList = self.fetchTargets()
             do {
-                let models = try await self.fetchEntries()
+                let models = try await entries
                 self.models = models
                 self.state = models.isEmpty ? .failed("Catalogue was empty") : .ready
                 DebugLog.shared.log("AutoEq catalogue: \(models.count) models")
-                // Targets are only needed at correction time, but they are tiny
-                // and fetching them now keeps the first apply fast.
-                self.targets = (try? await self.fetchTargets()) ?? []
+                self.targets = (try? await targetList) ?? []
             } catch {
-                self.state = .failed(Self.describe(error))
+                _ = try? await targetList
+                let why = SafeText.scrubbed(Self.describe(error))
+                self.state = .failed(why)
                 self.loadTask = nil
-                DebugLog.shared.log("AutoEq catalogue failed: \(Self.describe(error))")
+                DebugLog.shared.log("AutoEq catalogue failed: \(why)")
             }
         }
     }
@@ -578,6 +616,14 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         return try Self.parseTargets(data)
     }
 
+    nonisolated static let maxCatalogueStringLength = 120
+    nonisolated static let maxCatalogueEntries = 20_000
+    nonisolated static let maxCatalogueTargets = 2_000
+
+    nonisolated static func admissible(_ s: String) -> Bool {
+        !s.isEmpty && s.count <= maxCatalogueStringLength && !s.contains("\u{1}")
+    }
+
     /// `{"Model Name": [{"form": …, "rig": …, "source": …}, …], …}`. `rig` can
     /// be explicitly null for sources that publish only one rig.
     nonisolated static func parseEntries(_ data: Data) throws -> [AutoEqModel] {
@@ -592,14 +638,27 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         } catch {
             throw CorrectionError.badResponse("the headphone catalogue didn't parse")
         }
-        return raw
-            .map { name, ms in
-                AutoEqModel(name: name,
-                            measurements: ms.map {
-                                AutoEqMeasurement(source: $0.source, form: $0.form, rig: $0.rig)
-                            })
+        let names = raw.keys.sorted {
+            let order = $0.localizedCaseInsensitiveCompare($1)
+            return order == .orderedAscending || (order == .orderedSame && $0 < $1)
+        }
+        var out: [AutoEqModel] = []
+        for name in names {
+            guard out.count < maxCatalogueEntries else { break }
+            guard admissible(name) else { continue }
+            var seen = Set<String>()
+            var measurements: [AutoEqMeasurement] = []
+            for m in raw[name] ?? [] {
+                guard let rig = m.rig, admissible(rig), admissible(m.source) else { continue }
+                if let form = m.form, !admissible(form) { continue }
+                guard seen.insert("\(m.source)\u{1}\(rig)").inserted else { continue }
+                measurements.append(AutoEqMeasurement(source: m.source, form: m.form,
+                                                      rig: rig))
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            guard !measurements.isEmpty else { continue }
+            out.append(AutoEqModel(name: name, measurements: measurements))
+        }
+        return out
     }
 
     nonisolated static func parseTargets(_ data: Data) throws -> [AutoEqTarget] {
@@ -620,13 +679,23 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             throw CorrectionError.badResponse("the target list didn't parse")
         }
         let toMeasurements: ([Ref]?) -> [AutoEqMeasurement] = { refs in
-            (refs ?? []).map { AutoEqMeasurement(source: $0.source, form: $0.form, rig: $0.rig) }
+            (refs ?? []).compactMap { ref in
+                guard admissible(ref.source) else { return nil }
+                if let rig = ref.rig, !admissible(rig) { return nil }
+                if let form = ref.form, !admissible(form) { return nil }
+                return AutoEqMeasurement(source: ref.source, form: ref.form, rig: ref.rig)
+            }
         }
-        return raw.map {
-            AutoEqTarget(label: $0.label,
-                         recommended: toMeasurements($0.recommended),
-                         compatible: toMeasurements($0.compatible))
+        var seen = Set<String>()
+        var out: [AutoEqTarget] = []
+        for target in raw {
+            guard out.count < maxCatalogueTargets else { break }
+            guard admissible(target.label), seen.insert(target.label).inserted else { continue }
+            out.append(AutoEqTarget(label: target.label,
+                                    recommended: toMeasurements(target.recommended),
+                                    compatible: toMeasurements(target.compatible)))
         }
+        return out
     }
 
     // MARK: Target choice
@@ -665,6 +734,13 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         }
         let rest = byForm[nil].map { [AutoEqTargetGroup(form: nil, targets: $0)] } ?? []
         return known + rest
+    }
+
+    nonisolated static func targetSelection(_ picked: String?, pickedByUser: Bool,
+                                            in targets: [AutoEqTarget]) -> String? {
+        guard let picked else { return nil }
+        if pickedByUser { return picked }
+        return targets.contains { $0.label == picked } ? picked : nil
     }
 
     /// Why a target the user picked goes unhonoured on the published-preset
@@ -796,8 +872,9 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         var unknownTypes = 0
         var outOfRange = 0
 
-        for f in decoded.parametricEq.filters {
-            guard let type = AutoEqFilterType(rawValue: f.type) else {
+        let returned = decoded.parametricEq.filters
+        for f in returned.prefix(limits.bandCount) {
+            guard let type = AutoEqFilterType(rawValue: f.type.uppercased()) else {
                 unknownTypes += 1
                 continue
             }
@@ -814,6 +891,7 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             file.bands.append(band)
         }
         guard !file.bands.isEmpty else { throw CorrectionError.noFilters }
+        guard changesAnything(file.bands) else { throw CorrectionError.nothingToDo }
 
         let preamp = decoded.parametricEq.preamp ?? 0
         file.preamp = preamp.isFinite ? preamp : 0
@@ -833,10 +911,31 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         if outOfRange > 0 {
             warnings.append("\(outOfRange) filter(s) came back outside the device's range")
         }
-        if file.bands.count > limits.bandCount {
-            warnings.append("\(file.bands.count - limits.bandCount) filter(s) beyond the \(limits.bandCount)-band mode were dropped")
+        let beyondMode = returned.count - limits.bandCount
+        if beyondMode > 0 {
+            warnings.append("\(beyondMode) filter(s) beyond the \(limits.bandCount)-band mode were dropped")
+        }
+        if askedForShelves(bandCount: limits.bandCount) {
+            if !file.bands.contains(where: { $0.filter == .lowShelf }) {
+                warnings.append("the fit used no low shelf — the deepest bass is left as measured")
+            }
+            if !file.bands.contains(where: { $0.filter == .highShelf }) {
+                warnings.append("the fit used no high shelf — the top octave is left as measured")
+            }
         }
         return (file, warnings, residualScore(decoded, file: file, limits: limits))
+    }
+
+    nonisolated static func askedForShelves(bandCount: Int) -> Bool {
+        max(1, bandCount) >= 3
+    }
+
+    nonisolated static func changesAnything(_ bands: [QxEqBandValue]) -> Bool {
+        bands.contains { band in
+            guard band.filter != .bypass else { return false }
+            guard band.filter.hasGain else { return true }
+            return band.gain.isFinite && (band.gain * QxScale.gain).rounded() != 0
+        }
     }
 
     /// What the preference model makes of the curve this device will actually
@@ -903,14 +1002,16 @@ final class AutoEqService: ObservableObject, CorrectionSource {
 
     func equalize(model: String, source: String, rig: String?, target: String,
                   limits: DeviceEQLimits,
-                  options: CorrectionOptions) async throws
+                  options rawOptions: CorrectionOptions) async throws
         -> (ParametricEQFile, [String], PreferenceScore.Reading?) {
+        let options = rawOptions.quantized()
         let body = Self.requestBody(model: model, source: source, rig: rig, target: target,
                                     limits: limits, options: options)
         guard let url = URL(string: Self.base + "/equalize") else {
             throw CorrectionError.unavailable("Bad API URL.")
         }
-        var request = try PinnedHTTP.request(url, accept: "application/json")
+        var request = try PinnedHTTP.request(url, accept: "application/json",
+                                             allowing: [Self.host])
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try Self.encode(body)
@@ -921,22 +1022,19 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         } catch {
             throw Self.mapped(error)
         }
-        let (file, warnings, preference) = try Self.correction(from: data, limits: limits)
-        lastGood.store(file, for: Self.cacheKey(model: model, source: source, rig: rig,
-                                                target: target, limits: limits,
-                                                options: options))
-        return (file, warnings, preference)
+        return try Self.correction(from: data, limits: limits)
     }
 
-    nonisolated private static func cacheKey(model: String, source: String, rig: String?,
-                                             target: String, limits: DeviceEQLimits,
-                                             options: CorrectionOptions) -> String {
+    nonisolated static func cacheKey(model: String, source: String, rig: String?,
+                                     target: String, limits: DeviceEQLimits,
+                                     options rawOptions: CorrectionOptions) -> String {
         // The ceiling belongs in the key: a curve fitted to 16 kHz is a
         // different curve, and serving it back for an unrestricted request
         // would be handing over a fit the caller didn't ask for.
-        [model, source, rig ?? "", target, String(limits.bandCount),
-         String(options.bassBoostGain), String(options.tilt),
-         options.correctionCeiling(for: limits).map { String($0) } ?? ""]
+        let options = rawOptions.quantized()
+        return [model, source, rig ?? "", target, String(limits.bandCount),
+                String(options.bassBoostGain), String(options.tilt),
+                options.correctionCeiling(for: limits).map { String($0) } ?? ""]
             .joined(separator: "\u{1}")
     }
 
@@ -944,7 +1042,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
 
     func correction(for candidate: CorrectionCandidate,
                     shapedFor limits: DeviceEQLimits,
-                    options: CorrectionOptions) async throws -> CorrectionResult {
+                    options rawOptions: CorrectionOptions) async throws -> CorrectionResult {
+        let options = rawOptions.quantized()
         let measurement = AutoEqMeasurement(source: candidate.source, form: candidate.form,
                                             rig: candidate.rig)
         var target = options.target
@@ -978,6 +1077,15 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             + " · \(limits.bandCount) bands"
             + personalized.map { " · \($0)" }.joined()
             + (ceiling.map { " · fitted up to \(CorrectionOptions.describeCeiling($0))" } ?? "")
+
+        let key = Self.cacheKey(model: candidate.title, source: candidate.source,
+                                rig: candidate.rig, target: chosen,
+                                limits: limits, options: resolved)
+        if let cached = lastGood.value(for: key) {
+            return CorrectionResult(file: cached.file, provenance: provenance,
+                                    warnings: cached.warnings,
+                                    preference: cached.preference)
+        }
         do {
             let (file, warnings, preference) = try await equalize(
                 model: candidate.title, source: candidate.source,
@@ -985,18 +1093,18 @@ final class AutoEqService: ObservableObject, CorrectionSource {
                 limits: limits, options: resolved)
             // The model is fitted on around-ear and on-ear headphones only.
             // An in-ear measurement gets no score rather than the wrong one.
-            return CorrectionResult(
-                file: file, provenance: provenance, warnings: warnings,
-                preference: PreferenceScore.appliesTo(form: candidate.form)
-                    ? preference : nil)
+            let scored = PreferenceScore.appliesTo(form: candidate.form) ? preference : nil
+            lastGood.store(CachedCorrection(file: file, warnings: warnings,
+                                            preference: scored), for: key)
+            return CorrectionResult(file: file, provenance: provenance,
+                                    warnings: warnings, preference: scored)
         } catch {
-            let key = Self.cacheKey(model: candidate.title, source: candidate.source,
-                                    rig: candidate.rig, target: chosen,
-                                    limits: limits, options: resolved)
             guard let cached = lastGood.value(for: key) else { throw error }
             return CorrectionResult(
-                file: cached, provenance: provenance,
-                warnings: ["reused the last correction that worked — \(Self.describe(error))"])
+                file: cached.file, provenance: provenance,
+                warnings: cached.warnings
+                    + ["reused the last correction that worked — \(Self.describe(error))"],
+                preference: cached.preference)
         }
     }
 
@@ -1007,8 +1115,10 @@ final class AutoEqService: ObservableObject, CorrectionSource {
             throw CorrectionError.unavailable("Bad API URL.")
         }
         do {
-            return try await transport.send(try PinnedHTTP.request(url, accept: "application/json"),
-                                            limit: limit)
+            return try await transport.send(
+                try PinnedHTTP.request(url, accept: "application/json",
+                                       allowing: [Self.host]),
+                limit: limit)
         } catch {
             throw Self.mapped(error)
         }
@@ -1020,7 +1130,8 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         if let c = error as? CorrectionError { return c }
         if let http = error as? HTTPStatusError {
             return CorrectionError.server(host: host, status: http.status,
-                                          detail: detail(from: http.body))
+                                          detail: detail(from: http.body,
+                                                         status: http.status))
         }
         guard let url = error as? URLError else { return error }
         switch url.code {
@@ -1039,18 +1150,20 @@ final class AutoEqService: ObservableObject, CorrectionSource {
     /// The API reports the field it disliked in a `detail` member — a string on
     /// a 500, a list of validation objects on a 422. Either is worth surfacing;
     /// the raw body is not.
-    nonisolated static func detail(from body: String) -> String? {
+    nonisolated static func detail(from body: String, status: Int) -> String? {
+        let fallback = "the service answered \(status)"
         guard let data = body.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let detail = object["detail"] else {
-            return body.isEmpty ? nil : String(body.prefix(200))
+            return fallback
         }
-        if let text = detail as? String { return String(text.prefix(200)) }
+        if let text = detail as? String { return SafeText.scrubbed(text) }
         if let items = detail as? [[String: Any]] {
             let messages = items.compactMap { $0["msg"] as? String }
-            return messages.isEmpty ? nil : String(messages.joined(separator: "; ").prefix(200))
+            return messages.isEmpty ? fallback
+                : SafeText.scrubbed(messages.joined(separator: "; "))
         }
-        return nil
+        return fallback
     }
 
     nonisolated static func describe(_ error: Error) -> String {

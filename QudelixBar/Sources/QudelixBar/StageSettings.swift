@@ -180,10 +180,49 @@ enum SafeFile {
         defer { close(fd) }
         var st = stat()
         guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
-        var data = Data(count: cap + 1)
-        let n = data.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
-        guard n > 0, n <= cap else { return nil }   // oversized = not ours
-        return data.prefix(n)
+        var data = Data()
+        var chunk = [UInt8](repeating: 0, count: 64 << 10)
+        while true {
+            let n = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            if n < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if n == 0 { return data.isEmpty ? nil : data }
+            data.append(contentsOf: chunk[0..<n])
+            if data.count > cap { return nil }
+        }
+    }
+
+    @discardableResult
+    static func writeAtomic(_ data: Data, to url: URL) -> Bool {
+        let temp = url.deletingLastPathComponent()
+            .appendingPathComponent("." + url.lastPathComponent
+                                    + "." + String(UUID().uuidString.prefix(8)))
+        let fd = temp.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        }
+        guard fd >= 0 else { return false }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        let written = (try? handle.write(contentsOf: data)) != nil
+        if written { Darwin.fsync(fd) }
+        Darwin.close(fd)
+        let renamed = written && temp.withUnsafeFileSystemRepresentation { from -> Bool in
+            guard let from else { return false }
+            return url.withUnsafeFileSystemRepresentation { to -> Bool in
+                guard let to else { return false }
+                return rename(from, to) == 0
+            }
+        }
+        guard renamed else {
+            _ = temp.withUnsafeFileSystemRepresentation { path -> Int32 in
+                guard let path else { return -1 }
+                return unlink(path)
+            }
+            return false
+        }
+        return true
     }
 }
 
@@ -256,9 +295,7 @@ enum StageStateFile {
         // undecodable document where the user (or a newer app version) can
         // recover it.
         let parked = directory.appendingPathComponent("stage.json.recovered")
-        try? data.write(to: parked, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: parked.path)
+        SafeFile.writeAtomic(data, to: parked)
         return nil
     }
 
@@ -266,10 +303,6 @@ enum StageStateFile {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(state) else { return }
-        try? data.write(to: url, options: .atomic)
-        // Listening history and device identifiers: user-private, like the
-        // packet log (Data.write creates 0644 under the default umask).
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: url.path)
+        SafeFile.writeAtomic(data, to: url)
     }
 }

@@ -186,11 +186,9 @@ enum ProfileRulesFile {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(Array(rules.prefix(maxRules))) else { return }
-        try? data.write(to: fileURL, options: .atomic)
         // Which outputs someone owns and which presets they use with them is
         // personal, like the rest of this app's state files.
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: fileURL.path)
+        SafeFile.writeAtomic(data, to: fileURL)
     }
 
     /// Same recovery gesture as `StageStateFile`: don't let the next save
@@ -198,9 +196,7 @@ enum ProfileRulesFile {
     private static func park(_ data: Data, from fileURL: URL) {
         let parked = fileURL.deletingLastPathComponent()
             .appendingPathComponent(fileURL.lastPathComponent + ".recovered")
-        try? data.write(to: parked, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: parked.path)
+        SafeFile.writeAtomic(data, to: parked)
     }
 }
 

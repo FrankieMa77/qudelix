@@ -156,9 +156,7 @@ enum EqSnapshotFile {
             // gesture a corrupt stage.json or profiles.json gets.
             let parked = fileURL.deletingLastPathComponent()
                 .appendingPathComponent(fileURL.lastPathComponent + ".recovered")
-            try? data.write(to: parked, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                                   ofItemAtPath: parked.path)
+            SafeFile.writeAtomic(data, to: parked)
             return EqSnapshotStore()
         }
         return EqSnapshotStore(byGroup: store.byGroup.mapValues(sanitized))
@@ -172,7 +170,7 @@ enum EqSnapshotFile {
         // gets (control/bidi scalars out, length capped).
         s.name = s.name.map(QudelixController.displayName)
         s.preGain = EQHeadroom.clamp(s.preGain)
-        s.bands = s.bands.map { band in
+        s.bands = s.bands.prefix(QxEq.maxBandCount).map { band in
             var b = band
             b.freq = min(max(b.freq, 20), 20000)
             b.gain = b.gain.isFinite ? min(max(b.gain, -12), 12) : 0
@@ -186,8 +184,6 @@ enum EqSnapshotFile {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(store) else { return }
-        try? data.write(to: fileURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: fileURL.path)
+        SafeFile.writeAtomic(data, to: fileURL)
     }
 }

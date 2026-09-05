@@ -22,6 +22,7 @@ struct ImportView: View {
     /// nil is "recommended for this measurement" — resolved per candidate at
     /// apply time, the same as it always has been.
     @State private var selectedTarget: String?
+    @State private var targetPickedByUser = false
     @State private var applying: String?
     /// Deliberately plain `@State`, never `@AppStorage`: it describes what is
     /// playing at this moment, not a preference. Remembering it across launches
@@ -151,10 +152,12 @@ struct ImportView: View {
     private var personalization: some View {
         VStack(alignment: .leading, spacing: 2) {
             targetRow
-            slider("Bass", value: $bassBoost, in: -6...6,
+            slider("Bass", value: $bassBoost, in: CorrectionOptions.bassRange,
+                   step: CorrectionOptions.bassStep,
                    display: String(format: "%+.1f dB", bassBoost),
                    help: "Low-shelf lift on top of the target. 0 dB is the target as published.")
-            slider("Tilt", value: $tilt, in: -1...1,
+            slider("Tilt", value: $tilt, in: CorrectionOptions.tiltRange,
+                   step: CorrectionOptions.tiltStep,
                    display: String(format: "%+.2f", tilt) + " dB/oct",
                    help: "Overall slope. Negative is darker, positive brighter. 0 is the target as published.")
 
@@ -168,8 +171,13 @@ struct ImportView: View {
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                 if bassBoost != 0 || tilt != 0 || selectedTarget != nil {
-                    Button("Reset") { bassBoost = 0; tilt = 0; selectedTarget = nil }
-                        .buttonStyle(.link).font(.system(size: 9))
+                    Button("Reset") {
+                        bassBoost = 0
+                        tilt = 0
+                        selectedTarget = nil
+                        targetPickedByUser = false
+                    }
+                    .buttonStyle(.link).font(.system(size: 9))
                 }
             }
         }
@@ -191,18 +199,26 @@ struct ImportView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize()
                 .frame(width: Self.paramLabelWidth, alignment: .leading)
-            Picker("", selection: $selectedTarget) {
+            Picker("", selection: Binding(get: { selectedTarget },
+                                          set: { pick in
+                                              selectedTarget = pick
+                                              targetPickedByUser = pick != nil
+                                          })) {
                 Text("Recommended for this measurement").tag(String?.none)
                 ForEach(AutoEqService.groupedTargets(optimizer.targets)) { group in
                     Section(group.form?.capitalized ?? "Other targets") {
                         ForEach(group.targets, id: \.label) { target in
-                            Text(target.label).tag(String?(target.label))
+                            Text(verbatim: target.label).tag(String?(target.label))
                         }
                     }
                 }
             }
             .labelsHidden()
             .controlSize(.small)
+            .onChange(of: optimizer.targets) { _, loaded in
+                selectedTarget = AutoEqService.targetSelection(
+                    selectedTarget, pickedByUser: targetPickedByUser, in: loaded)
+            }
         }
         .help("""
             Which published target curve the correction is fitted to, before \
@@ -266,15 +282,15 @@ struct ImportView: View {
     }
 
     private func slider(_ label: String, value: Binding<Double>,
-                        in range: ClosedRange<Double>, display: String,
-                        help: String) -> some View {
+                        in range: ClosedRange<Double>, step: Double,
+                        display: String, help: String) -> some View {
         HStack(spacing: 8) {
             Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize()
                 .frame(width: Self.paramLabelWidth, alignment: .leading)
-            Slider(value: value, in: range)
+            Slider(value: value, in: range, step: step)
                 .controlSize(.small)
             Text(display)
                 .font(.system(size: 10).monospacedDigit())
@@ -293,11 +309,11 @@ struct ImportView: View {
     private var optimizedSection: some View {
         switch optimizer.state {
         case .idle, .loading:
-            Text("Loading headphone catalogue…")
+            Text(verbatim: "Loading \(optimizer.displayName)…")
                 .font(.caption).foregroundStyle(.secondary)
         case .failed(let msg):
             HStack {
-                Text("Couldn't load catalogue: \(msg)")
+                Text(verbatim: "Couldn't load \(optimizer.displayName): \(msg)")
                     .font(.caption).foregroundStyle(.orange)
                 Button("Retry") { optimizer.prepare() }
                     .buttonStyle(.link).font(.caption)
@@ -313,11 +329,11 @@ struct ImportView: View {
     private var publishedSection: some View {
         switch autoEq.state {
         case .idle, .loading:
-            Text("Loading headphone database…")
+            Text(verbatim: "Loading \(autoEq.displayName)…")
                 .font(.caption).foregroundStyle(.secondary)
         case .failed(let msg):
             HStack {
-                Text("Couldn't load database: \(msg)")
+                Text(verbatim: "Couldn't load \(autoEq.displayName): \(msg)")
                     .font(.caption).foregroundStyle(.orange)
                 Button("Retry") { autoEq.loadIfNeeded() }
                     .buttonStyle(.link).font(.caption)
@@ -398,7 +414,7 @@ struct ImportView: View {
         // mode was simply dropped in the other with nothing said.
         let options = CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt,
                                         target: selectedTarget,
-                                        maxCorrectionHz: requestedCeilingHz)
+                                        maxCorrectionHz: requestedCeilingHz).quantized()
         applying = candidate.id
         Task {
             defer { applying = nil }

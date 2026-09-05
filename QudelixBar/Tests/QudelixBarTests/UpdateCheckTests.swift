@@ -90,12 +90,27 @@ final class UpdateCheckTests: XCTestCase {
     /// The check must be refused for any host outside the pinned list, and the
     /// releases host has to be on it or the feature silently never works.
     func testTheReleasesHostIsPinnedAndOthersAreRefused() {
-        XCTAssertTrue(PinnedHTTP.allowedHosts.contains("api.github.com"))
+        XCTAssertTrue(PinnedHTTP.allowedHosts.contains(UpdateCheck.host))
+        XCTAssertNoThrow(
+            try PinnedHTTP.request(URL(string: "https://api.github.com/x")!, accept: "*/*",
+                                   allowing: [UpdateCheck.host]))
         XCTAssertThrowsError(
-            try PinnedHTTP.request(URL(string: "https://example.com/x")!, accept: "*/*"))
+            try PinnedHTTP.request(URL(string: "https://example.com/x")!, accept: "*/*",
+                                   allowing: [UpdateCheck.host]))
         XCTAssertThrowsError(
-            try PinnedHTTP.request(URL(string: "http://api.github.com/x")!, accept: "*/*"),
+            try PinnedHTTP.request(URL(string: "http://api.github.com/x")!, accept: "*/*",
+                                   allowing: [UpdateCheck.host]),
             "plain HTTP must be refused even for an allowed host")
+    }
+
+    func testAnAllowedHostForAnotherFeatureIsStillRefusedHere() {
+        XCTAssertTrue(PinnedHTTP.allowedHosts.contains(AutoEqService.host))
+        XCTAssertThrowsError(
+            try PinnedHTTP.request(URL(string: "https://\(AutoEqService.host)/x")!,
+                                   accept: "*/*", allowing: [UpdateCheck.host]))
+        XCTAssertThrowsError(
+            try PinnedHTTP.request(URL(string: "https://\(UpdateCheck.host)/x")!,
+                                   accept: "*/*", allowing: [AutoEqIndex.host]))
     }
 
     /// A running version the app cannot parse must not produce a confident

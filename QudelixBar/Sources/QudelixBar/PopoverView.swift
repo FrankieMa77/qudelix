@@ -773,6 +773,7 @@ struct BandRow: View {
         let band = controller.bands.indices.contains(index)
             ? controller.bands[index] : QxEqBandValue()
         let muted = controller.isBandMuted(index)
+        let editsGain = band.filter == .bypass || band.filter.hasGain
         GridRow {
             Text("\(index + 1)")
                 .font(.system(size: 9).monospacedDigit())
@@ -800,10 +801,11 @@ struct BandRow: View {
                    in: -12...12,
                    onEditingChanged: { editing in editingBand = editing ? index : nil })
                 .controlSize(.mini)
+                .disabled(!editsGain)
 
-            Text(String(format: "%+.1f", band.gain))
+            Text(editsGain ? String(format: "%+.1f", band.gain) : "—")
                 .font(.system(size: 10).monospacedDigit())
-                .foregroundStyle(band.gain == 0 ? .secondary : .primary)
+                .foregroundStyle(editsGain && band.gain != 0 ? .primary : .secondary)
                 .frame(width: 32, alignment: .trailing)
 
             TextField("", value: Binding(get: { band.q }, set: { set { $0.q = $1 } ($0) }),
@@ -974,7 +976,7 @@ struct UnsupportedDeviceView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
             if let fw = controller.firmwareVersion {
-                Text("Reported firmware \(fw)")
+                Text(verbatim: "Reported firmware \(fw)")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
             }

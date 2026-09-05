@@ -397,12 +397,10 @@ final class StageState: ObservableObject {
                     let existing = Self.readDiagTail(url)
                     let kept = existing.split(separator: "\n").suffix(200)
                         .joined(separator: "\n")
-                    try? (kept + (kept.isEmpty ? "" : "\n") + line)
-                        .write(to: url, atomically: true, encoding: .utf8)
                     // Device names are personal data; same posture as the
                     // packet log.
-                    try? FileManager.default.setAttributes(
-                        [.posixPermissions: 0o600], ofItemAtPath: url.path)
+                    SafeFile.writeAtomic(
+                        Data((kept + (kept.isEmpty ? "" : "\n") + line).utf8), to: url)
                 }
             } else {
                 diagSuppressed += 1

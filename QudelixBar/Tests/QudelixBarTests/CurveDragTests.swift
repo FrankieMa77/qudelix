@@ -91,4 +91,30 @@ final class CurveDragTests: XCTestCase {
             XCTAssertTrue((20...20000).contains(got))
         }
     }
+
+    func testATiedNeighbourStillBlocksTheDrag() {
+        let b = bands([1000, 1000])
+        let lower = EQCurveView.clampedFrequency(200, forBand: 1, in: b)
+        XCTAssertGreaterThan(lower, 1000, "band 1 sits above the tie, and must stay there")
+        let upper = EQCurveView.clampedFrequency(9000, forBand: 0, in: b)
+        XCTAssertLessThan(upper, 1000, "band 0 sits below the tie, and must stay there")
+    }
+
+    func testOrderingIsPreservedAcrossADuplicatedLayout() {
+        let b = bands([500, 500, 500, 500])
+        var placed: [Int] = []
+        for i in 0..<b.count {
+            placed.append(EQCurveView.clampedFrequency(Double(20 + i * 7000), forBand: i, in: b))
+        }
+        XCTAssertEqual(placed, placed.sorted(), "a drag must not reorder the bands: \(placed)")
+    }
+
+    func testPassFiltersMarkAtZeroRegardlessOfTheStoredGain() {
+        var band = QxEqBandValue(filter: .lpf, freq: 8000, gain: -9, q: 0.7)
+        XCTAssertEqual(EQCurveView.markerGain(band), 0)
+        band.filter = .hpf
+        XCTAssertEqual(EQCurveView.markerGain(band), 0)
+        band.filter = .peak
+        XCTAssertEqual(EQCurveView.markerGain(band), -9)
+    }
 }
