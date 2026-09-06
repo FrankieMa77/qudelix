@@ -1093,7 +1093,7 @@ final class QudelixController: ObservableObject {
         }
     }
 
-    private func applyPreset(_ p: QxUserEqPreset) {
+    func applyPreset(_ p: QxUserEqPreset) {
         guard p.bands.count == bandCount else { return }
         // The 20-band layout is derived from the firmware's parser but has not
         // been run against real hardware. If it decodes to nonsense, keep the
@@ -1125,7 +1125,8 @@ final class QudelixController: ObservableObject {
         // instead of being discarded. Clamp it to what the sliders can express
         // and what `updateBand` would write back, so the displayed and exported
         // curve is one we could actually reproduce.
-        preGain = EQHeadroom.clamp(p.preGain)
+        let readBackPreGain = EQHeadroom.clamp(p.preGain)
+        if preGain != readBackPreGain { preGain = readBackPreGain }
         // The two stored channels are meant to agree. If they don't, the device
         // is playing at different levels left and right, and the app cannot
         // show it — one number is all there is room for. Correct it rather than
@@ -1147,13 +1148,14 @@ final class QudelixController: ObservableObject {
         // Crossfeed is part of the preset the device just handed back, so it
         // is only known once a preset decodes cleanly.
         crossfeedLevel = p.crossfeedLevel
-        bands = p.bands.map { band in
+        let readBackBands = p.bands.map { band in
             var v = band
             v.freq = max(20, min(20000, v.freq))
             v.gain = v.gain.isFinite ? max(-12, min(12, v.gain)) : 0
             v.q = v.q.isFinite ? max(0.1, min(10, v.q)) : 1.0
             return v
         }
+        if bands != readBackBands { bands = readBackBands }
         // The device's report ends any mute it disagrees with. A band that
         // came back carrying a real filter is audible again — whatever this
         // app last asked for — so the shape held for it is no longer a way
@@ -1626,15 +1628,25 @@ final class QudelixController: ObservableObject {
 
     /// How much headroom the curve on screen needs, and the pre-gain that
     /// would give it.
-    ///
-    /// Computed on every read rather than cached. A full 20-band curve costs
-    /// about 0.6 ms of biquad arithmetic, which a slider drag can afford,
-    /// while a cache would have to be invalidated from band edits, pre-gain
-    /// writes, preset loads, device read-backs and mode switches to buy
-    /// nothing anyone could see.
     var eqHeadroom: EQHeadroom.Advice {
-        EQHeadroom.advice(for: bands, preGain: preGain)
+        if let memo = headroomMemo, memo.preGain == preGain, memo.bands == bands {
+            return memo.advice
+        }
+        let advice = EQHeadroom.advice(for: bands, preGain: preGain)
+        headroomComputations += 1
+        headroomMemo = HeadroomMemo(bands: bands, preGain: preGain, advice: advice)
+        return advice
     }
+
+    private struct HeadroomMemo {
+        var bands: [QxEqBandValue]
+        var preGain: Double
+        var advice: EQHeadroom.Advice
+    }
+
+    private var headroomMemo: HeadroomMemo?
+
+    private(set) var headroomComputations = 0
 
     /// Take the suggestion. Nothing special about this write: it goes through
     /// `setPreGain`, so it is gated, clamped and snapshotted like a drag of

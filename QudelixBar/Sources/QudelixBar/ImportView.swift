@@ -23,7 +23,9 @@ struct ImportView: View {
     /// apply time, the same as it always has been.
     @State private var selectedTarget: String?
     @State private var targetPickedByUser = false
-    @State private var applying: String?
+    @State private var applyGate = ImportApplyGate()
+    @State private var optimizedResults: [CorrectionCandidate] = []
+    @State private var publishedResults: [CorrectionCandidate] = []
     /// Deliberately plain `@State`, never `@AppStorage`: it describes what is
     /// playing at this moment, not a preference. Remembering it across launches
     /// would silently apply one evening's stream to next month's corrections.
@@ -100,14 +102,19 @@ struct ImportView: View {
                                                                      form: "over-ear",
                                                                      rig: nil)])
                     })
+                    refreshResults()
                     return
                 }
                 #endif
                 prepareActive()
+                refreshResults()
             }
             // Each catalogue is a few hundred kilobytes; fetch the one the user
             // is actually looking at, when they look at it.
             .onChange(of: mode) { _, _ in prepareActive() }
+            .onChange(of: autoEq.query) { _, _ in refreshResults() }
+            .onChange(of: optimizer.models) { _, _ in refreshResults() }
+            .onChange(of: autoEq.entries) { _, _ in refreshResults() }
 
             if mode == .optimized { personalization }
 
@@ -144,6 +151,13 @@ struct ImportView: View {
 
     private var activeSource: any CorrectionSource {
         mode == .optimized ? optimizer : autoEq
+    }
+
+    private func refreshResults() {
+        let optimized = optimizer.search(autoEq.query)
+        if optimized != optimizedResults { optimizedResults = optimized }
+        let published = autoEq.search(autoEq.query)
+        if published != publishedResults { publishedResults = published }
     }
 
     // MARK: - Personalization
@@ -319,7 +333,7 @@ struct ImportView: View {
                     .buttonStyle(.link).font(.caption)
             }
         case .ready:
-            candidateList(optimizer.search(autoEq.query),
+            candidateList(optimizedResults,
                           total: optimizer.models.count,
                           noun: "headphones")
         }
@@ -339,14 +353,12 @@ struct ImportView: View {
                     .buttonStyle(.link).font(.caption)
             }
         case .ready:
-            candidateList(autoEq.search(autoEq.query),
+            candidateList(publishedResults,
                           total: autoEq.entries.count,
                           noun: "presets")
         }
     }
 
-    /// Takes the filtered list as a parameter so the several-thousand-entry
-    /// scan runs once per keystroke rather than once per read.
     @ViewBuilder
     private func candidateList(_ results: [CorrectionCandidate],
                                total: Int, noun: String) -> some View {
@@ -387,7 +399,7 @@ struct ImportView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if applying == candidate.id {
+                if applyGate.isApplying(candidate.id) {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: mode == .optimized ? "wand.and.stars" : "arrow.down.circle")
@@ -400,11 +412,13 @@ struct ImportView: View {
             .padding(.vertical, 3)
         }
         .buttonStyle(.plain)
+        .disabled(applyGate.isBusy && !applyGate.isApplying(candidate.id))
     }
 
     // MARK: - Apply
 
     private func apply(_ candidate: CorrectionCandidate) {
+        guard applyGate.begin(candidate.id) else { return }
         let source = activeSource
         // Everything the user asked for goes to both sources, including the
         // two personalization sliders. The published path can honour none of
@@ -415,9 +429,8 @@ struct ImportView: View {
         let options = CorrectionOptions(bassBoostGain: bassBoost, tilt: tilt,
                                         target: selectedTarget,
                                         maxCorrectionHz: requestedCeilingHz).quantized()
-        applying = candidate.id
         Task {
-            defer { applying = nil }
+            defer { applyGate.finish(candidate.id) }
             do {
                 let result = try await source.correction(for: candidate, shapedFor: limits,
                                                          options: options)
@@ -503,5 +516,24 @@ struct ImportView: View {
             guard response == .OK, let url = panel.url else { return }
             try? controller.exportText().write(to: url, atomically: true, encoding: .utf8)
         }
+    }
+}
+
+struct ImportApplyGate: Equatable {
+    private(set) var applying: String?
+
+    var isBusy: Bool { applying != nil }
+
+    func isApplying(_ id: String) -> Bool { applying == id }
+
+    mutating func begin(_ id: String) -> Bool {
+        guard applying == nil else { return false }
+        applying = id
+        return true
+    }
+
+    mutating func finish(_ id: String) {
+        guard applying == id else { return }
+        applying = nil
     }
 }
