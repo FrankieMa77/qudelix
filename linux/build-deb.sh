@@ -56,6 +56,7 @@ fi
 
 cp "$BINARY" "$STAGE_DIR/usr/bin/qudelix"
 chmod 0755 "$STAGE_DIR/usr/bin/qudelix"
+if command -v strip &>/dev/null; then strip --strip-unneeded "$STAGE_DIR/usr/bin/qudelix"; fi
 
 cp "$SCRIPT_DIR/udev/70-qudelix.rules" "$STAGE_DIR/lib/udev/rules.d/"
 
@@ -75,7 +76,7 @@ Architecture: $ARCH
 Maintainer: FrankieMa77 <alexei.magonov@gmail.com>
 Section: sound
 Priority: optional
-Depends: libc6, libdbus-1-3, udev
+Depends: libc6, libstdc++6, libcurl4, libdbus-1-3, udev
 Homepage: https://github.com/FrankieMa77/qudelix
 Description: Command-line control for the Qudelix 5K DAC/amp
  The qudelix utility provides command-line access to the Qudelix 5K
