@@ -96,10 +96,4 @@ struct AIKeychain {
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         return store.copy(q).status == errSecSuccess
     }
-
-    static func printable(_ raw: String) -> String {
-        let kept = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            .unicodeScalars.filter { (0x21...0x7E).contains($0.value) }
-        return String(String.UnicodeScalarView(kept))
-    }
 }

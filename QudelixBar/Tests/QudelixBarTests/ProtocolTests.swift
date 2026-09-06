@@ -335,7 +335,6 @@ final class ProtocolTests: XCTestCase {
 
     // MARK: - String scrubbing
 
-    @MainActor
     func testDisplayNameScrubsControlAndBidi() {
         let hostile = "Qude\u{202E}lix\nX" + String(repeating: "A", count: 100)
         let cleaned = QudelixController.displayName(hostile)
@@ -361,7 +360,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(capped, String(repeating: "A", count: 16) + "…")
     }
 
-    @MainActor
     func testDisplayNameDropsTheMarksTheCategoryFilterMisses() {
         let hostile = "Qu\u{FE0F}de\u{115F}li\u{3164}x\u{E0041}"
         XCTAssertEqual(QudelixController.displayName(hostile), "Qudelix")

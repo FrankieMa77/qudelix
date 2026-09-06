@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// The Soundstage controls: stereo-derived spaciousness for headphones.
 /// Everything here works on the stereo mix the Mac is playing — it widens,
@@ -257,7 +260,11 @@ enum SafeFile {
         var data = Data()
         var chunk = [UInt8](repeating: 0, count: 64 << 10)
         while true {
+#if canImport(Glibc)
+            let n = chunk.withUnsafeMutableBytes { Glibc.read(fd, $0.baseAddress, $0.count) }
+#else
             let n = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+#endif
             if n < 0 {
                 if errno == EINTR { continue }
                 return nil
@@ -280,8 +287,13 @@ enum SafeFile {
         guard fd >= 0 else { return false }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         let written = (try? handle.write(contentsOf: data)) != nil
+#if canImport(Glibc)
+        if written { Glibc.fsync(fd) }
+        Glibc.close(fd)
+#else
         if written { Darwin.fsync(fd) }
         Darwin.close(fd)
+#endif
         let renamed = written && temp.withUnsafeFileSystemRepresentation { from -> Bool in
             guard let from else { return false }
             return url.withUnsafeFileSystemRepresentation { to -> Bool in

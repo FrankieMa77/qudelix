@@ -12,14 +12,8 @@ final class Notifier: NSObject {
     static let canNotify = canPost(bundleIdentifier: Bundle.main.bundleIdentifier,
                                    bundleURL: Bundle.main.bundleURL)
 
-    nonisolated static let maxIdentifierLength = 64
     nonisolated static let maxTitleLength = 120
     nonisolated static let maxBodyLength = 160
-
-    nonisolated static func identifier(_ prefix: String, _ raw: String = "") -> String {
-        String((prefix + SafeText.scrubbed(raw, limit: maxIdentifierLength))
-            .prefix(maxIdentifierLength))
-    }
 
     private var delegateInstalled = false
 

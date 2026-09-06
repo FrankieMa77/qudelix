@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Parsing and fetching of parametric-EQ presets.
 ///
@@ -278,6 +281,19 @@ enum PinnedHTTP {
               hosts.contains(host), allowedHosts.contains(host) else {
             throw URLError(.badURL)
         }
+#if os(Linux)
+        let (body, response) = try await session.data(for: request, delegate: delegate)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw HTTPStatusError(status: http.statusCode,
+                                  body: String(data: body.prefix(maxErrorBodyBytes),
+                                               encoding: .utf8) ?? "")
+        }
+        guard body.count <= limit else { throw URLError(.dataLengthExceedsMaximum) }
+        return body
+#else
         let (stream, response) = try await session.bytes(for: request, delegate: delegate)
         guard let http = response as? HTTPURLResponse else {
             stream.task.cancel()
@@ -309,6 +325,7 @@ enum PinnedHTTP {
             }
         }
         return data
+#endif
     }
 }
 
