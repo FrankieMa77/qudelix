@@ -80,7 +80,8 @@ enum CLI {
       --verbose                 mirror the packet log to stderr
       --help                    print this text
 
-    exit codes: 0 ok · 1 device error or timeout · 2 usage error · 3 no transport
+    exit codes: 0 ok · 1 the device answered and then failed · 2 usage error
+                3 no transport reached the device
     """
 
     static func parse(_ arguments: [String]) throws -> CLIInvocation {
@@ -335,7 +336,7 @@ enum QudelixCLI {
         }
 
         var connected: QxSession?
-        var failure: Error?
+        var failures: [(kind: QxLinkKind, error: Error)] = []
         for link in links {
             let session = QxSession(link: link, timeout: invocation.options.timeout)
             do {
@@ -343,26 +344,62 @@ enum QudelixCLI {
                 connected = session
                 break
             } catch {
-                failure = error
+                failures.append((link.kind, error))
                 session.close()
             }
         }
         guard let session = connected else {
-            if let advice = Probe.permissionAdvice(Probe.report(.system())) {
-                StdIO.error("qudelix: " + advice)
-                return CLIExit.noTransport
+            let report = Probe.report(.system())
+            let sawUsbNode = report.nodes.contains { $0.isQudelix }
+            for failure in failures {
+                StdIO.error("qudelix: \(failure.kind.rawValue): "
+                    + connectFailureText(failure.error, kind: failure.kind,
+                                         sawUsbNode: sawUsbNode))
             }
-            StdIO.error("qudelix: " + describe(failure ?? QxSessionError.linkClosed))
-            return CLIExit.deviceError
+            if let advice = Probe.permissionAdvice(report) {
+                StdIO.error("qudelix: " + advice)
+            }
+            return failures.allSatisfy { isMissingTransport($0.error) }
+                ? CLIExit.noTransport : CLIExit.deviceError
         }
         defer { session.close() }
 
         do {
             try await execute(invocation, session)
+            if persistsToFlash(invocation.command) { try await session.saveAll() }
             return CLIExit.ok
+        } catch let error as CLIUsageError {
+            StdIO.error("qudelix: " + error.message)
+            return CLIExit.usageError
         } catch {
             StdIO.error("qudelix: " + describe(error))
             return CLIExit.deviceError
+        }
+    }
+
+    static func isMissingTransport(_ error: Error) -> Bool {
+        guard let session = error as? QxSessionError else { return false }
+        switch session {
+        case .linkUnusable: return true
+        case .timedOut(let what): return what == QxSession.deviceAppearance
+        default: return false
+        }
+    }
+
+    static func connectFailureText(_ error: Error, kind: QxLinkKind,
+                                   sawUsbNode: Bool) -> String {
+        if kind == .usb, !sawUsbNode,
+           let session = error as? QxSessionError,
+           case .timedOut(QxSession.deviceAppearance) = session {
+            return "no Qudelix 5K found on USB (no matching /dev/hidraw node)"
+        }
+        return describe(error)
+    }
+
+    static func persistsToFlash(_ command: CLICommand) -> Bool {
+        switch command {
+        case .importFile, .presetPush, .eqEnable: return true
+        default: return false
         }
     }
 
@@ -523,11 +560,12 @@ enum QudelixCLI {
             report(json, text: "wrote \(path)", object: ["path": path])
 
         case .presetPush(let path):
-            let record = try loadSnapshotFile(path, group: await session.snapshot().eqGroup)
+            let group = await session.snapshot().eqGroup
+            let record = try loadSnapshotFile(path, group: group)
             var file = ParametricEQFile()
             file.preamp = record.preGain
             file.bands = record.bands
-            let applied = try await session.applyParametric(file)
+            let applied = try await session.applyParametric(file, expecting: group)
             if !record.enabled { try await session.setEqEnabled(false) }
             if json {
                 StdIO.out(QxFormat.json(QxFormat.eqObject(preGain: applied.preGain,

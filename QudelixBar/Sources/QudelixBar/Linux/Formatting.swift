@@ -9,10 +9,6 @@ enum Trace {
         StdIO.error("[log] " + DebugLog.sanitized(msg))
     }
 
-    static func tx(_ cmd: QxCmd, _ data: [UInt8]) {
-        log("→ \(cmd) \(hex(data))")
-    }
-
     static func rx(_ cmdId: UInt16, _ data: [UInt8]) {
         let name = QxCmd(rawValue: cmdId).map { "\($0)" } ?? String(format: "0x%04X", cmdId)
         log("← \(name) \(hex(data))")

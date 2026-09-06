@@ -63,6 +63,11 @@ final class FakeLink: QxLink {
         onDisconnected?()
     }
 
+    func declareUnusable(_ reason: String) {
+        isConnected = false
+        onLinkUnusable?(reason)
+    }
+
     func deliver(_ cmd: QxCmd, _ data: [UInt8]) {
         deliverRaw(QxFixtures.report(cmd, data))
     }
@@ -192,7 +197,8 @@ extension QxFixtures {
                               nameMask: Int = 0,
                               preGain: Double = -3,
                               bands: [QxEqBandValue] = QxFixtures.tenBands,
-                              dacFilter: Int = 3) -> FakeLink {
+                              dacFilter: Int = 3,
+                              eqEnabled: Bool = true) -> FakeLink {
         let link = FakeLink()
         link.onSend = { [weak link] cmd, data in
             guard let link else { return }
@@ -205,7 +211,7 @@ extension QxFixtures {
                 if data.first == (QxConfigMask.sys2 | QxConfigMask.eq) {
                     link.deliver(.rspDevConfig,
                                  QxFixtures.eqConfig(presetIndex: presetIndex,
-                                                     enabled: true,
+                                                     enabled: eqEnabled,
                                                      nameMask: nameMask))
                 } else {
                     link.deliver(.rspDevConfig, QxFixtures.dacConfig(filter: dacFilter))
@@ -232,10 +238,12 @@ final class QxSessionTests: XCTestCase {
                                nameMask: Int = 0,
                                preGain: Double = -3,
                                bands: [QxEqBandValue] = QxFixtures.tenBands,
-                               dacFilter: Int = 3) -> FakeLink {
+                               dacFilter: Int = 3,
+                               eqEnabled: Bool = true) -> FakeLink {
         QxFixtures.answeringLink(volumeDb: volumeDb, presetIndex: presetIndex,
                                  nameMask: nameMask, preGain: preGain,
-                                 bands: bands, dacFilter: dacFilter)
+                                 bands: bands, dacFilter: dacFilter,
+                                 eqEnabled: eqEnabled)
     }
 
     private func connected(_ link: FakeLink, timeout: TimeInterval = 2) async throws -> QxSession {
@@ -375,7 +383,7 @@ final class QxSessionTests: XCTestCase {
     }
 
     func testApplyParametricSendsEnableTypePreGainAndOneWritePerBand() async throws {
-        let link = answeringLink()
+        let link = answeringLink(eqEnabled: false)
         let session = try await connected(link)
         defer { session.close() }
         link.clearSends()
@@ -420,6 +428,73 @@ final class QxSessionTests: XCTestCase {
         for write in bandWrites.dropFirst(2) {
             XCTAssertEqual(write[3], QxFilter.bypass.rawValue)
         }
+    }
+
+    func testApplyParametricLeavesAnAlreadyEnabledEqAlone() async throws {
+        let link = answeringLink(eqEnabled: true)
+        let session = try await connected(link)
+        defer { session.close() }
+        link.clearSends()
+
+        var file = ParametricEQFile()
+        file.preamp = -3
+        file.bands = [QxEqBandValue(filter: .peak, freq: 1000, gain: 2, q: 1)]
+        _ = try await session.applyParametric(file)
+
+        XCTAssertTrue(link.payloads(for: .setEqEnable).isEmpty)
+        XCTAssertEqual(link.sentCommands.first, .setEqType)
+        XCTAssertEqual(link.payloads(for: .setEqBandParam).count, 10)
+    }
+
+    func testApplyParametricRefusesWhenTheGroupChangedUnderIt() async throws {
+        let link = answeringLink()
+        let session = try await connected(link)
+        defer { session.close() }
+        link.clearSends()
+
+        var file = ParametricEQFile()
+        file.preamp = 0
+        file.bands = [QxEqBandValue(filter: .peak, freq: 1000, gain: 2, q: 1)]
+        do {
+            _ = try await session.applyParametric(file, expecting: .b20)
+            XCTFail("a group change should have refused the write")
+        } catch let error as QxSessionError {
+            guard case .rejectedValue(let why) = error else {
+                return XCTFail("expected a rejection, got \(error)")
+            }
+            XCTAssertTrue(why.contains("nothing was written"), why)
+        }
+        XCTAssertTrue(link.sent.isEmpty)
+    }
+
+    func testAnUnusableLinkFailsPendingWaitsWithItsOwnReason() async throws {
+        let link = FakeLink()
+        let session = QxSession(link: link, timeout: 2)
+        async let connecting: Void = session.connect(timeout: 2)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        link.declareUnusable("BlueZ is not on the system bus")
+        do {
+            try await connecting
+            XCTFail("connect should not have resolved")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .linkUnusable("BlueZ is not on the system bus"))
+            XCTAssertEqual(error.description, "BlueZ is not on the system bus")
+        }
+        session.close()
+    }
+
+    func testWaitingForTheDeviceUsesTheSharedLabel() async {
+        let link = FakeLink()
+        let session = QxSession(link: link, timeout: 0.2)
+        do {
+            try await session.connect(timeout: 0.2)
+            XCTFail("connect should not have resolved")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .timedOut(QxSession.deviceAppearance))
+        } catch {
+            XCTFail("expected a QxSessionError, got \(error)")
+        }
+        session.close()
     }
 
     func testDisallowedCommandThrowsBeforeReachingTheLink() async throws {

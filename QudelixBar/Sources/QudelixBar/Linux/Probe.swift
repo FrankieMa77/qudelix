@@ -170,7 +170,7 @@ enum Probe {
         guard !blocked.isEmpty else { return nil }
         let paths = blocked.map(\.devicePath).joined(separator: ", ")
         return "permission denied opening \(paths) — install the udev rule "
-            + "(/etc/udev/rules.d/70-qudelix.rules), run "
+            + "(/lib/udev/rules.d/70-qudelix.rules), run "
             + "'sudo udevadm control --reload-rules && sudo udevadm trigger', "
             + "then unplug and replug the device"
     }
