@@ -33,11 +33,9 @@ struct PopoverView: View {
             case .level: return "gauge.with.needle"
             }
         }
-        /// The Stage and Level features run on the Mac, not the 5K, so their
-        /// panes work with the device away.
         var needsDevice: Bool {
             switch self {
-            case .stage, .level: return false
+            case .presets, .stage, .level: return false
             default: return true
             }
         }
@@ -91,10 +89,10 @@ struct PopoverView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
 
-                        if pane == .level {
-                            ScrollView { LevelView() }
-                        } else {
-                            ScrollView { StageView() }
+                        switch pane {
+                        case .presets: ScrollView { PresetsView() }
+                        case .level: ScrollView { LevelView() }
+                        default: ScrollView { StageView() }
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -174,10 +172,10 @@ struct PopoverView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
 
-                        if pane == .level {
-                            ScrollView { LevelView() }
-                        } else {
-                            ScrollView { StageView() }
+                        switch pane {
+                        case .presets: ScrollView { PresetsView() }
+                        case .level: ScrollView { LevelView() }
+                        default: ScrollView { StageView() }
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -229,14 +227,17 @@ struct PopoverView: View {
                     .accessibilityHidden(true)
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
+                let isTheDevice = A2dpGuard.isTheDevice(
+                    hijackName: hijack.name, connectedName: connectedName)
                 VStack(alignment: .leading, spacing: 1) {
-                    (Text(verbatim: hijack.name) + Text(" took the microphone"))
+                    (isTheDevice
+                     ? Text("The 5K switched to call mode")
+                     : Text(verbatim: hijack.name) + Text(" took the microphone"))
                         .font(.system(size: 10, weight: .medium))
                         .lineLimit(1)
                     Text(A2dpGuard.bannerDetail(
                         reason: hijack.reason,
-                        isTheDevice: A2dpGuard.isTheDevice(
-                            hijackName: hijack.name, connectedName: connectedName),
+                        isTheDevice: isTheDevice,
                         deviceInputSource: controller.inputSource))
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
@@ -275,7 +276,8 @@ struct PopoverView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(verbatim: HeadphoneSuggestions.headline(offered.entry.title))
                         .font(.system(size: 10, weight: .medium))
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(verbatim: HeadphoneSuggestions.bannerDetail(
                         source: offered.entry.source, bandCount: controller.bandCount))
                         .font(.system(size: 9))
@@ -360,7 +362,7 @@ struct DeviceHeader: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(deviceName)
+                Text(verbatim: deviceName)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -372,7 +374,7 @@ struct DeviceHeader: View {
                             .foregroundStyle(.secondary)
                             .help(linkHelp)
                     }
-                    Text(statusLine)
+                    Text(verbatim: statusLine)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -396,6 +398,8 @@ struct DeviceHeader: View {
                 }
                 .padding(.horizontal, 7).padding(.vertical, 3)
                 .background(.quaternary.opacity(0.5), in: Capsule())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(verbatim: batteryAccessibility(batt)))
                 .help(batteryHelp(batt))
             }
 
@@ -490,6 +494,18 @@ struct DeviceHeader: View {
         if p <= BatteryAlerts.lowThreshold { return .orange }
         return .secondary
     }
+    private func batteryAccessibility(_ p: Int) -> String {
+        var text = "Battery \(p) percent"
+        if controller.charging {
+            text += ", charging"
+        } else if p <= BatteryAlerts.veryLowThreshold {
+            text += ", very low"
+        } else if p <= BatteryAlerts.lowThreshold {
+            text += ", low"
+        }
+        return text
+    }
+
     private func batteryHelp(_ p: Int) -> String {
         // With battery care on, a plugged-in 5K sitting well short of full is
         // the normal, healthy state — so the hover has to be able to say
@@ -802,6 +818,8 @@ struct EqEditorView: View {
                 .opacity(controller.eqEnabled ? 1 : 0.45)
                 .disabled(!controller.eqEnabled)
 
+            Divider()
+
             HStack {
                 Button("Flatten") { controller.flatten() }
                     .help("Take every band's gain to zero, keeping the "
@@ -825,14 +843,19 @@ struct EqEditorView: View {
                 .help("EQ bands. The two modes keep separate presets, so "
                       + "switching changes the active curve.")
                 Spacer()
-                if let active = controller.activePreset {
-                    Button("Update") { controller.savePreset(active) }
-                        .disabled(!controller.canWriteNow)
-                        .help("Overwrite \(controller.presetLabel(active)) with the current EQ")
+                Button("Update") {
+                    guard let active = controller.activePreset else { return }
+                    controller.savePreset(active)
                 }
-                Menu("Save to…") {
+                .disabled(controller.activePreset == nil || !controller.canWriteNow)
+                .help(updateHelp)
+                Menu("Save to slot…") {
                     ForEach(0..<QudelixController.presetCount, id: \.self) { i in
-                        Button(controller.presetLabel(i)) { controller.savePreset(i) }
+                        Button {
+                            controller.savePreset(i)
+                        } label: {
+                            Text(verbatim: controller.presetLabel(i))
+                        }
                     }
                 }
                 .fixedSize()
@@ -841,6 +864,14 @@ struct EqEditorView: View {
             .font(.system(size: 11))
         }
         .frame(maxHeight: .infinity)
+    }
+
+    private var updateHelp: Text {
+        guard let active = controller.activePreset else {
+            return Text("No slot is active \u{2014} load or save one first.")
+        }
+        return Text(verbatim: "Overwrite " + controller.presetLabel(active)
+                    + " with the current EQ")
     }
 
     private var undoButton: some View {
@@ -929,6 +960,7 @@ extension EqEditorView {
             }
         }
         ScrollView { grid.padding(.trailing, 4) }
+            .scrollIndicators(.visible)
     }
 }
 
@@ -1116,29 +1148,54 @@ struct BandRow: View {
 
 // MARK: - Presets pane
 
+enum PresetSectionStorage {
+    static let slotsOpen = "presets.section.slots.open"
+    static let libraryOpen = "presets.section.library.open"
+}
+
 struct PresetsView: View {
     @EnvironmentObject var controller: QudelixController
-    /// Which slot is being renamed, and the text so far. Held here rather than
-    /// per row so only one row can be in edit mode at a time.
     @State private var renaming: Int?
     @State private var draftName = ""
+    @State private var confirmingSave: Int?
     @FocusState private var nameFocused: Bool
+    @AppStorage(PresetSectionStorage.slotsOpen) private var slotsExpanded = true
+
+    static let offlineNote = "The 5K isn\u{2019}t connected. You can organise presets "
+        + "here; applying one needs the device."
+    static let saveHereLabel = "Save here"
+    static let overwriteTitle = "Replace the preset in this slot?"
+
+    static func overwriteMessage(slot: Int, name: String) -> String {
+        "Slot \(slot + 1), \u{201C}" + name + "\u{201D}, holds a preset on the "
+            + "device. Writing replaces it, and the device keeps no copy."
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("On the 5K").font(.system(size: 11, weight: .medium))
-            if controller.activePreset == nil {
-                Text("Current EQ is a custom setting, not a saved slot.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            if !connected {
+                Text(verbatim: Self.offlineNote)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            ScrollView {
-                VStack(spacing: 3) {
+
+            DisclosureGroup(isExpanded: $slotsExpanded) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if controller.activePreset == nil {
+                        Text("Current EQ is a custom setting, not a saved slot.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
                     ForEach(0..<QudelixController.presetCount, id: \.self) { i in
                         presetRow(i)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+            } label: {
+                Text("On the 5K").font(.system(size: 11, weight: .medium))
             }
-            .frame(height: 64)
 
             Divider()
             PresetLibraryView()
@@ -1152,11 +1209,43 @@ struct PresetsView: View {
             Divider()
             ProfilesView()
         }
+        .confirmationDialog(Text(Self.overwriteTitle),
+                            isPresented: Binding(
+                                get: { confirmingSave != nil },
+                                set: { if !$0 { confirmingSave = nil } }),
+                            titleVisibility: .visible,
+                            presenting: confirmingSave) { slot in
+            Button(Self.saveHereLabel) {
+                controller.savePreset(slot)
+                confirmingSave = nil
+            }
+            Button("Cancel", role: .cancel) { confirmingSave = nil }
+        } message: { slot in
+            Text(verbatim: Self.overwriteMessage(
+                slot: slot, name: controller.presetNames[slot] ?? ""))
+        }
+    }
+
+    private var connected: Bool {
+        if case .connected = controller.connection { return true }
+        return false
+    }
+
+    private var eqWriteRefusal: Text {
+        Text("The 5K isn\u{2019}t taking EQ writes right now.")
     }
 
     private func commitRename(_ i: Int) {
         controller.setPresetName(i, draftName)
         renaming = nil
+    }
+
+    private func saveToSlot(_ i: Int) {
+        if controller.presetNames[i] != nil {
+            confirmingSave = i
+        } else {
+            controller.savePreset(i)
+        }
     }
 
     private func presetRow(_ i: Int) -> some View {
@@ -1168,7 +1257,8 @@ struct PresetsView: View {
                 .foregroundStyle(.tertiary)
                 .frame(width: 16, alignment: .trailing)
             if renaming == i {
-                TextField("", text: $draftName)
+                TextField("", text: $draftName,
+                          prompt: Text("Name \u{2014} leave empty to clear"))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 11))
                     .controlSize(.small)
@@ -1181,7 +1271,7 @@ struct PresetsView: View {
                     .controlSize(.mini)
                     .font(.system(size: 10))
             } else {
-                Text(controller.presetLabel(i))
+                Text(verbatim: controller.presetLabel(i))
                     .font(.system(size: 11, weight: isActive ? .semibold : .regular))
                     .foregroundStyle(named ? .primary : .secondary)
                     .lineLimit(1)
@@ -1196,23 +1286,30 @@ struct PresetsView: View {
                     nameFocused = true
                 } label: {
                     Image(systemName: "pencil").font(.system(size: 9))
-                        .accessibilityLabel("Rename \(controller.presetLabel(i))")
+                        .accessibilityLabel(Text(verbatim: "Rename "
+                                                 + controller.presetLabel(i)))
                 }
                 .controlSize(.mini)
                 .disabled(!controller.canWriteNow)
-                .help("Rename this slot on the device. Clear the text to remove the name.")
+                .help(Text("Rename this slot on the device."))
                 Button("Load") { controller.loadPreset(i) }
                     .controlSize(.mini)
                     .disabled(!controller.canEditEqNow)
                     .font(.system(size: 10))
-                Button {
-                    controller.savePreset(i)
-                } label: {
-                    Image(systemName: "square.and.arrow.down").font(.system(size: 9))
-                        .accessibilityLabel("Save the current EQ to \(controller.presetLabel(i))")
-                }
-                .controlSize(.mini)
-                .help("Overwrite this slot with the current EQ")
+                    .accessibilityLabel(Text(verbatim: "Load "
+                                             + controller.presetLabel(i)))
+                    .help(controller.canEditEqNow
+                          ? Text(verbatim: "Load " + controller.presetLabel(i))
+                          : eqWriteRefusal)
+                Button(Self.saveHereLabel) { saveToSlot(i) }
+                    .controlSize(.mini)
+                    .disabled(!controller.canEditEqNow)
+                    .font(.system(size: 10))
+                    .accessibilityLabel(Text(verbatim: "Save the current EQ to "
+                                             + controller.presetLabel(i)))
+                    .help(controller.canEditEqNow
+                          ? Text("Overwrite this slot with the current EQ")
+                          : eqWriteRefusal)
             }
         }
         .padding(.horizontal, 7).padding(.vertical, 4)
@@ -1328,7 +1425,7 @@ struct FooterBar: View {
                     Image(systemName: "mic")
                         .font(.system(size: 10))
                         .accessibilityHidden(true)
-                    Text("Mic \(micGuard.mode.shortLabel)")
+                    Text(verbatim: "Mic: " + micGuard.mode.shortLabel.lowercased())
                         .font(.system(size: 10))
                 }
             }

@@ -514,7 +514,7 @@ final class PerAppEqTests: XCTestCase {
         XCTAssertFalse(row?.state.contains("per-app") ?? true)
     }
     @MainActor
-    func testThePresetsPaneStillFitsWithTheAppsSectionOpenAndPopulated() {
+    func testThePresetsPaneFitsFoldedAndGrowsWhenTheAppsSectionOpens() {
         let controller = QudelixController()
         controller.connection = .connected(name: "Qudelix-5K USB DAC")
         controller.compatibility = .ok
@@ -541,7 +541,6 @@ final class PerAppEqTests: XCTestCase {
                 RunningAudioProcess(bundleID: "com.running.\($0)", pid: pid_t(10 + $0),
                                     object: AudioObjectID(10 + $0), playing: true)
             })
-        apps.previewExpanded = true
 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("apps-pane-test-\(UUID().uuidString)")
@@ -550,28 +549,73 @@ final class PerAppEqTests: XCTestCase {
             research: AIResearchStore(directory: directory),
             defaults: UserDefaults(suiteName: "qudelixbar.tests.apps") ?? .standard)
 
-        let root = PresetsView()
-            .environmentObject(controller)
-            .environmentObject(StageState())
-            .environmentObject(ProfileRules())
-            .environmentObject(library)
-            .environmentObject(apps)
-            .environmentObject(studio)
-            .environmentObject(HeadphoneSuggestions(library: library))
-            .environmentObject(ABTuner())
-            .environmentObject(ToneTester())
-            .environmentObject(BlindTuner())
-            .frame(width: 372)
+        func measure(appsOpen: Bool) -> CGFloat {
+            apps.previewExpanded = appsOpen
+            let root = PresetsView()
+                .environmentObject(controller)
+                .environmentObject(StageState())
+                .environmentObject(ProfileRules())
+                .environmentObject(library)
+                .environmentObject(apps)
+                .environmentObject(studio)
+                .environmentObject(HeadphoneSuggestions(library: library))
+                .environmentObject(ABTuner())
+                .environmentObject(ToneTester())
+                .environmentObject(BlindTuner())
+                .defaultAppStorage(PaneProbe.foldedDefaults(
+                    suite: "qudelixbar.tests.apps.folded"))
+                .frame(width: 372)
+            let host = NSHostingView(rootView: AnyView(root))
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+        }
 
-        let host = NSHostingView(rootView: AnyView(root))
-        host.layoutSubtreeIfNeeded()
-        let wanted = host.fittingSize.height
-        print(String(format: "presets (apps open): content %.1f pt vs %.0f pt pane — %@",
-                     wanted, PopoverView.contentHeight,
-                     wanted <= PopoverView.contentHeight ? "fits" : "OVERFLOWS"))
+        let folded = measure(appsOpen: false)
+        let open = measure(appsOpen: true)
+        print(String(format: "presets: folded %.1f pt, apps open %.1f pt, pane %.0f pt",
+                     folded, open, PopoverView.contentHeight))
         XCTAssertLessThanOrEqual(
-            wanted, PopoverView.contentHeight,
-            "the Presets pane overflows with the Apps section open: \(wanted) pt")
+            folded, PopoverView.contentHeight,
+            "the Presets pane overflows with every section folded: \(folded) pt")
+        XCTAssertGreaterThan(
+            open, folded,
+            "the Apps section is still clipped to a fixed body instead of laying "
+                + "out at its natural height inside the pane's own scroller")
+    }
+
+    @MainActor
+    func testTheIconCacheLooksEachBundleUpOnceAndForgetsOnWorkspaceChanges() {
+        var lookups: [String] = []
+        let cache = AppIconCache(watchingWorkspace: false) { id in
+            lookups.append(id)
+            return id == "com.has.icon" ? NSImage(size: NSSize(width: 1, height: 1)) : nil
+        }
+        XCTAssertNotNil(cache.icon(for: "com.has.icon"))
+        XCTAssertNotNil(cache.icon(for: "com.has.icon"))
+        XCTAssertNil(cache.icon(for: "com.no.icon"))
+        XCTAssertNil(cache.icon(for: "com.no.icon"))
+        XCTAssertEqual(lookups, ["com.has.icon", "com.no.icon"],
+                       "a miss must be cached too, or every body evaluation asks "
+                           + "the workspace again")
+        cache.forget()
+        XCTAssertNil(cache.icon(for: "com.no.icon"))
+        XCTAssertEqual(lookups.count, 3)
+    }
+
+    @MainActor
+    func testTheIconCacheStaysBounded() {
+        let cache = AppIconCache(watchingWorkspace: false) { _ in nil }
+        for i in 0...AppIconCache.limit { _ = cache.icon(for: "com.app.\(i)") }
+        XCTAssertLessThanOrEqual(cache.count, AppIconCache.limit)
+    }
+
+    func testThePerAppCopyNamesTheStateTheRowIsIn() {
+        XCTAssertEqual(AppsSection.noCurveLabel, "No curve")
+        XCTAssertTrue(AppsSection.offNotice.contains("Per-app EQ is off"))
+        XCTAssertTrue(AppsSection.emptyNotice.hasPrefix("No apps are playing."))
+        XCTAssertTrue(AppsSection.missingPresetNotice.contains("was deleted"))
+        XCTAssertTrue(AppsSection.fullNotice
+            .hasPrefix("\(AppAssignments.maxAssignments) apps is the limit"))
     }
 
     @MainActor

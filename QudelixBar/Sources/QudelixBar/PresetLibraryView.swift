@@ -13,70 +13,87 @@ struct PresetLibraryView: View {
     @State private var renaming: UUID?
     @State private var renameDraft = ""
     @State private var showOthers = false
+    @State private var deleting: LibraryPreset?
     @FocusState private var nameFocused: Bool
+    @AppStorage(PresetSectionStorage.libraryOpen) private var expanded = true
 
     private var outputUID: String? { profileRules.currentOutputUID }
     private var outputName: String { profileRules.currentOutputName ?? "" }
     private var mine: [LibraryPreset] { library.visible(for: outputUID) }
     private var others: [LibraryPreset] { library.otherOutputs(for: outputUID) }
 
-    static let scrollHeight: CGFloat = 90
+    static let saveButtonLabel = "Save to library\u{2026}"
+    static let applyLinkLabel = "Apply"
+    static let deleteMessage = "This preset is only on this Mac. It can\u{2019}t be "
+        + "recovered."
+
+    static func deleteTitle(_ name: String) -> String {
+        "Delete \u{201C}" + name + "\u{201D}?"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            header
-            headphoneRow
-            suggestionRow
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Used to find measurements and corrections for the pair you "
-                        + "actually wear.")
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                headphoneRow
+                suggestionRow
+
+                Text("Used to find measurements and corrections for the pair you "
+                    + "actually wear.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if saving { saveRow }
+
+                if controller.activePreset == nil {
+                    Text("Your current EQ is a custom setting that isn't saved to a "
+                        + "slot — applying a preset will replace it.")
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
+                }
 
-                    if saving { saveRow }
+                if let message = library.lastMessage { messageRow(message) }
 
-                    if controller.activePreset == nil {
-                        Text("Your current EQ is a custom setting that isn't saved to a "
-                            + "slot — applying a preset will replace it.")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                if mine.isEmpty {
+                    Text("Nothing saved on this Mac yet.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(mine) { row($0, dimmed: false) }
+                }
 
-                    if let message = library.lastMessage {
-                        Text(verbatim: message)
-                            .font(.system(size: 9))
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if mine.isEmpty {
-                        Text("Nothing saved on this Mac yet.")
+                if !others.isEmpty {
+                    DisclosureGroup(isExpanded: $showOthers) {
+                        VStack(spacing: 2) {
+                            ForEach(others) { row($0, dimmed: true) }
+                        }
+                        .padding(.top, 3)
+                    } label: {
+                        Text("Other outputs (\(others.count))")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(mine) { row($0, dimmed: false) }
-                    }
-
-                    if !others.isEmpty {
-                        DisclosureGroup(isExpanded: $showOthers) {
-                            VStack(spacing: 2) {
-                                ForEach(others) { row($0, dimmed: true) }
-                            }
-                            .padding(.top, 3)
-                        } label: {
-                            Text("Other outputs (\(others.count))")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 2)
             }
-            .frame(height: Self.scrollHeight)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 2)
+            .padding(.top, 6)
+        } label: {
+            header
+        }
+        .confirmationDialog(Text(verbatim: Self.deleteTitle(deleting?.name ?? "")),
+                            isPresented: Binding(get: { deleting != nil },
+                                                 set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible,
+                            presenting: deleting) { preset in
+            Button("Delete", role: .destructive) {
+                library.delete(preset)
+                deleting = nil
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: { _ in
+            Text(verbatim: Self.deleteMessage)
         }
     }
 
@@ -89,13 +106,16 @@ struct PresetLibraryView: View {
                 draftName = controller.currentSourceName ?? ""
                 draftBound = outputUID != nil
                 saving = true
+                expanded = true
                 nameFocused = true
             } label: {
-                Text("Save current…").font(.system(size: 10))
+                Text(verbatim: Self.saveButtonLabel).font(.system(size: 10))
             }
             .controlSize(.small)
             .disabled(!controller.canWriteNow || saving)
-            .help("Keep the curve the 5K is running now as a preset on this Mac")
+            .help(controller.canWriteNow
+                  ? "Keep the curve the 5K is running now as a preset on this Mac"
+                  : "Connect the 5K first — there is no live curve to keep.")
             Button {
                 addFromFile()
             } label: {
@@ -106,6 +126,24 @@ struct PresetLibraryView: View {
             .controlSize(.small)
             .disabled(library.currentGroup == nil)
             .help("Add a parametric EQ file to the library without applying it")
+        }
+    }
+
+    private func messageRow(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(verbatim: message)
+                .font(.system(size: 9))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { library.clearMessage() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityLabel("Dismiss this message")
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss this message")
         }
     }
 
@@ -129,7 +167,7 @@ struct PresetLibraryView: View {
 
     @ViewBuilder
     private var suggestionRow: some View {
-        if let offered = suggestions.match {
+        if suggestions.banner == nil, let offered = suggestions.match {
             HStack(spacing: 6) {
                 Image(systemName: "wand.and.stars")
                     .font(.system(size: 9))
@@ -142,7 +180,7 @@ struct PresetLibraryView: View {
                 if suggestions.busy {
                     ProgressView().controlSize(.small)
                 } else {
-                    Button(HeadphoneSuggestions.applyLinkLabel) {
+                    Button(Self.applyLinkLabel) {
                         suggestions.accept(offered.entry)
                     }
                     .buttonStyle(.link)
@@ -225,6 +263,10 @@ struct PresetLibraryView: View {
                     .controlSize(.mini)
                     .font(.system(size: 10))
                     .disabled(!controller.canEditEqNow)
+                    .accessibilityLabel(Text(verbatim: "Apply " + preset.name))
+                    .help(controller.canEditEqNow
+                          ? Text(verbatim: "Write " + preset.name + " to the 5K")
+                          : Text("The 5K isn\u{2019}t taking EQ writes right now."))
                 Menu {
                     Button("Rename…") {
                         renameDraft = preset.name
@@ -234,11 +276,12 @@ struct PresetLibraryView: View {
                     Divider()
                     scopeButtons(preset)
                     Divider()
-                    Button("Delete", role: .destructive) { library.delete(preset) }
+                    Button("Delete", role: .destructive) { deleting = preset }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 10))
-                        .accessibilityLabel("More actions for this preset")
+                        .accessibilityLabel(Text(verbatim: "More actions for "
+                                                 + preset.name))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
