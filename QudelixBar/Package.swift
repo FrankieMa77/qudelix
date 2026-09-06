@@ -85,14 +85,21 @@ let package = Package(
         .executable(name: "qudelix", targets: ["QudelixBar"])
     ],
     targets: [
+        .systemLibrary(
+            name: "CDBus",
+            path: "Sources/CDBus",
+            pkgConfig: "dbus-1",
+            providers: [.apt(["libdbus-1-dev"])]
+        ),
         .executableTarget(
             name: "QudelixBar",
+            dependencies: ["CDBus"],
             path: "Sources/QudelixBar",
             exclude: appleOnlySources
         ),
         .testTarget(
             name: "QudelixBarTests",
-            dependencies: ["QudelixBar"],
+            dependencies: ["QudelixBar", "CDBus"],
             path: "Tests/QudelixBarTests",
             exclude: appleOnlyTests
         )
