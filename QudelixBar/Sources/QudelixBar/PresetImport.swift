@@ -274,6 +274,136 @@ enum PinnedHTTP {
                       session: credentialedSession, delegate: refuseRedirects)
     }
 
+#if os(Linux)
+    struct BoundedBody {
+        var data: Data
+        var response: HTTPURLResponse?
+        var exceededLimit: Bool
+    }
+
+    private final class BoundedBodyCollector: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let limit: Int
+        private let errorBodyLimit: Int
+        private let redirects: URLSessionTaskDelegate
+        private let lock = NSLock()
+        private var body = Data()
+        private var http: HTTPURLResponse?
+        private var ceiling: Int
+        private var ceilingIsTheLimit = true
+        private var exceededLimit = false
+        private var stopped = false
+        private var pending: CheckedContinuation<BoundedBody, Error>?
+
+        init(limit: Int, errorBodyLimit: Int, redirects: URLSessionTaskDelegate) {
+            self.limit = limit
+            self.errorBodyLimit = errorBodyLimit
+            self.redirects = redirects
+            self.ceiling = limit
+        }
+
+        func load(_ task: URLSessionDataTask) async throws -> BoundedBody {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                pending = continuation
+                lock.unlock()
+                task.resume()
+            }
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            lock.lock()
+            guard let http = response as? HTTPURLResponse else {
+                stopped = true
+                lock.unlock()
+                completionHandler(.cancel)
+                dataTask.cancel()
+                return
+            }
+            self.http = http
+            let succeeded = (200..<300).contains(http.statusCode)
+            ceilingIsTheLimit = succeeded
+            ceiling = succeeded ? limit : errorBodyLimit
+            if succeeded, http.expectedContentLength > Int64(limit) {
+                exceededLimit = true
+                stopped = true
+                lock.unlock()
+                completionHandler(.cancel)
+                dataTask.cancel()
+                return
+            }
+            lock.unlock()
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            lock.lock()
+            if stopped {
+                lock.unlock()
+                return
+            }
+            body.append(data)
+            let over = body.count > ceiling
+            if over {
+                stopped = true
+                exceededLimit = ceilingIsTheLimit
+            }
+            lock.unlock()
+            if over { dataTask.cancel() }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didCompleteWithError error: Error?) {
+            lock.lock()
+            let continuation = pending
+            pending = nil
+            let result = BoundedBody(data: body, response: http, exceededLimit: exceededLimit)
+            let wasStopped = stopped
+            lock.unlock()
+            guard let continuation else { return }
+            if let error, !wasStopped {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume(returning: result)
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest,
+                        completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            redirects.urlSession(session, task: task, willPerformHTTPRedirection: response,
+                                 newRequest: request, completionHandler: completionHandler)
+        }
+    }
+
+    static func boundedLoad(_ request: URLRequest, limit: Int, session: URLSession,
+                            delegate: URLSessionTaskDelegate) async throws -> BoundedBody {
+        let collector = BoundedBodyCollector(limit: limit, errorBodyLimit: maxErrorBodyBytes,
+                                             redirects: delegate)
+        let bounded = URLSession(configuration: session.configuration,
+                                 delegate: collector, delegateQueue: nil)
+        defer { bounded.finishTasksAndInvalidate() }
+        return try await collector.load(bounded.dataTask(with: request))
+    }
+
+    static func validated(_ bounded: BoundedBody, limit: Int) throws -> Data {
+        guard let http = bounded.response else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw HTTPStatusError(status: http.statusCode,
+                                  body: String(data: bounded.data.prefix(maxErrorBodyBytes),
+                                               encoding: .utf8) ?? "")
+        }
+        guard !bounded.exceededLimit, bounded.data.count <= limit else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        return bounded.data
+    }
+#endif
+
     private static func run(_ request: URLRequest, limit: Int, allowing hosts: Set<String>,
                             session: URLSession,
                             delegate: URLSessionTaskDelegate) async throws -> Data {
@@ -282,17 +412,9 @@ enum PinnedHTTP {
             throw URLError(.badURL)
         }
 #if os(Linux)
-        let (body, response) = try await session.data(for: request, delegate: delegate)
-        guard let http = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw HTTPStatusError(status: http.statusCode,
-                                  body: String(data: body.prefix(maxErrorBodyBytes),
-                                               encoding: .utf8) ?? "")
-        }
-        guard body.count <= limit else { throw URLError(.dataLengthExceedsMaximum) }
-        return body
+        let bounded = try await boundedLoad(request, limit: limit,
+                                            session: session, delegate: delegate)
+        return try validated(bounded, limit: limit)
 #else
         let (stream, response) = try await session.bytes(for: request, delegate: delegate)
         guard let http = response as? HTTPURLResponse else {
