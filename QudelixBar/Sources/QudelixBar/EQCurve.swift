@@ -21,11 +21,12 @@ enum EQCurve {
     /// need a grid the drawing one doesn't give them — a different span, a
     /// different density, or a handful of frequencies picked on purpose.
     static func response(bands: [QxEqBandValue], preGain: Double, at freqs: [Double]) -> [Double] {
-        freqs.map { f in
+        let filters = bands.compactMap(BandFilter.init(band:))
+        guard !filters.isEmpty else { return [Double](repeating: preGain, count: freqs.count) }
+        return freqs.map { f in
+            let phase = Phase(radians: 2 * .pi * f / sampleRate)
             var db = preGain
-            for band in bands where band.filter != .bypass {
-                db += bandGainDb(band, at: f)
-            }
+            for filter in filters { db += filter.gainDb(at: phase) }
             return db
         }
     }
@@ -49,61 +50,72 @@ enum EQCurve {
         (log10(max(freq, minFreq)) - log10(minFreq)) / (log10(maxFreq) - log10(minFreq))
     }
 
-    private static func bandGainDb(_ band: QxEqBandValue, at freq: Double) -> Double {
-        let f0 = max(1, min(Double(band.freq), sampleRate / 2 - 1))
-        let q = max(0.05, band.q)
-        let gain = band.gain
-        let a = pow(10, gain / 40)              // amplitude for shelf/peak maths
-        let w0 = 2 * .pi * f0 / sampleRate
-        let cosW0 = cos(w0), sinW0 = sin(w0)
-        let alpha = sinW0 / (2 * q)
+    struct Phase {
+        let cosW: Double, sinW: Double, cos2W: Double, sin2W: Double
 
-        var b0 = 1.0, b1 = 0.0, b2 = 0.0, a0 = 1.0, a1 = 0.0, a2 = 0.0
+        init(radians w: Double) {
+            cosW = cos(w)
+            sinW = sin(w)
+            cos2W = cos(2 * w)
+            sin2W = sin(2 * w)
+        }
+    }
 
-        switch band.filter {
-        case .peak:
-            b0 = 1 + alpha * a;  b1 = -2 * cosW0;  b2 = 1 - alpha * a
-            a0 = 1 + alpha / a;  a1 = -2 * cosW0;  a2 = 1 - alpha / a
-        case .lowShelf:
-            let sq = 2 * sqrt(a) * alpha
-            b0 = a * ((a + 1) - (a - 1) * cosW0 + sq)
-            b1 = 2 * a * ((a - 1) - (a + 1) * cosW0)
-            b2 = a * ((a + 1) - (a - 1) * cosW0 - sq)
-            a0 = (a + 1) + (a - 1) * cosW0 + sq
-            a1 = -2 * ((a - 1) + (a + 1) * cosW0)
-            a2 = (a + 1) + (a - 1) * cosW0 - sq
-        case .highShelf:
-            let sq = 2 * sqrt(a) * alpha
-            b0 = a * ((a + 1) + (a - 1) * cosW0 + sq)
-            b1 = -2 * a * ((a - 1) + (a + 1) * cosW0)
-            b2 = a * ((a + 1) + (a - 1) * cosW0 - sq)
-            a0 = (a + 1) - (a - 1) * cosW0 + sq
-            a1 = 2 * ((a - 1) - (a + 1) * cosW0)
-            a2 = (a + 1) - (a - 1) * cosW0 - sq
-        case .lpf:
-            b0 = (1 - cosW0) / 2;  b1 = 1 - cosW0;  b2 = (1 - cosW0) / 2
-            a0 = 1 + alpha;        a1 = -2 * cosW0; a2 = 1 - alpha
-        case .hpf:
-            b0 = (1 + cosW0) / 2;  b1 = -(1 + cosW0); b2 = (1 + cosW0) / 2
-            a0 = 1 + alpha;        a1 = -2 * cosW0;   a2 = 1 - alpha
-        case .bypass:
-            return 0
+    struct BandFilter {
+        let b0: Double, b1: Double, b2: Double
+        let a0: Double, a1: Double, a2: Double
+
+        init?(band: QxEqBandValue) {
+            let f0 = max(1, min(Double(band.freq), EQCurve.sampleRate / 2 - 1))
+            let q = max(0.05, band.q)
+            let a = pow(10, band.gain / 40)
+            let w0 = 2 * .pi * f0 / EQCurve.sampleRate
+            let cosW0 = cos(w0), sinW0 = sin(w0)
+            let alpha = sinW0 / (2 * q)
+
+            switch band.filter {
+            case .peak:
+                b0 = 1 + alpha * a;  b1 = -2 * cosW0;  b2 = 1 - alpha * a
+                a0 = 1 + alpha / a;  a1 = -2 * cosW0;  a2 = 1 - alpha / a
+            case .lowShelf:
+                let sq = 2 * sqrt(a) * alpha
+                b0 = a * ((a + 1) - (a - 1) * cosW0 + sq)
+                b1 = 2 * a * ((a - 1) - (a + 1) * cosW0)
+                b2 = a * ((a + 1) - (a - 1) * cosW0 - sq)
+                a0 = (a + 1) + (a - 1) * cosW0 + sq
+                a1 = -2 * ((a - 1) + (a + 1) * cosW0)
+                a2 = (a + 1) + (a - 1) * cosW0 - sq
+            case .highShelf:
+                let sq = 2 * sqrt(a) * alpha
+                b0 = a * ((a + 1) + (a - 1) * cosW0 + sq)
+                b1 = -2 * a * ((a - 1) + (a + 1) * cosW0)
+                b2 = a * ((a + 1) + (a - 1) * cosW0 - sq)
+                a0 = (a + 1) - (a - 1) * cosW0 + sq
+                a1 = 2 * ((a - 1) - (a + 1) * cosW0)
+                a2 = (a + 1) - (a - 1) * cosW0 - sq
+            case .lpf:
+                b0 = (1 - cosW0) / 2;  b1 = 1 - cosW0;  b2 = (1 - cosW0) / 2
+                a0 = 1 + alpha;        a1 = -2 * cosW0; a2 = 1 - alpha
+            case .hpf:
+                b0 = (1 + cosW0) / 2;  b1 = -(1 + cosW0); b2 = (1 + cosW0) / 2
+                a0 = 1 + alpha;        a1 = -2 * cosW0;   a2 = 1 - alpha
+            case .bypass:
+                return nil
+            }
         }
 
-        let w = 2 * .pi * freq / sampleRate
-        let cosW = cos(w), sinW = sin(w)
-        let cos2W = cos(2 * w), sin2W = sin(2 * w)
+        func gainDb(at phase: Phase) -> Double {
+            let numRe = b0 + b1 * phase.cosW + b2 * phase.cos2W
+            let numIm = -(b1 * phase.sinW + b2 * phase.sin2W)
+            let denRe = a0 + a1 * phase.cosW + a2 * phase.cos2W
+            let denIm = -(a1 * phase.sinW + a2 * phase.sin2W)
 
-        let numRe = b0 + b1 * cosW + b2 * cos2W
-        let numIm = -(b1 * sinW + b2 * sin2W)
-        let denRe = a0 + a1 * cosW + a2 * cos2W
-        let denIm = -(a1 * sinW + a2 * sin2W)
-
-        let num = sqrt(numRe * numRe + numIm * numIm)
-        let den = sqrt(denRe * denRe + denIm * denIm)
-        guard den > 1e-12, num > 1e-12 else { return 0 }
-        let db = 20 * log10(num / den)
-        return db.isFinite ? db : 0
+            let num = sqrt(numRe * numRe + numIm * numIm)
+            let den = sqrt(denRe * denRe + denIm * denIm)
+            guard den > 1e-12, num > 1e-12 else { return 0 }
+            let db = 20 * log10(num / den)
+            return db.isFinite ? db : 0
+        }
     }
 }
 
@@ -675,10 +687,12 @@ struct EQCurveView: View {
         .contentShape(Rectangle())
         .onContinuousHover { phase in
             guard onBandChanged != nil else { return }
+            let resolved: Int?
             switch phase {
-            case .active(let point): hovering = nearestBand(to: point, range: plot.range)
-            case .ended: hovering = nil
+            case .active(let point): resolved = nearestBand(to: point, range: plot.range)
+            case .ended: resolved = nil
             }
+            if resolved != hovering { hovering = resolved }
         }
         .gesture(onBandChanged == nil ? nil : dragGesture(range: plot.range))
         .gesture(onSelectBand == nil ? nil : selectGesture(range: plot.range))
@@ -875,15 +889,20 @@ struct EQCurveView: View {
     /// enough. Bypassed bands are excluded: they draw no marker, and grabbing
     /// an invisible one would edit a band the user cannot see.
     private func nearestBand(to point: CGPoint, range: Double) -> Int? {
-        let midY = viewSize.height / 2
-        let usable = max(viewSize.height / 2 - 6, 1)
+        Self.nearestBand(to: point, in: bands, size: viewSize, range: range)
+    }
+
+    nonisolated static func nearestBand(to point: CGPoint, in bands: [QxEqBandValue],
+                                        size: CGSize, range: Double) -> Int? {
+        let midY = size.height / 2
+        let usable = max(size.height / 2 - 6, 1)
         var best: (index: Int, distance: CGFloat)?
         for (i, band) in bands.enumerated() where band.filter != .bypass {
-            let bx = CGFloat(EQCurve.fraction(of: Double(band.freq))) * viewSize.width
+            let bx = CGFloat(EQCurve.fraction(of: Double(band.freq))) * size.width
             let g = EQCurveView.markerGain(band)
             let by = midY - CGFloat(max(-range, min(range, g)) / range) * usable
             let d = hypot(point.x - bx, point.y - by)
-            if d <= Self.grabRadius, best == nil || d < best!.distance {
+            if d <= grabRadius, best == nil || d < best!.distance {
                 best = (i, d)
             }
         }
