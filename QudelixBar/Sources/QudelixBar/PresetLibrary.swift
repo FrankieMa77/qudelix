@@ -67,7 +67,9 @@ extension LibraryPreset: Codable {
                 debugDescription: "no EQ group with that id")
         }
         self.group = group
-        bands = (try? c.decode([QxEqBandValue].self, forKey: .bands)) ?? []
+        let bandRows = (try? c.decode([FailableDecodable<QxEqBandValue>].self,
+                                      forKey: .bands)) ?? []
+        bands = bandRows.compactMap(\.value)
         preGain = (try? c.decode(Double.self, forKey: .preGain)) ?? 0
         id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
@@ -113,7 +115,7 @@ struct PresetLibraryDocument: Equatable {
     }
 }
 
-private struct FailableDecodable<T: Decodable>: Decodable {
+struct FailableDecodable<T: Decodable>: Decodable {
     let value: T?
     init(from decoder: Decoder) throws { value = try? T(from: decoder) }
 }
@@ -169,18 +171,40 @@ enum PresetLibraryFile {
     static let maxSuggestedNames = 64
     private static let maxBytes = 2_000_000
 
+    enum Outcome {
+        case loaded(PresetLibraryDocument)
+        case unreadable
+        case undecodable
+    }
+
     static func load(from fileURL: URL = url) -> PresetLibraryDocument? {
+        if case .loaded(let document) = outcome(from: fileURL) { return document }
+        return nil
+    }
+
+    static func outcome(from fileURL: URL = url) -> Outcome {
         guard let data = SafeFile.read(fileURL, cap: maxBytes) else {
-            return PresetLibraryDocument()
+            return hasContent(fileURL) ? .unreadable : .loaded(PresetLibraryDocument())
         }
         guard let decoded = try? JSONDecoder().decode(PresetLibraryDocument.self,
                                                       from: data) else {
             let parked = fileURL.deletingLastPathComponent()
                 .appendingPathComponent(fileURL.lastPathComponent + ".recovered")
             SafeFile.writeAtomic(data, to: parked)
-            return nil
+            return .undecodable
         }
-        return sanitize(decoded)
+        return .loaded(sanitize(decoded))
+    }
+
+    private static func hasContent(_ fileURL: URL) -> Bool {
+        var info = stat()
+        let found = fileURL.withUnsafeFileSystemRepresentation { path -> Bool in
+            guard let path else { return false }
+            return lstat(path, &info) == 0
+        }
+        guard found else { return false }
+        if info.st_mode & S_IFMT == S_IFREG, info.st_size == 0 { return false }
+        return true
     }
 
     static func sanitize(_ document: PresetLibraryDocument) -> PresetLibraryDocument {
@@ -275,10 +299,23 @@ final class PresetLibrary: ObservableObject {
         guard !started else { return }
         started = true
         fileURL = url
-        guard let document = PresetLibraryFile.load(from: url) else {
+        let name = url.lastPathComponent
+        let document: PresetLibraryDocument
+        switch PresetLibraryFile.outcome(from: url) {
+        case .loaded(let loaded):
+            document = loaded
+        case .undecodable:
             persistable = false
-            DebugLog.shared.log("preset library file could not be read; "
-                                + "kept as presets.json.recovered and left alone")
+            lastMessage = "\(name) couldn't be understood, so the saved library is "
+                + "left alone. A copy is kept beside it as \(name).recovered."
+            DebugLog.shared.log("preset library file could not be decoded; "
+                                + "kept as \(name).recovered and left alone")
+            return
+        case .unreadable:
+            persistable = false
+            lastMessage = "\(name) couldn't be read, so the saved library is left "
+                + "alone. Check the file's permissions and its size."
+            DebugLog.shared.log("preset library file could not be read; left alone")
             return
         }
         presets = document.presets

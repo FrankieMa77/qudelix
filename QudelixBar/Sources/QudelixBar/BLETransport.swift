@@ -143,6 +143,13 @@ final class BLETransport: NSObject {
         }
     }
 
+    func flushPending() {
+        guard !pending.isEmpty else { return }
+        let batch = pending
+        pending = [:]
+        for (_, item) in batch { send(item.0, item.1) }
+    }
+
     /// Drop anything queued but not yet flushed. Used when the controller moves
     /// to the other transport, so a stale write cannot arrive afterwards.
     func clearPending() { pending = [:] }

@@ -186,6 +186,74 @@ final class HeadphoneSuggestionTests: XCTestCase {
         XCTAssertTrue(library.suggestedHeadphones.isEmpty)
     }
 
+    func testAStoredNameIsNotLookedUpUntilTheWindowHasBeenOpened() async {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let seed = library(at: url)
+        seed.setHeadphoneName("Sennheiser HD 650")
+
+        let library = library(at: url)
+        XCTAssertEqual(library.headphoneName, "Sennheiser HD 650")
+        XCTAssertFalse(library.hasSuggested("sennheiserhd650"),
+                       "the stored name was never looked up successfully")
+        let catalogue = FakeHeadphoneCatalogue()
+        catalogue.catalogueEntries = [entry("Sennheiser HD 650", "oratory1990")]
+        catalogue.catalogueReady = true
+        let engine = engine(library, catalogue)
+
+        engine.start()
+
+        XCTAssertEqual(catalogue.loads, 0, "nothing is fetched at launch")
+        XCTAssertNil(engine.resolveTask)
+        XCTAssertEqual(engine.diagSummary, "suggest=none")
+
+        engine.uiShown()
+        XCTAssertEqual(catalogue.loads, 1, "the window being opened is the user asking")
+        await engine.resolveTask?.value
+        XCTAssertEqual(engine.banner?.entry.title, "Sennheiser HD 650")
+    }
+
+    func testATypedNameIsLookedUpWithoutWaitingForAnotherWindow() async {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let library = library(at: url)
+        let catalogue = FakeHeadphoneCatalogue()
+        catalogue.catalogueEntries = [entry("Sennheiser HD 650", "oratory1990")]
+        catalogue.catalogueReady = true
+        let engine = engine(library, catalogue)
+        engine.start()
+        XCTAssertEqual(catalogue.loads, 0)
+
+        library.setHeadphoneName("Sennheiser HD 650")
+        await engine.resolveTask?.value
+
+        XCTAssertEqual(catalogue.loads, 1)
+        XCTAssertEqual(engine.banner?.entry.title, "Sennheiser HD 650")
+    }
+
+    func testANameWhoseCatalogueFetchFailedIsNotTriedAgainThisLaunch() async {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let library = library(at: url)
+        let catalogue = FakeHeadphoneCatalogue()
+        catalogue.catalogueFailed = true
+        let engine = engine(library, catalogue)
+
+        engine.nameChanged("Sennheiser HD 650")
+        await engine.resolveTask?.value
+        XCTAssertEqual(catalogue.loads, 1)
+        XCTAssertTrue(library.suggestedHeadphones.isEmpty,
+                      "a failure is not a lookup that happened")
+
+        engine.nameChanged("Something Else Entirely")
+        await engine.resolveTask?.value
+        engine.nameChanged("Sennheiser HD 650")
+
+        XCTAssertNil(engine.resolveTask)
+        XCTAssertEqual(catalogue.loads, 2,
+                       "a name that already failed is not fetched again this launch")
+    }
+
     func testAlreadySuggestedNamesNeverTouchTheCatalogue() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }

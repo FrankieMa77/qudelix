@@ -203,16 +203,24 @@ final class HIDTransport {
         }
     }
 
+    func flushPending() {
+        queue.async { [self] in drainNow() }
+    }
+
     private func drainIfNeeded() {
         guard !draining else { return }
         draining = true
         queue.async { [self] in
-            while !pendingOrder.isEmpty {
-                let key = pendingOrder.removeFirst()
-                guard let (cmd, data) = pending.removeValue(forKey: key) else { continue }
-                sendNow(cmd, data)
-            }
+            drainNow()
             draining = false
+        }
+    }
+
+    private func drainNow() {
+        while !pendingOrder.isEmpty {
+            let key = pendingOrder.removeFirst()
+            guard let (cmd, data) = pending.removeValue(forKey: key) else { continue }
+            sendNow(cmd, data)
         }
     }
 

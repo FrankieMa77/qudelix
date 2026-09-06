@@ -50,6 +50,11 @@ final class HeadphoneSuggestions: ObservableObject {
     private(set) var resolveTask: Task<Void, Never>?
     private(set) var acceptTask: Task<Void, Never>?
     private var resolving = false
+    private var sawStoredName = false
+    private var uiHasBeenShown = false
+    private var storedNameAwaitingUI: String?
+    private var failedLookups: Set<String> = []
+    private static let maxFailedLookups = 32
 
     init(library: PresetLibrary,
          catalogue: (any HeadphoneCatalogue)? = nil,
@@ -64,9 +69,27 @@ final class HeadphoneSuggestions: ObservableObject {
         library.$headphoneName
             .removeDuplicates()
             .sink { [weak self] name in
-                MainActor.assumeIsolated { self?.nameChanged(name) }
+                MainActor.assumeIsolated { self?.observedName(name) }
             }
             .store(in: &sources)
+    }
+
+    private func observedName(_ raw: String) {
+        if !sawStoredName {
+            sawStoredName = true
+            guard uiHasBeenShown else {
+                storedNameAwaitingUI = raw
+                return
+            }
+        }
+        nameChanged(raw)
+    }
+
+    func uiShown() {
+        uiHasBeenShown = true
+        guard let name = storedNameAwaitingUI else { return }
+        storedNameAwaitingUI = nil
+        nameChanged(name)
     }
 
     var diagSummary: String {
@@ -84,7 +107,8 @@ final class HeadphoneSuggestions: ObservableObject {
         match = nil
         banner = nil
         lastError = nil
-        guard key.count >= Self.minNeedleLength, !library.hasSuggested(key) else { return }
+        guard key.count >= Self.minNeedleLength, !library.hasSuggested(key),
+              !failedLookups.contains(key) else { return }
         resolving = true
         catalogue.loadCatalogue()
         resolveTask = Task { [weak self] in
@@ -92,9 +116,18 @@ final class HeadphoneSuggestions: ObservableObject {
             defer { self.resolving = false }
             let loaded = await self.waitFor({ self.catalogue.catalogueReady },
                                             failed: { self.catalogue.catalogueFailed })
-            guard !Task.isCancelled, loaded, self.lastKey == key else { return }
+            guard !Task.isCancelled, self.lastKey == key else { return }
+            guard loaded else {
+                if self.catalogue.catalogueFailed { self.markLookupFailed(key) }
+                return
+            }
             self.resolve(name: raw, key: key)
         }
+    }
+
+    private func markLookupFailed(_ key: String) {
+        if failedLookups.count >= Self.maxFailedLookups { failedLookups.removeAll() }
+        failedLookups.insert(key)
     }
 
     private func resolve(name: String, key: String) {

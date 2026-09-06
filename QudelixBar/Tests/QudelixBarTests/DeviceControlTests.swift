@@ -32,6 +32,29 @@ final class DeviceControlTests: XCTestCase {
         XCTAssertEqual(QxPacket.volumePayload(.sysLimit, db: -12), [32, 0xFD, 0x30])
     }
 
+    @MainActor
+    func testASlotSaveFlushesTheCoalescedBandWritesBeforeItGoesOut() {
+        let c = QudelixController()
+        c.connection = .connected(name: "Qudelix 5K")
+        c.compatibility = .ok
+        c.clearSendTrace()
+
+        var band = c.bands[0]
+        band.gain = 5
+        c.updateBand(0, band)
+        c.savePreset(3)
+
+        let trace = c.sendTrace
+        guard let edit = trace.firstIndex(where: { $0.hasPrefix("coalesced:") }),
+              let flush = trace.firstIndex(of: "flush"),
+              let save = trace.firstIndex(where: { $0.contains("saveEqPreset") }) else {
+            return XCTFail("expected an edit, a flush and a slot save: \(trace)")
+        }
+        XCTAssertLessThan(edit, flush)
+        XCTAssertLessThan(flush, save,
+                          "the curve has to reach the device before the slot is written")
+    }
+
     // MARK: - Clamping
 
     func testOutOfRangeValuesClampToTheBoundaryBytes() {

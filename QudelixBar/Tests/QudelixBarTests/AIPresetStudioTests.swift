@@ -686,6 +686,37 @@ final class AIPresetStudioTests: XCTestCase {
                        "a non-finite pre-gain is not a number")
     }
 
+    func testOneMalformedCacheEntryCostsThatEntryRatherThanTheWholeCache() throws {
+        let good = dossier("keep me", used: Date(timeIntervalSince1970: 2_000))
+        let data = try XCTUnwrap(AIResearchStore.encode(["hd 650": good]))
+        var text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        text = text.replacingOccurrences(
+            of: "{", with: "{\n  \"broken one\" : \"this is not a dossier\",", options: [],
+            range: text.range(of: "{"))
+
+        let decoded = AIResearchStore.decode(Data(text.utf8))
+
+        XCTAssertEqual(Set(decoded.keys), ["hd 650"],
+                       "one unreadable entry must not empty the research cache")
+        XCTAssertEqual(decoded["hd 650"]?.signature, "keep me")
+    }
+
+    func testOneMalformedBandCostsThatBandRatherThanTheMeasurement() {
+        let file = """
+        {"hd 650": {"signature":"s","bass":"b","mids":"m","treble":"t",
+          "soundstage":"s","knownIssues":[],"confidence":"high",
+          "measurement":{"title":"m","preGain":-3,
+            "bands":[{"filter":5,"freq":1000,"gain":1,"q":1},
+                     {"filter":5,"freq":"two thousand","gain":2,"q":1},
+                     {"filter":5,"freq":3000,"gain":3,"q":1}]},
+          "researchedAt":1000,"provider":"p","model":"m","lastUsedAt":1000}}
+        """
+
+        let decoded = AIResearchStore.decode(Data(file.utf8))
+
+        XCTAssertEqual(decoded["hd 650"]?.measurement?.bands.map(\.freq), [1000, 3000])
+    }
+
     func testABrokenOrAbsentCacheFileCostsTheCacheNotTheApp() {
         XCTAssertTrue(AIResearchStore.decode(nil).isEmpty)
         XCTAssertTrue(AIResearchStore.decode(Data("not json".utf8)).isEmpty)
@@ -779,6 +810,44 @@ final class AIPresetStudioTests: XCTestCase {
                                keychain: AIKeychain(store: keychain),
                                transport: StubAITransport { Data() },
                                defaults: defaults ?? .standard), directory)
+    }
+
+    func testTheStudioSaysWhoIsPayingAndDoesNotClaimToKnowTheDevice() {
+        XCTAssertEqual(AIPresetSection.applyLabel, "Apply")
+        XCTAssertEqual(AIPresetSection.researchAgainLabel, "Research again")
+        XCTAssertEqual(AIPresetSection.billingCaption,
+                       "Uses your own account at the provider \u{2014} generations "
+                       + "are billed to you.")
+    }
+
+    func testTheDraftWarnsAboutAnUnsavedCurveInTheWordsTheOtherPanesUse() {
+        XCTAssertEqual(AIPresetSection.unsavedCurveWarning,
+                       "Your current EQ is a custom setting that isn\u{2019}t saved "
+                       + "to a slot \u{2014} applying this will replace it.")
+    }
+
+    @MainActor
+    func testTheMeasurementCacheIsBoundedTheWayTheResearchCacheIs() {
+        let (studio, directory) = studio()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let measurement = HeadphoneDossier.Measurement(
+            title: "m", preGain: -1,
+            bands: [QxEqBandValue(filter: .peak, freq: 1000, gain: 1, q: 1)])
+        let overflow = AIResearchStore.maxEntries + 8
+
+        for i in 0..<overflow {
+            studio.previewCacheMeasurement(measurement,
+                                           for: String(format: "hp-%03d", i))
+        }
+
+        XCTAssertEqual(studio.previewCachedMeasurementKeys.count,
+                       AIResearchStore.maxEntries,
+                       "a session of typing names must not grow without bound")
+        XCTAssertTrue(studio.previewCachedMeasurementKeys
+            .contains(String(format: "hp-%03d", overflow - 1)),
+                      "the most recently used measurement is the one that survives")
+        XCTAssertFalse(studio.previewCachedMeasurementKeys.contains("hp-000"),
+                       "the oldest goes first")
     }
 
     @MainActor

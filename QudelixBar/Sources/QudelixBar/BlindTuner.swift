@@ -676,6 +676,7 @@ final class BlindTuner: ObservableObject {
     }
 
     private func restoreBaseline(_ c: QudelixController) {
+        guard c.eqGroup == sessionGroup else { return }
         push(baseline, preGain: baselinePreGain, c)
     }
 
@@ -726,7 +727,7 @@ final class BlindTuner: ObservableObject {
 
     func keepResult(_ c: QudelixController) {
         guard mode == .shape, phase == .finished, verdict == .usable,
-              !resultBands.isEmpty else { return }
+              !resultBands.isEmpty, stillValid(c) else { return }
         write(resultBands, c)
         c.setPreGain(ABTuner.safePreGain(for: resultBands, notAbove: baselinePreGain),
                      recordUndo: false)

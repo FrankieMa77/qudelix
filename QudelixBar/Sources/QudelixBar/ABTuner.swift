@@ -429,7 +429,7 @@ final class ABTuner: ObservableObject {
     }
 
     func keepResult(_ c: QudelixController) {
-        guard phase == .finished, !resultBands.isEmpty else { return }
+        guard phase == .finished, !resultBands.isEmpty, stillValid(c) else { return }
         // Leave the curve applied, but hand pre-gain back to the user's value if
         // the result does not actually need the extra headroom.
         c.setPreGain(Self.safePreGain(for: resultBands, notAbove: baselinePreGain),
@@ -444,6 +444,7 @@ final class ABTuner: ObservableObject {
     }
 
     private func restoreBaseline(_ c: QudelixController) {
+        guard c.eqGroup == sessionGroup else { return }
         push(baseline, preGain: baselinePreGain, to: c)
     }
 

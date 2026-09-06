@@ -126,6 +126,59 @@ final class PresetLibraryTests: XCTestCase {
         XCTAssertEqual(loaded?.headphoneName, "HD 650")
     }
 
+    func testOneMalformedBandCostsThatBandRatherThanTheWholePreset() {
+        let url = tempFileURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let json = """
+        {"schemaVersion":1,"headphoneName":"HD 650","presets":[
+          {"name":"Mostly good","groupRaw":0,"preGain":-1.5,
+           "bands":[{"filter":5,"freq":1000,"gain":1,"q":1},
+                    {"filter":5,"freq":"two thousand","gain":2,"q":1},
+                    {"filter":5,"freq":3000,"gain":3,"q":1}]}]}
+        """
+        try? Data(json.utf8).write(to: url)
+
+        let loaded = PresetLibraryFile.load(from: url)
+
+        XCTAssertEqual(loaded?.presets.map(\.name), ["Mostly good"],
+                       "one unreadable band must not cost the preset")
+        XCTAssertEqual(loaded?.presets.first?.bands.map(\.freq), [1000, 3000])
+        XCTAssertEqual(loaded?.presets.first?.preGain, -1.5)
+    }
+
+    @MainActor
+    func testAnUnreadableFileIsLeftAloneRatherThanReplacedWithAnEmptyLibrary() throws {
+        try XCTSkipIf(getuid() == 0, "root reads a 0000-mode file regardless")
+        let url = tempFileURL()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: url.path)
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + ".recovered"))
+        }
+        PresetLibraryFile.save(PresetLibraryDocument(presets: [preset("Keep me")]), to: url)
+        let before = try String(contentsOf: url, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000],
+                                              ofItemAtPath: url.path)
+        try XCTSkipIf(SafeFile.read(url, cap: 2_000_000) != nil,
+                      "this filesystem ignores the mode bits")
+
+        XCTAssertNil(PresetLibraryFile.load(from: url),
+                     "a file that exists but cannot be read is not an empty library")
+
+        let (library, _) = self.library(at: url)
+        XCTAssertTrue(library.presets.isEmpty)
+        XCTAssertNotNil(library.lastMessage, "the user is told the library is not live")
+
+        library.saveCurrent(name: "Something new", scope: .global)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: url.path)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), before,
+                       "an unreadable library is never written over")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + ".recovered"),
+                       "nothing can be parked when the bytes could not be read")
+    }
+
     func testAnUnknownFilterShapeDoesNotCostTheWholeFile() {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }

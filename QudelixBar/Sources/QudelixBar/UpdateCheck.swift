@@ -83,9 +83,13 @@ enum UpdateCheck {
             return latest > running ? .available(latest)
                                    : .upToDate(latest: latest, running: running)
         } catch {
-            return .failed(AutoEqService.describe(
-                AutoEqService.mapped(error, host: host)))
+            return failure(for: error)
         }
+    }
+
+    static func failure(for error: Error) -> Result {
+        .failed(SafeText.scrubbed(AutoEqService.describe(
+            AutoEqService.mapped(error, host: host))))
     }
 
     /// One line of user-facing text for a result.

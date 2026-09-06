@@ -30,6 +30,19 @@ final class UpdateCheckTests: XCTestCase {
         }
     }
 
+    func testAnErrorTextIsScrubbedBeforeItReachesTheUpdateLine() {
+        let error = CorrectionError.unavailable("rate limited\u{202E} \u{0007}now")
+
+        guard case .failed(let why) = UpdateCheck.failure(for: error) else {
+            return XCTFail("a thrown error is a failed check")
+        }
+
+        XCTAssertFalse(why.unicodeScalars.contains { $0.value == 0x202E },
+                       "a server's own words never reach the UI unscrubbed")
+        XCTAssertFalse(why.unicodeScalars.contains { $0.value == 0x0007 })
+        XCTAssertEqual(UpdateCheck.summary(.failed(why)), why)
+    }
+
     // MARK: - Ordering
 
     /// The bug this whole type exists to avoid: as strings, "1.10.0" sorts
