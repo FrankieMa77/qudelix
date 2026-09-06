@@ -1,0 +1,45 @@
+name: Linux
+
+on:
+  push:
+    branches:
+      - main
+      - linux
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: swift:6.2-jammy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y libdbus-1-dev pkg-config dpkg-dev
+
+      - uses: actions/cache@v4
+        with:
+          path: QudelixBar/.build
+          key: ${{ runner.os }}-swift-${{ hashFiles('QudelixBar/Package.swift', 'QudelixBar/Sources/**') }}
+          restore-keys: |
+            ${{ runner.os }}-swift-
+
+      - name: Build
+        run: swift build -c release --static-swift-stdlib --product qudelix
+        working-directory: QudelixBar
+
+      - name: Test
+        run: swift test
+        working-directory: QudelixBar
+
+      - name: Build Debian package
+        run: bash linux/build-deb.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qudelix-deb
+          path: dist/*.deb
