@@ -21,8 +21,22 @@ final class ScriptedAITransport: AITransport, @unchecked Sendable {
 
 final class AICommandsTests: XCTestCase {
     private var temporaries: [URL] = []
+    private var historyDirectory: URL!
+
+    override func setUp() {
+        super.setUp()
+        historyDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("qudelix-ai-history-" + UUID().uuidString,
+                                    isDirectory: true)
+        try? FileManager.default.createDirectory(at: historyDirectory,
+                                                 withIntermediateDirectories: true)
+        EqHistoryFile.directoryOverride = historyDirectory
+    }
 
     override func tearDown() {
+        EqHistoryFile.directoryOverride = nil
+        try? FileManager.default.removeItem(at: historyDirectory)
+        historyDirectory = nil
         for url in temporaries { try? FileManager.default.removeItem(at: url) }
         temporaries = []
         AIRuntime.current = AIRuntime()
@@ -824,5 +838,170 @@ final class AICommandsTests: XCTestCase {
             XCTAssertEqual(code, CLIExit.ok)
         }
         XCTAssertTrue(text.contains("\(QxEqGroup.user.bandCount) bands"))
+    }
+    private func connected(_ link: FakeLink,
+                           timeout: TimeInterval = 2) async throws -> QxSession {
+        let session = QxSession(link: link, timeout: timeout)
+        async let connecting: Void = session.connect(timeout: timeout)
+        link.bringUp()
+        try await connecting
+        return session
+    }
+
+    private func twentyBandLink() async throws -> (FakeLink, QxSession) {
+        let link = QxFixtures.answeringLink()
+        let session = try await connected(link)
+        var sysBlock = [UInt8](repeating: 0, count: 12)
+        sysBlock[4] = 1 << 4
+        link.deliver(.rspDevConfig, [QxConfigMask.sys] + sysBlock)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let group = await session.snapshot().eqGroup
+        XCTAssertEqual(group, .b20)
+        return (link, session)
+    }
+
+    private func fileMode(_ url: URL) -> mode_t {
+        var status = stat()
+        let read = url.withUnsafeFileSystemRepresentation { path -> Bool in
+            guard let path else { return false }
+            return lstat(path, &status) == 0
+        }
+        return read ? status.st_mode : 0
+    }
+
+    func testATenBandDraftIsNeverHalfWrittenIntoATwentyBandBank() async throws {
+        let (link, session) = try await twentyBandLink()
+        defer { session.close() }
+        let transport = scripted()
+        let runtime = self.runtime(directory(), transport: transport, key: "sk-mistral",
+                                   measurement: measurement())
+        let request = AISuggestRequest(headphone: "Sennheiser HD 650", kind: .clarity,
+                                       bands: 10, apply: true)
+        do {
+            try await AICommand.suggest(request).run(options: CLIOptions(),
+                                                     session: session, runtime: runtime)
+            XCTFail("ten bands is not a twenty-band bank")
+        } catch let error as CLIUsageError {
+            XCTAssertTrue(error.message.contains("10"), error.message)
+            XCTAssertTrue(error.message.contains("20"), error.message)
+        }
+        XCTAssertEqual(transport.callCount, 0, "nothing is designed that cannot be written")
+        XCTAssertTrue(link.payloads(for: .setEqBandParam).isEmpty)
+        XCTAssertTrue(link.payloads(for: .setEqPreGain).isEmpty)
+        XCTAssertTrue(link.payloads(for: .setEqType).isEmpty)
+        XCTAssertTrue(link.payloads(for: .saveAll).isEmpty)
+    }
+
+    func testAskingForMoreBandsThanTheBankHoldsIsRefusedBeforeAnyWrite() async throws {
+        let link = QxFixtures.answeringLink()
+        let session = try await connected(link)
+        defer { session.close() }
+        let transport = scripted()
+        let runtime = self.runtime(directory(), transport: transport, key: "sk-mistral",
+                                   measurement: measurement())
+        let request = AISuggestRequest(headphone: "Sennheiser HD 650", kind: .clarity,
+                                       bands: 20, apply: true)
+        do {
+            try await AICommand.suggest(request).run(options: CLIOptions(),
+                                                     session: session, runtime: runtime)
+            XCTFail("a twenty-band draft is not a ten-band bank")
+        } catch let error as CLIUsageError {
+            XCTAssertTrue(error.message.contains("20"), error.message)
+            XCTAssertTrue(error.message.contains("10"), error.message)
+        }
+        XCTAssertEqual(transport.callCount, 0)
+        XCTAssertTrue(link.payloads(for: .setEqBandParam).isEmpty)
+        XCTAssertTrue(link.payloads(for: .saveAll).isEmpty)
+    }
+
+    func testAnAppliedDraftIsRecordedInTheHistoryUnderTheHeadphoneName() async throws {
+        let link = deviceLink()
+        let runtime = self.runtime(directory(), transport: scripted(), key: "sk-mistral",
+                                   measurement: measurement())
+        _ = try await captured {
+            let code = await self.exercise(["ai", "suggest", "Sennheiser HD 650",
+                                            "--", "--kind", "clarity", "--apply"],
+                                           link, runtime)
+            XCTAssertEqual(code, CLIExit.ok)
+        }
+        let entries = EqHistoryFile.load().newestFirst
+        XCTAssertEqual(entries.first?.label, "ai Sennheiser HD 650")
+        XCTAssertFalse(entries.contains { $0.label == "import" })
+    }
+
+    func testTheHistoryStaysEmptyWhenNothingIsApplied() async throws {
+        let link = deviceLink()
+        let runtime = self.runtime(directory(), transport: scripted(), key: "sk-mistral",
+                                   measurement: measurement())
+        _ = try await captured {
+            let code = await self.exercise(["ai", "suggest", "Sennheiser HD 650",
+                                            "--", "--kind", "clarity"], link, runtime)
+            XCTAssertEqual(code, CLIExit.ok)
+        }
+        XCTAssertTrue(EqHistoryFile.load().entries.isEmpty)
+    }
+
+    func testAnUnknownResearchFlagNamesTheFlagsResearchTakes() {
+        let message = usageMessage(["research", "HD 650", "--apply"])
+        XCTAssertTrue(message?.contains("ai research takes") ?? false, message ?? "")
+        XCTAssertTrue(message?.contains("--refresh") ?? false, message ?? "")
+        XCTAssertFalse(message?.contains("--bands") ?? true, message ?? "")
+        XCTAssertFalse(message?.contains("ai suggest") ?? true, message ?? "")
+        let suggest = usageMessage(["suggest", "HD 650", "--refresh"])
+        XCTAssertTrue(suggest?.contains("ai suggest takes") ?? false, suggest ?? "")
+        XCTAssertTrue(suggest?.contains("--bands") ?? false, suggest ?? "")
+    }
+
+    func testSavingAKeyTightensADirectoryItInherited() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("qudelix-ai-loose-" + UUID().uuidString,
+                                    isDirectory: true)
+        temporaries.append(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        XCTAssertEqual(fileMode(dir) & 0o777, 0o755)
+        XCTAssertTrue(keychain(dir).save(key: "sk-mistral", provider: "mistral"))
+        XCTAssertEqual(fileMode(dir) & 0o777, 0o700)
+        XCTAssertEqual(keychain(dir).load(provider: "mistral"), .key("sk-mistral"))
+    }
+
+    func testSavingAKeyMovesASymlinkAsideRatherThanWritingThroughIt() throws {
+        let root = directory()
+        let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere,
+                                                withIntermediateDirectories: true)
+        let path = root.appendingPathComponent("qudelix", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: path, withDestinationURL: elsewhere)
+        XCTAssertTrue(keychain(path).save(key: "sk-mistral", provider: "mistral"))
+        let mode = fileMode(path)
+        XCTAssertEqual(mode & S_IFMT, S_IFDIR, "the link is gone, a directory is there")
+        XCTAssertEqual(mode & 0o777, 0o700)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: keychain(path).url(provider: "mistral").path))
+        XCTAssertTrue(try FileManager.default
+            .contentsOfDirectory(atPath: elsewhere.path).isEmpty,
+                      "nothing was written through the link")
+        let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("qudelix.displaced-") }, "\(names)")
+    }
+
+    func testKeyStatusInJsonNamesThePerProviderEnvironmentVariable() async throws {
+        let runtime = self.runtime(directory(), transport: ScriptedAITransport())
+        let json = try await captured {
+            try await AICommand.keyStatus.run(options: CLIOptions(json: true),
+                                              session: nil, runtime: runtime)
+        }
+        let object = (try? JSONSerialization.jsonObject(
+            with: Data(json.utf8))) as? [String: Any] ?? [:]
+        let rows = object["keys"] as? [[String: Any]] ?? []
+        XCTAssertEqual(rows.count, AIProvider.allCases.count)
+        for row in rows {
+            let id = row["id"] as? String ?? ""
+            let named = row["environment_variable"] as? String
+            XCTAssertEqual(named, AIKeychain.environmentVariable(provider: id))
+            XCTAssertNotEqual(named, AIKeychain.environmentVariable)
+            XCTAssertTrue(AICommand.missingKey(try AICommand.provider(id))
+                .message.contains(named ?? ""), id)
+        }
     }
 }
