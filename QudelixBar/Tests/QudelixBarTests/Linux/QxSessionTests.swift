@@ -265,6 +265,24 @@ extension QxFixtures {
 }
 
 final class QxSessionTests: XCTestCase {
+    private var historyDirectory: URL!
+
+    override func setUp() {
+        super.setUp()
+        historyDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("qx-session-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: historyDirectory,
+                                                 withIntermediateDirectories: true)
+        EqHistoryFile.directoryOverride = historyDirectory
+    }
+
+    override func tearDown() {
+        EqHistoryFile.directoryOverride = nil
+        try? FileManager.default.removeItem(at: historyDirectory)
+        historyDirectory = nil
+        super.tearDown()
+    }
+
     private func answeringLink(volumeDb: Double = -12,
                                presetIndex: Int = 2,
                                nameMask: Int = 0,

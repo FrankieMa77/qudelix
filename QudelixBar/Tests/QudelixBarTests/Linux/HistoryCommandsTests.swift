@@ -36,7 +36,7 @@ final class HistoryCommandsTests: XCTestCase {
     }
 
     private func entry(_ label: String, bands: Int = 10, preGain: Double = 0,
-                       at date: Date = Date()) -> EqHistoryEntry {
+                       at date: Date = Date(), groupRaw: UInt8? = nil) -> EqHistoryEntry {
         let freqs = bands == 20 ? QxEqGroup.b20.defaultFreqs : QxEqGroup.user.defaultFreqs
         let values = freqs.prefix(bands).map {
             QxEqBandValue(filter: .peak, freq: $0, gain: 1.5, q: 1.0)
@@ -44,8 +44,8 @@ final class HistoryCommandsTests: XCTestCase {
         return EqHistoryEntry(
             recordedAt: date,
             label: label,
-            snapshot: EqSnapshot(groupRaw: bands == 20 ? QxEqGroup.b20.rawValue
-                                                       : QxEqGroup.user.rawValue,
+            snapshot: EqSnapshot(groupRaw: groupRaw ?? (bands == 20 ? QxEqGroup.b20.rawValue
+                                                       : QxEqGroup.user.rawValue),
                                  bands: Array(values),
                                  preGain: preGain,
                                  enabled: true,
@@ -228,6 +228,26 @@ final class HistoryCommandsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: parked.path))
     }
 
+    func testAnOversizedFileIsLeftAloneRatherThanOverwritten() throws {
+        let url = EqHistoryFile.url
+        let bulk = Data(repeating: UInt8(ascii: "x"), count: 600_000)
+        try bulk.write(to: url)
+
+        XCTAssertTrue(EqHistoryFile.load().entries.isEmpty)
+        EqHistoryFile.append(entry("import"))
+
+        XCTAssertEqual(try Data(contentsOf: url), bulk)
+        let parked = url.deletingLastPathComponent()
+            .appendingPathComponent(url.lastPathComponent + ".recovered")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+    }
+
+    func testAnAbsentFileStillTakesTheFirstEntry() throws {
+        XCTAssertFalse(FileManager.default.fileExists(atPath: EqHistoryFile.url.path))
+        EqHistoryFile.append(entry("import"))
+        XCTAssertEqual(EqHistoryFile.load().entries.map(\.label), ["import"])
+    }
+
     func testListPrintsIndexTimeLabelAndBandCount() async throws {
         let when = Date(timeIntervalSince1970: 1_700_000_000)
         EqHistoryFile.append(entry("import", at: when))
@@ -358,8 +378,43 @@ final class HistoryCommandsTests: XCTestCase {
         XCTAssertEqual(EqHistoryFile.load().entries[1].snapshot.preGain, -3, accuracy: 0.06)
     }
 
-    func testRestoreRefusesACurveOfTheWrongWidth() async throws {
+    func testRestoreRefusesAnEntryRecordedForAnotherBank() async throws {
         EqHistoryFile.append(entry("import", bands: 20))
+        let link = QxFixtures.answeringLink()
+        let session = try await connected(link)
+        defer { session.close() }
+        link.clearSends()
+
+        do {
+            try await HistoryCommand.restore(1).run(options: CLIOptions(), session: session)
+            XCTFail("expected the bank mismatch to be refused")
+        } catch let error as CLIUsageError {
+            XCTAssertTrue(error.message.contains("b20 (20-band)"), error.message)
+            XCTAssertTrue(error.message.contains("user (10-band)"), error.message)
+            XCTAssertTrue(error.message.contains("separate banks"), error.message)
+        }
+        XCTAssertTrue(link.sentCommands.isEmpty)
+    }
+
+    func testRestoreRefusesASpeakerEntryOnTheUserBank() async throws {
+        EqHistoryFile.append(entry("import", groupRaw: QxEqGroup.speaker.rawValue))
+        let link = QxFixtures.answeringLink()
+        let session = try await connected(link)
+        defer { session.close() }
+        link.clearSends()
+
+        do {
+            try await HistoryCommand.restore(1).run(options: CLIOptions(), session: session)
+            XCTFail("expected the speaker-bank entry to be refused")
+        } catch let error as CLIUsageError {
+            XCTAssertTrue(error.message.contains("speaker (10-band)"), error.message)
+            XCTAssertTrue(error.message.contains("user (10-band)"), error.message)
+        }
+        XCTAssertTrue(link.sentCommands.isEmpty)
+    }
+
+    func testRestoreFallsBackToTheBandCountWhenTheBankDoesNotDecode() async throws {
+        EqHistoryFile.append(entry("import", bands: 20, groupRaw: 9))
         let link = QxFixtures.answeringLink()
         let session = try await connected(link)
         defer { session.close() }
