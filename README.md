@@ -124,6 +124,13 @@ If you would rather not trust a binary, build it yourself — see below.
 
 Requires macOS 14 or later. Universal binary, Apple Silicon and Intel.
 
+### Linux
+
+A command-line version for Ubuntu 22.04 and later, `qudelix`, controls the
+5K over USB (and, best-effort, Bluetooth LE) without the graphical app. It
+ships as a `.deb` built from this repository; install and usage notes are in
+[linux/README.md](linux/README.md).
+
 ### Verify your download
 
 Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
