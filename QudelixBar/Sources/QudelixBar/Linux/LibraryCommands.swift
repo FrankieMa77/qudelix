@@ -69,6 +69,10 @@ enum LibraryCommand: CLIFamily {
             guard !arguments.isEmpty else {
                 throw CLIUsageError(message: "library search needs something to look for")
             }
+            if let flag = arguments.first(where: { $0.hasPrefix("-") }) {
+                throw CLIUsageError(message: "library search takes words to look for, "
+                    + "and takes no flags — not \(flag)")
+            }
             return .search(arguments.joined(separator: " "))
         case "fetch":
             return try parseFetch(arguments)
@@ -335,7 +339,8 @@ enum LibraryCommand: CLIFamily {
         var file = ParametricEQFile()
         file.preamp = preset.preGain
         file.bands = preset.bands
-        let applied = try await session.applyParametric(file, expecting: group)
+        let applied = try await session.applyParametric(
+            file, expecting: group, recording: "library " + preset.name)
         if json {
             var object = QxFormat.eqObject(preGain: applied.preGain, bands: applied.bands,
                                            enabled: true, group: group)
@@ -453,7 +458,8 @@ enum LibraryCommand: CLIFamily {
         let candidate = try await candidate(for: reference, budget: budget)
         let fitted = try await fit(candidate, target: target, bandCount: group.bandCount,
                                    budget: budget)
-        let applied = try await session.applyParametric(fitted.file, expecting: group)
+        let applied = try await session.applyParametric(
+            fitted.file, expecting: group, recording: "fetch " + candidate.title)
         var saved: (name: String, index: Int)?
         if let saveAs {
             var document = try document()

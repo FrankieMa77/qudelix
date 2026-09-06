@@ -7,11 +7,13 @@ import FoundationNetworking
 private struct CatalogueTransport: HTTPTransport {
     let entries: String
     let targets: String
+    var equalize: String = ""
 
     func send(_ request: URLRequest, limit: Int) async throws -> Data {
         switch request.url?.path {
         case "/entries": return Data(entries.utf8)
         case "/targets": return Data(targets.utf8)
+        case "/equalize": return Data(equalize.utf8)
         default: throw LibraryError(description: "unexpected request")
         }
     }
@@ -30,6 +32,7 @@ final class LibraryCommandsTests: XCTestCase {
         searchFile = root.appendingPathComponent("autoeq-search.json")
         LibraryCommand.fileOverride = libraryFile
         LibraryCommand.searchFileOverride = searchFile
+        EqHistoryFile.directoryOverride = root
     }
 
     override func tearDown() {
@@ -38,6 +41,7 @@ final class LibraryCommandsTests: XCTestCase {
         LibraryCommand.fileOverride = nil
         LibraryCommand.searchFileOverride = nil
         LibraryCommand.transportOverride = nil
+        EqHistoryFile.directoryOverride = nil
         super.tearDown()
     }
 
@@ -131,10 +135,19 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertNotNil(usageMessage(["library", "save", "a", "b"]))
         XCTAssertNotNil(usageMessage(["library", "search"]))
         XCTAssertNotNil(usageMessage(["library", "fetch"]))
+        XCTAssertNotNil(usageMessage(["library", "search", "--bogus"]))
+        XCTAssertNotNil(usageMessage(["library", "search", "HD", "-x"]))
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "target"]))
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "sideways", "x"]))
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "target", "a", "target", "b"]))
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "save", "a", "save", "b"]))
+    }
+
+    func testSearchRefusesAFlagRatherThanLookingForItsText() {
+        XCTAssertEqual(usageMessage(["library", "search", "--bogus"]),
+                       "library search takes words to look for, "
+                           + "and takes no flags — not --bogus")
+        XCTAssertEqual(try? parse("library search HD 650"), .library(.search("HD 650")))
     }
 
     func testWhichSubcommandsNeedTheDeviceAndWhichPersist() throws {
@@ -330,6 +343,19 @@ final class LibraryCommandsTests: XCTestCase {
         }
     }
 
+    func testApplyRecordsTheSavedNameInTheHistory() async throws {
+        write([preset("Bassy", gain: 2.5)])
+        await expect(CLIExit.ok, ["library", "apply", "Bassy"], deviceLink())
+        XCTAssertEqual(EqHistoryFile.load().entries.map(\.label), ["library Bassy"])
+    }
+
+    func testFetchRecordsTheMeasurementTitleInTheHistory() async throws {
+        useFakeCatalogue()
+        await expect(CLIExit.ok, ["library", "fetch", "Sennheiser HD 600"], deviceLink())
+        XCTAssertEqual(EqHistoryFile.load().entries.map(\.label),
+                       ["fetch Sennheiser HD 600"])
+    }
+
     func testApplyByIndexAndAsJson() async throws {
         write([preset("Bassy"), preset("Bright")])
         await expect(CLIExit.ok, ["library", "apply", "2"], deviceLink())
@@ -413,9 +439,23 @@ final class LibraryCommandsTests: XCTestCase {
     ]
     """
 
+    private static let equalizeJSON = """
+    {
+      "parametric_eq": {
+        "preamp": -3.2,
+        "filters": [
+          {"type": "LOW_SHELF", "fc": 105, "q": 0.7, "gain": 4.5},
+          {"type": "PEAKING", "fc": 1200, "q": 1.1, "gain": -2.5},
+          {"type": "HIGH_SHELF", "fc": 9000, "q": 0.7, "gain": 1.5}
+        ]
+      }
+    }
+    """
+
     private func useFakeCatalogue() {
         LibraryCommand.transportOverride = CatalogueTransport(entries: Self.entriesJSON,
-                                                              targets: Self.targetsJSON)
+                                                              targets: Self.targetsJSON,
+                                                              equalize: Self.equalizeJSON)
     }
 
     func testSearchRanksTheFakeCatalogueAndRemembersTheResults() async throws {

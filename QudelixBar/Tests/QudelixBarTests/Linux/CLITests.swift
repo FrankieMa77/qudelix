@@ -2,6 +2,24 @@ import XCTest
 @testable import QudelixBar
 
 final class CLITests: XCTestCase {
+    private var historyDirectory: URL!
+
+    override func setUp() {
+        super.setUp()
+        historyDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("qx-cli-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: historyDirectory,
+                                                 withIntermediateDirectories: true)
+        EqHistoryFile.directoryOverride = historyDirectory
+    }
+
+    override func tearDown() {
+        EqHistoryFile.directoryOverride = nil
+        try? FileManager.default.removeItem(at: historyDirectory)
+        historyDirectory = nil
+        super.tearDown()
+    }
+
     private func parse(_ line: String) throws -> CLIInvocation {
         try CLI.parse(line.split(separator: " ").map(String.init))
     }
@@ -608,5 +626,35 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(QxFormat.filterLines().count, QxStatusParser.dacFilters.count)
         XCTAssertTrue(QxFormat.filterLines()[0].hasSuffix(QxStatusParser.dacFilters[0]))
         XCTAssertTrue(QxFormat.filterLines(current: 2)[2].hasPrefix("* "))
+    }
+
+    func testAGlobalFlagStaysGlobalInsideAFamilyThatOwnsItsOwnFlags() throws {
+        let invocation = try parse("library list --json")
+        XCTAssertTrue(invocation.options.json)
+        XCTAssertEqual(invocation.command, .library(.list))
+    }
+
+    func testAnUnknownFlagIsAUsageErrorOutsideAFamilyThatOwnsFlags() {
+        XCTAssertEqual(usageMessage(["--bogus"]), "unknown option --bogus")
+        XCTAssertEqual(usageMessage(["status", "--bogus"]), "unknown option --bogus")
+    }
+
+    func testANegativeNumberIsStillAValueRatherThanAFlag() throws {
+        XCTAssertEqual(try command("volume -3"), .volumeSet(-3))
+    }
+
+    func testAFamilyThatOwnsItsFlagsStillRejectsANonsensePosition() {
+        XCTAssertNotNil(usageMessage(["history", "show", "-1"]))
+    }
+
+    func testSubcommandFlagsReachTheFamilyWithoutADoubleDash() throws {
+        XCTAssertEqual(try command("library save --replace Bassy"),
+                       .library(.save(name: "Bassy", replacing: true)))
+        guard case .ai(.suggest(let request)) =
+            try command("ai suggest HD 650 --apply") else {
+            return XCTFail("ai suggest did not parse as a suggest request")
+        }
+        XCTAssertEqual(request.headphone, "HD 650")
+        XCTAssertTrue(request.apply)
     }
 }

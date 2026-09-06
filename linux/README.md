@@ -79,8 +79,9 @@ at all.
 `library save replace <name>`, `library fetch … save <name>` and `library fetch … target <name>`
 also accept the dashed spellings `--replace`, `--save` and `--target`.
 
-Every command that rewrites the live EQ — `import`, `preset push`, `preset load` and
-`history restore` — first records the curve the device was holding, so
+Every command that rewrites the live EQ — `import`, `preset push`, `preset load`,
+`library apply`, `library fetch`, `ai suggest --apply` and `history restore` — first
+records the curve the device was holding, so
 `qudelix history restore 1` steps back to where the previous command started.
 Entries are numbered from the newest, at most 40 are kept, and they live in
 `~/.local/share/QudelixBar/eq-history.json` (`$XDG_DATA_HOME/QudelixBar/` when that
@@ -151,9 +152,7 @@ Flags `ai suggest` takes:
 
 `ai research` takes `--provider`, `--model` and `--refresh`. `qudelix ai suggest
 --kind wrong` lists every kind it accepts, and `qudelix ai key set wrong` every
-provider. If a run answers `unknown option --kind`, this build's shared option
-parser has not been taught to hand subcommand flags on yet — put `--` ahead of
-them: `qudelix ai suggest "Sennheiser HD 650" -- --kind clarity --apply`.
+provider.
 
 Without `--apply` nothing touches the device: the draft is printed as a band table
 with the model's own notes, and the run needs no 5K attached. With `--apply` the

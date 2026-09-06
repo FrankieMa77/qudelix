@@ -56,22 +56,45 @@ enum EqHistoryFile {
         return decoder
     }
 
-    static func load(from fileURL: URL = url) -> EqHistory {
-        guard let data = SafeFile.read(fileURL, cap: maxBytes) else { return EqHistory() }
+    enum Outcome {
+        case loaded(EqHistory)
+        case unreadable
+    }
+
+    static func outcome(from fileURL: URL = url) -> Outcome {
+        guard let data = SafeFile.read(fileURL, cap: maxBytes) else {
+            return hasContent(fileURL) ? .unreadable : .loaded(EqHistory())
+        }
         guard let history = try? decoder.decode(EqHistory.self, from: data) else {
             let parked = fileURL.deletingLastPathComponent()
                 .appendingPathComponent(fileURL.lastPathComponent + ".recovered")
             SafeFile.writeAtomic(data, to: parked)
-            return EqHistory()
+            return .loaded(EqHistory())
         }
-        return EqHistory(entries: history.entries.suffix(depth).map(sanitized))
+        return .loaded(EqHistory(entries: history.entries.suffix(depth).map(sanitized)))
+    }
+
+    static func load(from fileURL: URL = url) -> EqHistory {
+        if case .loaded(let history) = outcome(from: fileURL) { return history }
+        return EqHistory()
     }
 
     static func append(_ entry: EqHistoryEntry, to fileURL: URL = url) {
-        var history = load(from: fileURL)
+        guard case .loaded(var history) = outcome(from: fileURL) else { return }
         history.entries.append(sanitized(entry))
         history.entries = Array(history.entries.suffix(depth))
         save(history, to: fileURL)
+    }
+
+    private static func hasContent(_ fileURL: URL) -> Bool {
+        var info = stat()
+        let found = fileURL.withUnsafeFileSystemRepresentation { path -> Bool in
+            guard let path else { return false }
+            return lstat(path, &info) == 0
+        }
+        guard found else { return false }
+        if info.st_mode & S_IFMT == S_IFREG, info.st_size == 0 { return false }
+        return true
     }
 
     static func save(_ history: EqHistory, to fileURL: URL = url) {
@@ -245,10 +268,20 @@ enum HistoryCommand: CLIFamily {
         let history = EqHistoryFile.load()
         let entry = try HistoryCommand.require(history, position)
         let group = await session.snapshot().eqGroup
-        guard entry.snapshot.bands.count == group.bandCount else {
-            throw CLIUsageError(
-                message: "entry \(position) holds \(entry.snapshot.bands.count) bands, "
-                    + "and this device is in " + QxFormat.groupLabel(group) + " mode")
+        if let recorded = QxEqGroup(rawValue: entry.snapshot.groupRaw) {
+            guard recorded == group else {
+                throw CLIUsageError(
+                    message: "entry \(position) was recorded for the "
+                        + QxFormat.groupLabel(recorded) + " EQ and the device is in "
+                        + QxFormat.groupLabel(group) + " mode — those are separate banks "
+                        + "with different band counts, so nothing has been written")
+            }
+        } else {
+            guard entry.snapshot.bands.count == group.bandCount else {
+                throw CLIUsageError(
+                    message: "entry \(position) holds \(entry.snapshot.bands.count) bands, "
+                        + "and this device is in " + QxFormat.groupLabel(group) + " mode")
+            }
         }
         var file = ParametricEQFile()
         file.preamp = entry.snapshot.preGain
