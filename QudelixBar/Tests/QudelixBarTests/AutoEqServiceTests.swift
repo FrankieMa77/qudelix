@@ -859,7 +859,7 @@ final class AutoEqServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testIndexEntriesWithAbsurdTitlesOrPathsAreSkipped() {
+    func testIndexEntriesWithAbsurdTitlesOrPathsAreSkipped() async {
         let long = String(repeating: "A", count: 500)
         let markdown = """
         - [Sennheiser HD 650](./oratory1990/over-ear/Sennheiser%20HD%20650)

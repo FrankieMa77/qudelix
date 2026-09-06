@@ -147,7 +147,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testAnUnreadableFileIsLeftAloneRatherThanReplacedWithAnEmptyLibrary() throws {
+    func testAnUnreadableFileIsLeftAloneRatherThanReplacedWithAnEmptyLibrary() async throws {
         try XCTSkipIf(getuid() == 0, "root reads a 0000-mode file regardless")
         let url = tempFileURL()
         defer {
@@ -210,7 +210,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testAFileThatFailedToReadIsNeverWrittenOver() {
+    func testAFileThatFailedToReadIsNeverWrittenOver() async {
         let url = tempFileURL()
         defer {
             try? FileManager.default.removeItem(at: url)
@@ -312,7 +312,7 @@ final class PresetLibraryTests: XCTestCase {
 
 
     @MainActor
-    func testVisiblePresetsAreTheGlobalOnesPlusThisOutputs() {
+    func testVisiblePresetsAreTheGlobalOnesPlusThisOutputs() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -327,7 +327,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testChangingScopeMovesAPresetBetweenTheTwoLists() {
+    func testChangingScopeMovesAPresetBetweenTheTwoLists() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -344,7 +344,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testAScopeWithNoUIDIsRefusedRatherThanHidingThePreset() {
+    func testAScopeWithNoUIDIsRefusedRatherThanHidingThePreset() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -366,7 +366,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testSavingTheSameNameTwiceInOneScopeMakesTheSecondUnique() {
+    func testSavingTheSameNameTwiceInOneScopeMakesTheSecondUnique() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -377,7 +377,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testTheSameNameIsFreeAgainInADifferentScope() {
+    func testTheSameNameIsFreeAgainInADifferentScope() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -388,7 +388,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testRenamingOntoATakenNameCountsUpAndAnEmptyNameIsRefused() {
+    func testRenamingOntoATakenNameCountsUpAndAnEmptyNameIsRefused() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -405,7 +405,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testRenamingAPresetToTheNameItAlreadyHasDoesNotCountUp() {
+    func testRenamingAPresetToTheNameItAlreadyHasDoesNotCountUp() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -420,7 +420,7 @@ final class PresetLibraryTests: XCTestCase {
 
 
     @MainActor
-    func testSavingTheCurrentCurveRecordsTheGroupAndTheSourceName() {
+    func testSavingTheCurrentCurveRecordsTheGroupAndTheSourceName() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url, group: .b20,
@@ -437,7 +437,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testSavingWithNoDeviceSaysSoAndKeepsTheLibraryEmpty() {
+    func testSavingWithNoDeviceSaysSoAndKeepsTheLibraryEmpty() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url, group: nil)
@@ -449,7 +449,7 @@ final class PresetLibraryTests: XCTestCase {
 
 
     @MainActor
-    func testApplyingAMatchingPresetGoesThroughTheWritePath() {
+    func testApplyingAMatchingPresetGoesThroughTheWritePath() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, applied) = self.library(at: url)
@@ -463,7 +463,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testAPresetMadeForTheOtherBankIsRefusedAndBothModesAreNamed() {
+    func testAPresetMadeForTheOtherBankIsRefusedAndBothModesAreNamed() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, applied) = self.library(at: url, group: .user)
@@ -483,7 +483,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testAWriteTheDeviceRefusesIsReportedRatherThanCountedAsApplied() {
+    func testAWriteTheDeviceRefusesIsReportedRatherThanCountedAsApplied() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, applied) = self.library(at: url, applies: false)
@@ -497,7 +497,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testApplyingWithNoDeviceIsRefused() {
+    func testApplyingWithNoDeviceIsRefused() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, applied) = self.library(at: url, group: nil)
@@ -512,7 +512,7 @@ final class PresetLibraryTests: XCTestCase {
 
 
     @MainActor
-    func testDeletingRemovesThePresetFromDiskToo() {
+    func testDeletingRemovesThePresetFromDiskToo() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -528,7 +528,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testTheHeadphoneNameIsScrubbedAndPersisted() {
+    func testTheHeadphoneNameIsScrubbedAndPersisted() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -542,7 +542,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testImportingTextAddsAPresetWithoutTouchingTheDevice() {
+    func testImportingTextAddsAPresetWithoutTouchingTheDevice() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, applied) = self.library(at: url)
@@ -562,7 +562,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testImportingTextWithNoFiltersIsRefused() {
+    func testImportingTextWithNoFiltersIsRefused() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -573,7 +573,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testExportedTextParsesBackIntoTheSameCurve() {
+    func testExportedTextParsesBackIntoTheSameCurve() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -597,7 +597,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testTheLibraryRefusesToGrowPastItsCap() {
+    func testTheLibraryRefusesToGrowPastItsCap() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -611,7 +611,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testSuggestedNamesSurviveAReload() {
+    func testSuggestedNamesSurviveAReload() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (first, _) = self.library(at: url)
@@ -629,7 +629,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testSuggestedNamesAreBoundedAndDropTheOldestFirst() {
+    func testSuggestedNamesAreBoundedAndDropTheOldestFirst() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)
@@ -647,7 +647,7 @@ final class PresetLibraryTests: XCTestCase {
     }
 
     @MainActor
-    func testRepeatingASuggestedNameMovesItToTheFreshEnd() {
+    func testRepeatingASuggestedNameMovesItToTheFreshEnd() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let (library, _) = self.library(at: url)

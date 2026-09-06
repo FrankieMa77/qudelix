@@ -17,7 +17,7 @@ final class ProfileRulesTests: XCTestCase {
     // MARK: - Rule matching
 
     @MainActor
-    func testUnknownOutputProducesNoSuggestionAndNoApply() {
+    func testUnknownOutputProducesNoSuggestionAndNoApply() async {
         let rules = ProfileRules()
         var applied: Int?
         rules.onApplyPreset = { applied = $0; return true }
@@ -29,7 +29,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testKnownOutputWithAutomaticOffOffersASuggestionRatherThanApplying() {
+    func testKnownOutputWithAutomaticOffOffersASuggestionRatherThanApplying() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-1", outputName: "Studio Cans", presetIndex: 3)
         var applied: Int?
@@ -45,7 +45,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testRepeatedReportOfTheSameOutputDoesNotResurfaceADismissedSuggestion() {
+    func testRepeatedReportOfTheSameOutputDoesNotResurfaceADismissedSuggestion() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-1", outputName: "Studio Cans", presetIndex: 3)
 
@@ -62,7 +62,7 @@ final class ProfileRulesTests: XCTestCase {
     // MARK: - Confirm vs. automatic
 
     @MainActor
-    func testConfirmingASuggestionAppliesOnceAndMarksTheRuleConfirmed() {
+    func testConfirmingASuggestionAppliesOnceAndMarksTheRuleConfirmed() async {
         let rules = ProfileRules()
         rules.previewSet(rules: [ProfileRule(outputUID: "uid-2", outputName: "Desk Speakers",
                                              presetIndex: 5)])
@@ -79,7 +79,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testAutomaticCannotBeTurnedOnBeforeTheRuleIsConfirmed() {
+    func testAutomaticCannotBeTurnedOnBeforeTheRuleIsConfirmed() async {
         let rules = ProfileRules()
         rules.previewSet(rules: [ProfileRule(outputUID: "uid-3", outputName: "Travel IEMs",
                                              presetIndex: 1, confirmed: false)])
@@ -91,7 +91,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testAutomaticTurnsOnOnceConfirmedAndThenAppliesSilently() {
+    func testAutomaticTurnsOnOnceConfirmedAndThenAppliesSilently() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-4", outputName: "Home Rig", presetIndex: 7)
         rules.canApplyNow = { true }
@@ -108,7 +108,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testAutomaticFallsBackToASuggestionWhenApplyingWouldNotBeSafe() {
+    func testAutomaticFallsBackToASuggestionWhenApplyingWouldNotBeSafe() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-5", outputName: "Night Setup", presetIndex: 2)
         rules.setAutomatic(true, forUID: "uid-5")
@@ -130,7 +130,7 @@ final class ProfileRulesTests: XCTestCase {
     /// switch presets silently, so earning it on a write nobody performed
     /// would arm the feature on the strength of nothing.
     @MainActor
-    func testARefusedApplyDoesNotConfirmTheRule() {
+    func testARefusedApplyDoesNotConfirmTheRule() async {
         let rules = ProfileRules()
         rules.previewSet(rules: [ProfileRule(outputUID: "uid-r", outputName: "Refused",
                                              presetIndex: 6)])
@@ -151,7 +151,7 @@ final class ProfileRulesTests: XCTestCase {
     /// An automatic rule whose write is refused falls back to asking, rather
     /// than leaving the previous headphone's preset running and saying nothing.
     @MainActor
-    func testAutomaticFallsBackToAskingWhenTheWriteIsRefused() {
+    func testAutomaticFallsBackToAskingWhenTheWriteIsRefused() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-s", outputName: "Silent Fail", presetIndex: 8)
         rules.canApplyNow = { true }
@@ -171,7 +171,7 @@ final class ProfileRulesTests: XCTestCase {
     /// 10-band mode names a different curve entirely once the device is in
     /// 20-band mode. Nothing may switch on that.
     @MainActor
-    func testARuleFromAnotherEqGroupNeitherSwitchesNorOffersTo() {
+    func testARuleFromAnotherEqGroupNeitherSwitchesNorOffersTo() async {
         let rules = ProfileRules()
         rules.currentEqGroupRaw = QxEqGroup.user.rawValue
         rules.bind(outputUID: "uid-g", outputName: "Studio Cans", presetIndex: 3)
@@ -189,7 +189,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testBindingRecordsTheGroupItWasMadeIn() {
+    func testBindingRecordsTheGroupItWasMadeIn() async {
         let rules = ProfileRules()
         rules.currentEqGroupRaw = QxEqGroup.b20.rawValue
         rules.bind(outputUID: "uid-h", outputName: "Twenty Band", presetIndex: 4)
@@ -198,7 +198,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testARuleReturnsToLifeWhenTheDeviceIsBackInItsGroup() {
+    func testARuleReturnsToLifeWhenTheDeviceIsBackInItsGroup() async {
         let rules = ProfileRules()
         rules.currentEqGroupRaw = QxEqGroup.user.rawValue
         rules.bind(outputUID: "uid-i", outputName: "Ten Band", presetIndex: 2)
@@ -223,7 +223,7 @@ final class ProfileRulesTests: XCTestCase {
     /// belong to either bank. It is still offered — the user reads the name
     /// and decides — but it does not get to switch unannounced on a guess.
     @MainActor
-    func testAnUnmarkedRuleAsksRatherThanSwitchingSilently() {
+    func testAnUnmarkedRuleAsksRatherThanSwitchingSilently() async {
         let rules = ProfileRules()
         rules.previewSet(rules: [ProfileRule(outputUID: "uid-j", outputName: "Old Rule",
                                              presetIndex: 5, confirmed: true, automatic: true)])
@@ -241,7 +241,7 @@ final class ProfileRulesTests: XCTestCase {
     /// …and confirming it once settles which bank it meant, so it never has to
     /// ask again on those grounds.
     @MainActor
-    func testConfirmingAnUnmarkedRuleRecordsTheGroupItWasUsedIn() {
+    func testConfirmingAnUnmarkedRuleRecordsTheGroupItWasUsedIn() async {
         let rules = ProfileRules()
         rules.previewSet(rules: [ProfileRule(outputUID: "uid-k", outputName: "Old Rule",
                                              presetIndex: 5)])
@@ -258,7 +258,7 @@ final class ProfileRulesTests: XCTestCase {
     /// before this field existed either. With no group known there is nothing
     /// to contradict a rule, so it behaves exactly as it always has.
     @MainActor
-    func testWithNoKnownGroupTheRulesBehaveAsBefore() {
+    func testWithNoKnownGroupTheRulesBehaveAsBefore() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-l", outputName: "Home Rig", presetIndex: 7)
         rules.canApplyNow = { true }
@@ -279,7 +279,7 @@ final class ProfileRulesTests: XCTestCase {
     /// pretending the identifier is unique. `bind` must not grow a second,
     /// disagreeing rule for a UID that's already known: it replaces.
     @MainActor
-    func testBindingAKnownUIDReplacesRatherThanDuplicates() {
+    func testBindingAKnownUIDReplacesRatherThanDuplicates() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "shared-uid", outputName: "USB-C to 3.5mm Adapter", presetIndex: 0)
         rules.bind(outputUID: "shared-uid", outputName: "USB-C to 3.5mm Adapter", presetIndex: 9)
@@ -290,7 +290,7 @@ final class ProfileRulesTests: XCTestCase {
     }
 
     @MainActor
-    func testRemovingARuleAlsoClearsAMatchingPendingSuggestion() {
+    func testRemovingARuleAlsoClearsAMatchingPendingSuggestion() async {
         let rules = ProfileRules()
         rules.bind(outputUID: "uid-6", outputName: "Cans", presetIndex: 4)
         rules.outputChanged(uid: "uid-6", name: "Cans")
@@ -305,7 +305,7 @@ final class ProfileRulesTests: XCTestCase {
     // MARK: - Persistence round-trip
 
     @MainActor
-    func testSavedRulesLoadBackIdentically() {
+    func testSavedRulesLoadBackIdentically() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let original = [

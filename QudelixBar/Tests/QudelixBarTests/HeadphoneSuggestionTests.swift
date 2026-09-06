@@ -38,21 +38,21 @@ final class HeadphoneSuggestionTests: XCTestCase {
         return engine
     }
 
-    func testNormalisationKeepsOnlyLettersAndDigits() {
+    func testNormalisationKeepsOnlyLettersAndDigits() async {
         XCTAssertEqual(HeadphoneSuggestions.normalized("Sennheiser HD 650!"),
                        "sennheiserhd650")
         XCTAssertEqual(HeadphoneSuggestions.normalized("  hd-650  "), "hd650")
         XCTAssertEqual(HeadphoneSuggestions.normalized("— · —"), "")
     }
 
-    func testShortNamesNeverMatch() {
+    func testShortNamesNeverMatch() async {
         let entries = [entry("Sennheiser HD 650", "oratory1990")]
         XCTAssertTrue(HeadphoneSuggestions.matches(for: "HD", in: entries).isEmpty)
         XCTAssertTrue(HeadphoneSuggestions.matches(for: "6 5", in: entries).isEmpty)
         XCTAssertEqual(HeadphoneSuggestions.matches(for: "HD 650", in: entries).count, 1)
     }
 
-    func testContainmentWorksInBothDirections() {
+    func testContainmentWorksInBothDirections() async {
         let entries = [entry("Marshall Major IV", "rtings"),
                        entry("HD 6", "oratory1990")]
         XCTAssertEqual(HeadphoneSuggestions.matches(for: "MAJOR IV", in: entries)
@@ -61,14 +61,14 @@ final class HeadphoneSuggestionTests: XCTestCase {
             .map(\.title), ["HD 6"])
     }
 
-    func testEntriesWithNoLettersOrDigitsNeverMatchEverything() {
+    func testEntriesWithNoLettersOrDigitsNeverMatchEverything() async {
         let entries = [entry("— —", "oratory1990"),
                        entry("Sennheiser HD 650", "oratory1990")]
         XCTAssertEqual(HeadphoneSuggestions.matches(for: "Sennheiser HD 650", in: entries)
             .map(\.title), ["Sennheiser HD 650"])
     }
 
-    func testRankingPrefersMeasurementSourceThenNameCloseness() {
+    func testRankingPrefersMeasurementSourceThenNameCloseness() async {
         let entries = [entry("Sennheiser HD 650 Special", "rtings"),
                        entry("Sennheiser HD 650", "crinacle"),
                        entry("Sennheiser HD 650 Reissue", "oratory1990"),
@@ -82,7 +82,7 @@ final class HeadphoneSuggestionTests: XCTestCase {
              "Sennheiser HD 650 Special/rtings"])
     }
 
-    func testTiesBreakDeterministicallyOnTitle() {
+    func testTiesBreakDeterministicallyOnTitle() async {
         let a = [entry("Sennheiser HD 650 B", "oratory1990"),
                  entry("Sennheiser HD 650 A", "oratory1990")]
         let b = [entry("Sennheiser HD 650 A", "oratory1990"),
@@ -94,7 +94,7 @@ final class HeadphoneSuggestionTests: XCTestCase {
             .map(\.title), wanted)
     }
 
-    func testSourceRankOrdersTheTwoNamedSourcesFirst() {
+    func testSourceRankOrdersTheTwoNamedSourcesFirst() async {
         XCTAssertEqual(HeadphoneSuggestions.sourceRank("oratory1990"), 0)
         XCTAssertEqual(HeadphoneSuggestions.sourceRank("Crinacle"), 1)
         XCTAssertEqual(HeadphoneSuggestions.sourceRank("rtings"), 2)
@@ -271,7 +271,7 @@ final class HeadphoneSuggestionTests: XCTestCase {
         XCTAssertEqual(engine.diagSummary, "suggest=none")
     }
 
-    func testTooShortANameNeverTouchesTheCatalogue() {
+    func testTooShortANameNeverTouchesTheCatalogue() async {
         let url = tempFileURL()
         defer { try? FileManager.default.removeItem(at: url) }
         let library = library(at: url)
@@ -305,7 +305,7 @@ final class HeadphoneSuggestionTests: XCTestCase {
         XCTAssertEqual(engine.banner?.entry, engine.banner?.alternatives.first)
     }
 
-    func testBannerWording() {
+    func testBannerWording() async {
         XCTAssertEqual(HeadphoneSuggestions.headline("Sennheiser HD 650"),
                        "Sennheiser HD 650 \u{2014} measured correction available")
         XCTAssertEqual(HeadphoneSuggestions.measuredBy("oratory1990"),
@@ -319,7 +319,7 @@ final class HeadphoneSuggestionTests: XCTestCase {
         XCTAssertTrue(HeadphoneSuggestions.notificationBody.contains("AutoEq"))
     }
 
-    func testWordingStripsControlCharactersFromCatalogueText() {
+    func testWordingStripsControlCharactersFromCatalogueText() async {
         XCTAssertEqual(HeadphoneSuggestions.headline("HD\n650"),
                        "HD650 \u{2014} measured correction available")
         XCTAssertEqual(HeadphoneSuggestions.measuredBy("orat\u{202E}ory1990"),
