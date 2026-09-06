@@ -125,8 +125,10 @@ private func groupLabel(_ raw: UInt8?) -> String {
 /// preset — at worst it's treated as empty, with the original parked next to
 /// it for recovery, the same gesture a corrupt stage.json gets.
 enum ProfileRulesFile {
+    static var urlOverride: URL?
+
     static var url: URL {
-        StageStateFile.directory.appendingPathComponent("profiles.json")
+        urlOverride ?? StageStateFile.directory.appendingPathComponent("profiles.json")
     }
 
     /// A rule list someone could plausibly hand-maintain is a few hundred

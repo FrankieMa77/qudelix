@@ -8,6 +8,23 @@ import XCTest
 /// driven through `ProfileRulesFile`'s own `from:`/`to:` overrides, so both
 /// are exercised exactly as a headless test can.
 final class ProfileRulesTests: XCTestCase {
+    private var sandbox: URL!
+
+    override func setUp() {
+        super.setUp()
+        sandbox = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("profile-rules-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: sandbox,
+                                                 withIntermediateDirectories: true)
+        ProfileRulesFile.urlOverride = sandbox.appendingPathComponent("profiles.json")
+    }
+
+    override func tearDown() {
+        ProfileRulesFile.urlOverride = nil
+        try? FileManager.default.removeItem(at: sandbox)
+        sandbox = nil
+        super.tearDown()
+    }
 
     private func tempFileURL() -> URL {
         FileManager.default.temporaryDirectory
