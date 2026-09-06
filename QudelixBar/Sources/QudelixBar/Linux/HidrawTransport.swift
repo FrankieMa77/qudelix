@@ -126,6 +126,9 @@ final class HidrawTransport: QxLink {
         let name = device.name.isEmpty ? device.node : device.name
         DebugLog.shared.log("hidraw attached: \(name) at \(device.devPath), "
             + "txReport id=\(output.id) size=\(output.size)")
+        if !device.hasExpectedProductID {
+            DebugLog.shared.log("hidraw product id \(String(format: "0x%04X", device.productID)) is not the 5K's; continuing on the name match")
+        }
         startReader(fd: descriptor, generation: gen)
         onConnected?(name)
     }
