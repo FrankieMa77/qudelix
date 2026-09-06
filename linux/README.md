@@ -76,9 +76,8 @@ the same way `import` and `preset push` do. Every other `library` subcommand onl
 the file on this machine, and `library list`, `show`, `delete` and `search` need no device
 at all.
 
-`library save`, `library fetch … save` and `library fetch … target` are spelled without
-dashes because global flags are parsed before a subcommand sees them. The dashed spellings
-work after `--`: `qudelix -- library save --replace Bassy`.
+`library save replace <name>`, `library fetch … save <name>` and `library fetch … target <name>`
+also accept the dashed spellings `--replace`, `--save` and `--target`.
 
 Every command that rewrites the live EQ — `import`, `preset push`, `preset load` and
 `history restore` — first records the curve the device was holding, so

@@ -125,7 +125,8 @@ enum CLI {
             default:
                 if token.hasPrefix("--timeout=") {
                     options.timeout = try seconds(String(token.dropFirst("--timeout=".count)))
-                } else if token.hasPrefix("-"), token.count > 1, Double(token) == nil {
+                } else if token.hasPrefix("-"), token.count > 1, Double(token) == nil,
+                          !familyOwnsFlags(positional) {
                     throw CLIUsageError(message: "unknown option \(token)")
                 } else {
                     positional.append(token)
@@ -134,6 +135,12 @@ enum CLI {
         }
         if wantsHelp { return CLIInvocation(options: options, command: .help) }
         return CLIInvocation(options: options, command: try command(positional))
+    }
+
+    private static let familiesWithFlags: Set<String> = [LibraryCommand.name, AICommand.name, HistoryCommand.name]
+
+    private static func familyOwnsFlags(_ positional: [String]) -> Bool {
+        positional.first.map { familiesWithFlags.contains($0) } ?? false
     }
 
     private static func seconds(_ raw: String) throws -> TimeInterval {
