@@ -947,7 +947,8 @@ final class AIPresetStudioTests: XCTestCase {
     }
 
     @MainActor
-    func testThePresetsPaneStillFitsWithTheStudioFoldedAndOpen() {
+    func testThePresetsPaneFitsFoldedAndGrowsWhenTheStudioOpens() {
+        var heights: [CGFloat] = []
         for open in [false, true] {
             let controller = QudelixController()
             controller.connection = .connected(name: "Qudelix-5K USB DAC")
@@ -992,19 +993,29 @@ final class AIPresetStudioTests: XCTestCase {
                 .environmentObject(ABTuner())
                 .environmentObject(ToneTester())
                 .environmentObject(BlindTuner())
+                .defaultAppStorage(PaneProbe.foldedDefaults(
+                    suite: "qudelixbar.tests.pane.folded"))
                 .frame(width: 372)
 
             let host = NSHostingView(rootView: AnyView(root))
             host.layoutSubtreeIfNeeded()
             let wanted = host.fittingSize.height
-            print(String(format: "presets (studio %@): content %.1f pt vs %.0f pt "
-                         + "pane — %@", open ? "open" : "folded", wanted,
-                         PopoverView.contentHeight,
-                         wanted <= PopoverView.contentHeight ? "fits" : "OVERFLOWS"))
-            XCTAssertLessThanOrEqual(
-                wanted, PopoverView.contentHeight,
-                "the Presets pane overflows with the studio "
-                    + (open ? "open" : "folded") + ": \(wanted) pt")
+            print(String(format: "presets (studio %@, everything folded): %.1f pt "
+                         + "vs %.0f pt pane", open ? "open" : "folded", wanted,
+                         PopoverView.contentHeight))
+            if open {
+                heights.append(wanted)
+            } else {
+                heights.append(wanted)
+                XCTAssertLessThanOrEqual(
+                    wanted, PopoverView.contentHeight,
+                    "the Presets pane overflows with every section folded: "
+                        + "\(wanted) pt")
+            }
         }
+        XCTAssertGreaterThan(
+            heights[1], heights[0],
+            "the studio is still clipped to a fixed body instead of laying out at "
+                + "its natural height inside the pane's own scroller")
     }
 }

@@ -536,4 +536,15 @@ final class TuneHonestyTests: XCTestCase {
         XCTAssertEqual(ToneTester.gain(at: 1000, from: withTheHole), 0, accuracy: 0.01,
                        "what feeding the placeholder in would have written")
     }
+
+    func testTheSanityCheckLineSaysWhatTheRepeatedPairsWere() {
+        XCTAssertEqual(
+            TuneView.sanityCheck(pairs: 4, guesses: 1),
+            "Sanity check: 4 pairs were the same setting twice; you called a "
+                + "winner in 1.")
+        XCTAssertEqual(
+            TuneView.sanityCheck(pairs: 1, guesses: 0),
+            "Sanity check: 1 pair was the same setting twice; you called a "
+                + "winner in 0.")
+    }
 }

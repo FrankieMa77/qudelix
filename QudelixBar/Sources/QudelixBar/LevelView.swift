@@ -5,7 +5,7 @@ struct LevelView: View {
     @EnvironmentObject var stageState: StageState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             // Nothing on this pane works without the engine, and the engine
             // starts on its own for quality detection — so its refusal is
             // reported here once, at the top, whatever asked it to run.
@@ -49,9 +49,10 @@ struct LevelView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            meter
-
-            stageMetersRow
+            VStack(alignment: .leading, spacing: 5) {
+                meter
+                stageMetersRow
+            }
 
             earLevelSection
 
@@ -82,64 +83,70 @@ struct LevelView: View {
         let guarding = stageState.stage.bassGuardValue && !stageState.bassGuardInert
         if inserted, stageState.stage.limiterValue || stageState.stage.loudnessValue
             || guarding {
-            HStack(spacing: 10) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8,
+                 verticalSpacing: 1) {
                 if stageState.stage.limiterValue {
-                    HStack(spacing: 6) {
-                        Text("True-peak limiter")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        Text(limiterText)
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(stageState.limiterGainReductionDb > 0.1
-                                             ? AnyShapeStyle(.orange)
-                                             : AnyShapeStyle(.tertiary))
-                    }
-                    .help("How far the limiter is pulling the Soundstage's "
-                          + "output down this second to hold −1 dBTP.")
+                    meterRow(label: "True-peak limiter",
+                             value: limiterText,
+                             note: "holding \u{2212}1 dBTP",
+                             lit: stageState.limiterGainReductionDb > 0.1,
+                             litStyle: AnyShapeStyle(.orange))
+                        .help("How far the limiter is pulling the Soundstage\u{2019}s "
+                              + "output down this second to hold \u{2212}1 dBTP.")
                 }
                 if stageState.stage.loudnessValue {
-                    HStack(spacing: 6) {
-                        Text("Loudness")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        Text(loudnessText)
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(stageState.loudnessShelfDb > 0.05
-                                             ? AnyShapeStyle(.secondary)
-                                             : AnyShapeStyle(.tertiary))
-                    }
-                    .help("How much bass the compensation is adding this "
-                          + "second, from the estimate below. Treble rides "
-                          + "along at a third of it.")
+                    meterRow(label: "Loudness",
+                             value: loudnessText,
+                             note: "treble at a third",
+                             lit: stageState.loudnessShelfDb > 0.05,
+                             litStyle: AnyShapeStyle(.secondary))
+                        .help("How much bass the compensation is adding this "
+                              + "second, from the estimate below. Treble rides "
+                              + "along at a third of it.")
                 }
                 if guarding {
-                    HStack(spacing: 6) {
-                        Text("Bass guard")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        Text(bassGuardText)
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(stageState.bassGuardGainReductionDb > 0.1
-                                             ? AnyShapeStyle(.orange)
-                                             : AnyShapeStyle(.tertiary))
-                        Text(String(format: "of %.1f dB boost",
-                                    stageState.bassGuardBoostDb))
-                            .font(.system(size: 9).monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    }
-                    .help("How much of the bass the 5K is about to add this "
-                          + "app is holding back right now, so the loudest "
-                          + "passages don't reach the driver with the whole "
-                          + "boost on them.")
+                    meterRow(label: "Bass guard",
+                             value: bassGuardText,
+                             note: "before the 5K\u{2019}s boost",
+                             lit: stageState.bassGuardGainReductionDb > 0.1,
+                             litStyle: AnyShapeStyle(.orange))
+                        .help("How much of the bass the 5K is about to add this "
+                              + "app is holding back right now, so the loudest "
+                              + "passages don\u{2019}t reach the driver with the whole "
+                              + "boost on them.")
                 }
-                Spacer()
             }
         }
     }
 
+    private func meterRow(label: String, value: String, note: String,
+                          lit: Bool, litStyle: AnyShapeStyle) -> some View {
+        GridRow {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .gridColumnAlignment(.leading)
+            Text(value)
+                .font(.system(size: 10).monospacedDigit())
+                .foregroundStyle(lit ? litStyle : AnyShapeStyle(.tertiary))
+                .gridColumnAlignment(.trailing)
+            Text(note)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .gridColumnAlignment(.leading)
+        }
+    }
+
     private var bassGuardText: String {
-        let gr = stageState.bassGuardGainReductionDb
-        return gr > 0.1 ? String(format: "\u{2212}%.1f dB", gr) : "idle"
+        LevelView.bassGuardReading(reduction: stageState.bassGuardGainReductionDb,
+                                   boost: stageState.bassGuardBoostDb)
+    }
+
+    static func bassGuardReading(reduction: Double, boost: Double) -> String {
+        let ceiling = String(format: "%.1f dB", boost)
+        return reduction > 0.1
+            ? String(format: "\u{2212}%.1f of ", reduction) + ceiling
+            : "idle of " + ceiling
     }
 
     private var loudnessText: String {

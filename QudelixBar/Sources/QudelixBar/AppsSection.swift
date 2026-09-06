@@ -1,6 +1,50 @@
 import AppKit
 import SwiftUI
 
+final class AppIconCache {
+    static let limit = 64
+    static let shared = AppIconCache()
+
+    private var icons: [String: NSImage?] = [:]
+    private var observers: [NSObjectProtocol] = []
+    private let lookup: (String) -> NSImage?
+
+    init(watchingWorkspace: Bool = true,
+         lookup: @escaping (String) -> NSImage? = AppIconCache.runningIcon) {
+        self.lookup = lookup
+        guard watchingWorkspace else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification,
+                     NSWorkspace.didTerminateApplicationNotification] {
+            observers.append(center.addObserver(forName: name, object: nil,
+                                                queue: .main) { [weak self] _ in
+                self?.forget()
+            })
+        }
+    }
+
+    deinit {
+        let center = NSWorkspace.shared.notificationCenter
+        for token in observers { center.removeObserver(token) }
+    }
+
+    static func runningIcon(_ bundleID: String) -> NSImage? {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.icon
+    }
+
+    var count: Int { icons.count }
+
+    func forget() { icons.removeAll() }
+
+    func icon(for bundleID: String) -> NSImage? {
+        if let cached = icons[bundleID] { return cached }
+        let found = lookup(bundleID)
+        if icons.count >= Self.limit { icons.removeAll() }
+        icons[bundleID] = found
+        return found
+    }
+}
+
 struct AppsSection: View {
     @EnvironmentObject var apps: AppAssignments
     @EnvironmentObject var library: PresetLibrary
@@ -8,38 +52,64 @@ struct AppsSection: View {
 
     @State private var expanded = false
 
-    static let bodyHeight: CGFloat = 168
+    static let noCurveLabel = "No curve"
+    static let offNotice = "Per-app EQ is off \u{2014} these assignments aren\u{2019}t "
+        + "being applied."
+    static let emptyNotice = "No apps are playing. Start playback and the app will "
+        + "appear here."
+    static let missingPresetNotice = "That preset was deleted \u{2014} this app has no "
+        + "curve now."
+    static var fullNotice: String {
+        "\(AppAssignments.maxAssignments) apps is the limit \u{2014} forget one to add "
+            + "another."
+    }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 5) {
-                    if let problem = unavailable {
-                        Text(verbatim: problem)
+        let rows = apps.rows()
+        let presets = sortedPresets
+        let blockedByLimit = apps.isFull && rows.contains { !$0.assigned }
+        return DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 5) {
+                if let problem = unavailable {
+                    Text(verbatim: problem)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    if !apps.enabled {
+                        Text(Self.offNotice)
                             .font(.system(size: 9))
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
-                    } else if rows.isEmpty {
-                        Text("Nothing is playing that can be given a curve.")
+                    }
+                    if rows.isEmpty {
+                        Text(Self.emptyNotice)
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
                         VStack(spacing: 2) {
-                            ForEach(rows) { row($0) }
+                            ForEach(rows) { row($0, presets: presets) }
                         }
+                        .opacity(apps.enabled ? 1 : 0.55)
                     }
-                    Text("Applied on this Mac before the 5K\u{2019}s own EQ, so an "
-                        + "app\u{2019}s curve stacks on top of whatever the device "
-                        + "is running.")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if blockedByLimit {
+                        Text(Self.fullNotice)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 2)
-                .padding(.top, 6)
+                Text("Applied on this Mac before the 5K\u{2019}s own EQ, so an "
+                    + "app\u{2019}s curve stacks on top of whatever the device "
+                    + "is running.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxHeight: Self.bodyHeight)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 2)
+            .padding(.top, 6)
         } label: {
             header
         }
@@ -49,8 +119,6 @@ struct AppsSection: View {
             #endif
         }
     }
-
-    private var rows: [AppAssignments.AppRow] { apps.rows() }
 
     private var header: some View {
         HStack(spacing: 6) {
@@ -86,7 +154,8 @@ struct AppsSection: View {
         return failure.message
     }
 
-    private func row(_ entry: AppAssignments.AppRow) -> some View {
+    private func row(_ entry: AppAssignments.AppRow,
+                     presets: [LibraryPreset]) -> some View {
         HStack(spacing: 6) {
             icon(for: entry.bundleID)
             VStack(alignment: .leading, spacing: 0) {
@@ -103,7 +172,7 @@ struct AppsSection: View {
                     }
                 }
                 if entry.missingPreset {
-                    Text("That preset is gone \u{2014} this app is on Default.")
+                    Text(Self.missingPresetNotice)
                         .font(.system(size: 9))
                         .foregroundStyle(.orange)
                         .lineLimit(1)
@@ -111,10 +180,10 @@ struct AppsSection: View {
             }
             Spacer(minLength: 4)
             Menu {
-                Button("Default") { assign(nil, to: entry) }
-                if !library.presets.isEmpty {
+                Button(Self.noCurveLabel) { assign(nil, to: entry) }
+                if !presets.isEmpty {
                     Divider()
-                    ForEach(sortedPresets) { preset in
+                    ForEach(presets) { preset in
                         Button {
                             assign(preset.id, to: entry)
                         } label: {
@@ -129,7 +198,7 @@ struct AppsSection: View {
                     }
                 }
             } label: {
-                Text(verbatim: entry.preset?.name ?? "Default")
+                Text(verbatim: entry.preset?.name ?? Self.noCurveLabel)
                     .font(.system(size: 10))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -161,8 +230,7 @@ struct AppsSection: View {
 
     @ViewBuilder
     private func icon(for bundleID: String) -> some View {
-        if let image = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleID).first?.icon {
+        if let image = AppIconCache.shared.icon(for: bundleID) {
             Image(nsImage: image)
                 .resizable()
                 .frame(width: 14, height: 14)

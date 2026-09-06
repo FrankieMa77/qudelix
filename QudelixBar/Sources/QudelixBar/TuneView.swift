@@ -454,6 +454,11 @@ struct TuneView: View {
             Text("The balance you preferred")
                 .font(.system(size: 12, weight: .medium))
 
+            Text(consistencySummary)
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
             VStack(spacing: 5) {
                 ForEach(ABTuner.macros, id: \.name) { m in
                     resultRow(m)
@@ -475,19 +480,16 @@ struct TuneView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text(consistencySummary)
-                .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
             HStack(spacing: 8) {
                 Button("Keep") { tuner.keepResult(controller) }
                     .controlSize(.small)
                 Menu("Save to…") {
                     ForEach(0..<QudelixController.presetCount, id: \.self) { i in
-                        Button(controller.presetLabel(i)) {
+                        Button {
                             tuner.keepResult(controller)
                             controller.savePreset(i)
+                        } label: {
+                            Text(verbatim: controller.presetLabel(i))
                         }
                     }
                 }
@@ -501,11 +503,14 @@ struct TuneView: View {
     }
 
     private var consistencySummary: String {
-        let checks = tuner.sameTrials == 1
-            ? "1 repeated setting" : "\(tuner.sameTrials) repeated settings"
-        let guesses = tuner.sameGuesses == 1
-            ? "1 named a winner" : "\(tuner.sameGuesses) named a winner"
-        return "\(checks), \(guesses)"
+        TuneView.sanityCheck(pairs: tuner.sameTrials, guesses: tuner.sameGuesses)
+    }
+
+    static func sanityCheck(pairs: Int, guesses: Int) -> String {
+        let repeated = pairs == 1
+            ? "1 pair was the same setting twice"
+            : "\(pairs) pairs were the same setting twice"
+        return "Sanity check: " + repeated + "; you called a winner in \(guesses)."
     }
 
     /// One tilt: name, a bar either side of centre, and the value.
@@ -666,30 +671,32 @@ struct TuneView: View {
             case .unreliable:               shapeUnreliable
             case .nothingAudible, .usable:  shapeReading
             }
-
-            Text(shapeConsistencySummary)
-                .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    private var shapeConsistencyLine: some View {
+        Text(shapeConsistencySummary)
+            .font(.system(size: 9).monospacedDigit())
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var shapeConsistencySummary: String {
-        let checks = blind.sameTrials == 1
-            ? "1 repeated setting" : "\(blind.sameTrials) repeated settings"
-        let guesses = blind.sameGuesses == 1
-            ? "1 named a winner" : "\(blind.sameGuesses) named a winner"
-        guard blind.skippedTrials > 0 else { return "\(checks), \(guesses)" }
+        let base = TuneView.sanityCheck(pairs: blind.sameTrials,
+                                        guesses: blind.sameGuesses)
+        guard blind.skippedTrials > 0 else { return base }
         let skipped = blind.skippedTrials == 1
             ? "1 step too small for the device to store"
             : "\(blind.skippedTrials) steps too small for the device to store"
-        return "\(checks), \(guesses) · \(skipped)"
+        return base + " · " + skipped
     }
 
     private var shapeUnreliable: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Can't trust this run")
                 .font(.system(size: 12, weight: .medium))
+
+            shapeConsistencyLine
 
             Text("On most of the pairs that were one setting played twice, you named "
                  + "a winner. That is the check working: it means the choices in "
@@ -722,6 +729,8 @@ struct TuneView: View {
             Text("The shape you preferred")
                 .font(.system(size: 12, weight: .medium))
 
+            shapeConsistencyLine
+
             Text(blind.summary)
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -750,9 +759,11 @@ struct TuneView: View {
                         .controlSize(.small)
                     Menu("Save to…") {
                         ForEach(0..<QudelixController.presetCount, id: \.self) { i in
-                            Button(controller.presetLabel(i)) {
+                            Button {
                                 blind.keepResult(controller)
                                 controller.savePreset(i)
+                            } label: {
+                                Text(verbatim: controller.presetLabel(i))
                             }
                         }
                     }
