@@ -28,7 +28,18 @@ qudelix preset name <n> <name>   rename a device slot
 qudelix preset pull <file>       write the live EQ to a JSON file
 qudelix preset push <file>       apply a JSON file written by pull
 qudelix import <autoeq.txt>      apply a parametric-EQ text file (AutoEq, Equalizer APO, Peace)
+qudelix history list             every recorded EQ edit, newest first
+qudelix history show <n>         the curve entry <n> would put back
+qudelix history restore <n>      write the curve of entry <n> back to the device
+qudelix history clear            forget every recorded entry
 ```
+
+Every command that rewrites the live EQ — `import`, `preset push`, `preset load` and
+`history restore` — first records the curve the device was holding, so
+`qudelix history restore 1` steps back to where the previous command started.
+Entries are numbered from the newest, at most 40 are kept, and they live in
+`~/.local/share/QudelixBar/eq-history.json` (`$XDG_DATA_HOME/QudelixBar/` when that
+is set), next to the last-seen EQ the macOS app keeps.
 
 Preset slots are numbered 1 to 20, the same way they are shown.
 
@@ -65,8 +76,9 @@ is present but not readable.
 ## Persistence
 
 EQ changes are written to the device's flash, so they survive a power cycle:
-`qudelix import`, `qudelix preset push` and `qudelix eq on|off` each ask the device
-to save its settings once the command has finished. Read-only commands never do.
+`qudelix import`, `qudelix preset push`, `qudelix eq on|off` and
+`qudelix history restore` each ask the device to save its settings once the command
+has finished. Read-only commands never do.
 
 ## Bluetooth
 

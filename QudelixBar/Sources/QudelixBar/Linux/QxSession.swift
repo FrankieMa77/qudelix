@@ -277,7 +277,8 @@ final class QxSession {
 
     @discardableResult
     func applyParametric(_ file: ParametricEQFile,
-                         expecting expected: QxEqGroup? = nil) async throws -> QxUserEqPreset {
+                         expecting expected: QxEqGroup? = nil,
+                         recording label: String? = "import") async throws -> QxUserEqPreset {
         try await perform {
             let group = self.eqGroup
             if let expected, expected != group {
@@ -285,6 +286,7 @@ final class QxSession {
                     "the device switched to the " + QxFormat.groupLabel(group)
                         + " EQ group while this was being prepared — nothing was written")
             }
+            if let label { self.recordEqHistory(label) }
             let existing = self.lastPreset?.bands ?? []
             let bandCount = group.bandCount
             var writes: [Int: QxEqBandValue] = [:]
@@ -342,6 +344,8 @@ final class QxSession {
     func loadPreset(index: Int) async throws -> QxUserEqPreset {
         try await perform {
             try self.checkSlot(index)
+            self.recordEqHistory(
+                "load " + QxFormat.presetLabel(index, self.presetNames[index]))
             self.assembler.reset()
             try self.transmit(.loadEqPreset, [UInt8(index)])
         }
@@ -372,7 +376,26 @@ final class QxSession {
         guard Self.allowed.contains(cmd) else {
             throw QxSessionError.disallowedCommand(cmd)
         }
+        Trace.tx(cmd, data)
         link.send(cmd, data)
+    }
+
+    private var deviceIdentity: String? {
+        connectedName.map { (link.kind == .usb ? "usb:" : "ble:") + $0 }
+    }
+
+    private func recordEqHistory(_ label: String) {
+        guard let preset = lastPreset, connectedName != nil else { return }
+        let snapshot = EqSnapshot(groupRaw: eqGroup.rawValue,
+                                  bands: preset.bands,
+                                  preGain: preset.preGain,
+                                  enabled: state.eqEnabled ?? true,
+                                  name: state.eqPresetIdx.flatMap { presetNames[$0] },
+                                  mutedBands: [:],
+                                  deviceIdentity: deviceIdentity)
+        EqHistoryFile.append(EqHistoryEntry(recordedAt: Date(),
+                                            label: label,
+                                            snapshot: snapshot))
     }
 
     private func sendHandshake() throws {
@@ -544,9 +567,7 @@ final class QxSession {
     private func makeSnapshot() -> QxStatusSnapshot {
         var snapshot = QxStatusSnapshot()
         snapshot.linkKind = link.kind
-        snapshot.deviceIdentity = connectedName.map {
-            (link.kind == .usb ? "usb:" : "ble:") + $0
-        }
+        snapshot.deviceIdentity = deviceIdentity
         snapshot.deviceId = state.deviceId
         snapshot.modelName = QxDeviceModel.name(for: state.deviceId)
         snapshot.firmware = state.fwVersion
