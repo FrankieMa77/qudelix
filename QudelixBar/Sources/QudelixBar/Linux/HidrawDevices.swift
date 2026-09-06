@@ -10,6 +10,8 @@ struct HidrawDevice: Equatable {
     var productID: Int
     var descriptor: [UInt8]
     var outputReportSizes: [Int: Int]
+
+    var hasExpectedProductID: Bool { productID == HidrawDevices.qudelix5KProductID }
 }
 
 enum HidrawDevices {
@@ -57,8 +59,7 @@ enum HidrawDevices {
         guard HIDDescriptor.firstUsagePage(descriptor: device.descriptor) == vendorUsagePage else {
             return false
         }
-        return device.productID == qudelix5KProductID
-            || device.name.lowercased().contains(productNameMarker)
+        return device.name.lowercased().contains(productNameMarker)
     }
 
     static func parseUevent(_ text: String) -> [String: String] {

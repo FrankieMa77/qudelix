@@ -147,9 +147,25 @@ final class HidrawDevicesTests: XCTestCase {
         XCTAssertTrue(HidrawDevices.matches(device))
         device.name = "CSR Dongle"
         device.productID = 0x4003
-        XCTAssertTrue(HidrawDevices.matches(device))
+        XCTAssertFalse(HidrawDevices.matches(device))
+        device.name = "Qudelix 5K"
         device.descriptor = consumerDescriptor
         XCTAssertFalse(HidrawDevices.matches(device))
+    }
+
+    func testNameMatchesEvenWhenTheProductIDIsUnexpected() {
+        let device = HidrawDevice(node: "hidraw9", devPath: "/dev/hidraw9", name: "Qudelix-5K",
+                                  vendorID: 0x0A12, productID: 0x1234,
+                                  descriptor: vendorDescriptor, outputReportSizes: [:])
+        XCTAssertTrue(HidrawDevices.matches(device))
+        XCTAssertFalse(device.hasExpectedProductID)
+    }
+
+    func testExpectedProductIDIsSurfaced() {
+        let device = HidrawDevice(node: "hidraw1", devPath: "/dev/hidraw1", name: "Qudelix-5K",
+                                  vendorID: 0x0A12, productID: 0x4003,
+                                  descriptor: vendorDescriptor, outputReportSizes: [:])
+        XCTAssertTrue(device.hasExpectedProductID)
     }
 
     func testDeclaredReportIDs() {
