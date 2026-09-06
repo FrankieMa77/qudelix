@@ -229,7 +229,34 @@ final class BLETransport: NSObject {
         return name.localizedCaseInsensitiveContains("qudelix")
     }
 
+    nonisolated static func mayScan(suspended: Bool, poweredOn: Bool,
+                                    linked: Bool) -> Bool {
+        !suspended && poweredOn && !linked
+    }
+
+    private(set) var scanSuspended = false
+
+    func setScanSuspended(_ suspended: Bool) {
+        guard suspended != scanSuspended else { return }
+        scanSuspended = suspended
+        DebugLog.shared.log("BLE discovery \(suspended ? "suspended" : "resumed")")
+        if suspended {
+            scanBurstEnd?.cancel()
+            scanBurstEnd = nil
+            central?.stopScan()
+        } else if mayScanNow {
+            beginScan()
+        }
+    }
+
+    private var mayScanNow: Bool {
+        Self.mayScan(suspended: scanSuspended,
+                     poweredOn: central?.state == .poweredOn,
+                     linked: peripheral != nil)
+    }
+
     private func beginScan() {
+        guard mayScanNow else { return }
         DebugLog.shared.log("BLE scanning…")
         // Devices that rotate their random address yield a fresh identifier each
         // time, so this set would grow without bound across a long scan.
@@ -264,8 +291,7 @@ final class BLETransport: NSObject {
             guard let self, self.peripheral == nil else { return }
             self.central.stopScan()
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.scanRestSeconds) { [weak self] in
-                guard let self, self.peripheral == nil,
-                      self.central.state == .poweredOn else { return }
+                guard let self, self.mayScanNow else { return }
                 self.beginScan()
             }
         }
@@ -321,7 +347,7 @@ final class BLETransport: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.scanScheduled = false
-            guard self.central?.state == .poweredOn, self.peripheral == nil else { return }
+            guard self.mayScanNow else { return }
             self.beginScan()
         }
     }

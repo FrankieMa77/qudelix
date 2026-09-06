@@ -598,6 +598,7 @@ final class QudelixController: ObservableObject {
                 guard let self else { return }
                 self.usbWired = true
                 self.link = .usb                     // USB takes over from BLE
+                self.ble.setScanSuspended(true)
                 // Anything queued for the old link would otherwise be delivered
                 // over it up to a coalescing window later.
                 self.ble.clearPending()
@@ -608,6 +609,7 @@ final class QudelixController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.usbWired = false
+                self.ble.setScanSuspended(false)
                 guard self.link == .usb else { return }
                 self.link = .none
                 self.connection = .disconnected
@@ -628,6 +630,7 @@ final class QudelixController: ObservableObject {
             Task { @MainActor in
                 guard let self, self.link == .usb else { return }
                 DebugLog.shared.log("USB stopped accepting reports — releasing the link")
+                self.ble.setScanSuspended(false)
                 self.link = .none
                 self.connection = .disconnected
                 self.resetDeviceState()
