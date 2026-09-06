@@ -922,7 +922,7 @@ final class StageState: ObservableObject {
                 + (suggestionDiagnostics.map { $0() + " " } ?? "")
                 + (aiDiagnostics.map { $0() + " " } ?? "")
                 + "status=\"\(engine.status)\" "
-                + "render: channels=\(d.channels) stage=\(d.stageRan ? "on" : "off") "
+                + "render: channels=\(d.channels) buffers=\(d.inputBuffers) stage=\(d.stageRan ? "on" : "off") "
                 + "(settings enabled=\(stage.enabled) width=\(Int(stage.width)) room=\(stage.room) "
                 + String(format: "cross=%.2f/%.2f/%.2f bal=%.1fdB/%.2fms) ",
                          stage.crossLowTrimValue, stage.crossMidTrimValue,

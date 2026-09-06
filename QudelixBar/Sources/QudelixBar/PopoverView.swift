@@ -1159,7 +1159,12 @@ struct PresetsView: View {
     @State private var draftName = ""
     @State private var confirmingSave: Int?
     @FocusState private var nameFocused: Bool
-    @AppStorage(PresetSectionStorage.slotsOpen) private var slotsExpanded = true
+    @AppStorage(PresetSectionStorage.slotsOpen) private var slotsExpanded = false
+
+    private var slotsSummary: String {
+        guard let active = controller.activePreset else { return "custom setting" }
+        return "slot " + String(active + 1) + " \u{00B7} " + controller.presetLabel(active)
+    }
 
     static let offlineNote = "The 5K isn\u{2019}t connected. You can organise presets "
         + "here; applying one needs the device."
@@ -1194,7 +1199,16 @@ struct PresetsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
             } label: {
-                Text("On the 5K").font(.system(size: 11, weight: .medium))
+                HStack(spacing: 6) {
+                    Text("On the 5K").font(.system(size: 11, weight: .medium))
+                    if !slotsExpanded {
+                        Text(verbatim: slotsSummary)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
             }
 
             Divider()

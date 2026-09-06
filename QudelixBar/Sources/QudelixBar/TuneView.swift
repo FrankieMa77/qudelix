@@ -483,7 +483,7 @@ struct TuneView: View {
             HStack(spacing: 8) {
                 Button("Keep") { tuner.keepResult(controller) }
                     .controlSize(.small)
-                Menu("Save to…") {
+                Menu("Save to slot…") {
                     ForEach(0..<QudelixController.presetCount, id: \.self) { i in
                         Button {
                             tuner.keepResult(controller)
@@ -757,7 +757,7 @@ struct TuneView: View {
                 if blind.verdict == .usable {
                     Button("Keep") { blind.keepResult(controller) }
                         .controlSize(.small)
-                    Menu("Save to…") {
+                    Menu("Save to slot…") {
                         ForEach(0..<QudelixController.presetCount, id: \.self) { i in
                             Button {
                                 blind.keepResult(controller)

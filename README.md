@@ -186,7 +186,7 @@ comparisons, and ends with a curve you can keep or save to a preset.
 3. Use **Switch** to flip between A and B as often as you like, then **Prefer A**
    or **Prefer B**. If they genuinely sound the same, say so — that answer is
    used, not discarded.
-4. At the end, **Keep** the result or **Save to…** a preset slot. **Discard**
+4. At the end, **Keep** the result or **Save to slot…**. **Discard**
    restores exactly what you had.
 
 Both options are always matched for loudness and never labelled, so you cannot
@@ -520,7 +520,7 @@ no third-party dependencies.
   | `presets.json` | The preset library kept on this Mac, the headphone name you typed, and which app is assigned which curve |
   | `ai-research.json` | What the AI preset studio has researched, keyed by headphone name — the description it got back, and the measurement it was anchored to. Up to 64 headphones, no key material, nothing about you |
   | `diag.txt` | The last 200 lines of an engine heartbeat, for bug reports. It records which phase the studio is in — `ai=idle`, `ai=researching`, `ai=designing` — and never what was asked or answered |
-  | `impulses/` | The app's own copies of the impulse responses you picked for the Soundstage, named by a scrubbed base name and eight hex digits of the content hash. Copies no output's settings still reference are swept at launch |
+  | `impulses/` | The app's own copies of the impulse responses you picked for the Soundstage, named by a scrubbed base name and eight hex digits of the content hash. Copies no output's settings still reference are swept whenever a response is installed or removed |
 
   If one of the five JSON files ever fails to load, it is not overwritten:
   the app copies it aside as `<name>.recovered`, carries on with defaults, and
@@ -617,6 +617,14 @@ Presets and corrections
   Default. The section lists what is playing right now, and it inserts the
   Mac-side engine only while something is assigned.
 - **Drop a preset file onto the menu bar icon** to import it.
+- The Presets pane is one scrolling page. Device slots and the library are
+  disclosures that remember whether you left them open, the slot list names
+  the active slot in its header, and the pane stays reachable with the 5K
+  away so the library, assignments and profiles can be tidied offline.
+  Deleting a library preset and overwriting a named slot both ask first.
+  One vocabulary throughout: a **slot** lives on the device, the **library**
+  lives on the Mac; **Load** and **Apply** bring a curve live, **Save to
+  slot…** and **Save to library…** put it away.
 - The parser now reads files the way they are actually published:
   tab-separated, lower case, pass filters without a gain, shelves without a
   Q, a preamble without its colon. When a file carries more filters than the
@@ -711,6 +719,36 @@ The app
 
 Fixes
 
+- Dynamic bass measured the low band after the loudness shelf had already
+  raised it, so with both on it undid part of the shelf on loud passages. It
+  now measures before the shelf.
+- Night mode resumed from an envelope minutes old when switched back on, so
+  it could open several decibels too quiet or too loud. It now starts fresh on
+  every engage.
+- The first block after a rate change or an engine start could overrun the
+  realtime deadline at small buffers because eight delay rings were zeroed
+  element by element, twice. They are cleared in one block store, once.
+- A library preset with one unreadable band was dropped whole and erased on
+  the next save. One bad band now costs one band. A presets file that exists
+  but cannot be read is left alone instead of being replaced by an empty
+  library, and the AI research cache survives one malformed entry.
+- Ending a by-ear session after switching the device between its 10- and
+  20-band banks wrote the old bank's curve into the new one. The restore is
+  refused across a bank switch.
+- Writing an AI draft to a slot could store the previous curve under the new
+  name, because the slot save overtook the coalesced band writes. Pending
+  writes are flushed first.
+- Undo now restores the equalizer's on/off switch as well as the curve.
+- Bluetooth discovery no longer runs while the 5K is connected over USB.
+- The heartbeat file is appended a line at a time instead of being rewritten
+  every fifteen seconds, and it no longer records the name of an impulse
+  response file.
+- Nothing is contacted at launch: a saved headphone name is looked up only
+  after the popover has been opened once.
+- Dragging a band, hovering the curve, or a device poll that changed nothing
+  no longer redraws the whole popover; the response curve is computed several
+  times faster and the correction search runs on a keystroke rather than on
+  every redraw.
 - The audio tap consumed the wrong input buffer when the output device had
   inputs of its own, so a headset or dock microphone was mixed into what the
   Soundstage wrote back out and metered as the listening level. The tap's
