@@ -77,6 +77,38 @@ final class FakeLink: QxLink {
     }
 }
 
+final class StdIOCapture {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock()
+        lines.append(line)
+        lock.unlock()
+    }
+
+    var all: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines
+    }
+
+    func clear() {
+        lock.lock()
+        lines.removeAll()
+        lock.unlock()
+    }
+
+    var text: String { all.joined(separator: "\n") }
+
+    var object: [String: Any] {
+        guard let data = text.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data),
+              let object = parsed as? [String: Any] else { return [:] }
+        return object
+    }
+}
+
 enum QxFixtures {
     static func report(_ cmd: QxCmd, _ data: [UInt8]) -> [UInt8] {
         [UInt8(clamping: data.count + 2),
@@ -641,5 +673,45 @@ final class QxSessionTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
         let snapshot = await session.snapshot()
         XCTAssertEqual(snapshot.eqGroup, .b20)
+    }
+
+    func testVerboseMirrorsOneStderrLinePerTransmittedCommand() async throws {
+        let capture = StdIOCapture()
+        StdIO.errorSink = { capture.append($0) }
+        Trace.verbose = true
+        defer {
+            Trace.verbose = false
+            StdIO.errorSink = nil
+        }
+
+        let link = answeringLink()
+        let session = try await connected(link)
+        defer { session.close() }
+
+        let handshake = capture.all.filter { $0.hasPrefix("[log] →") }
+        XCTAssertEqual(handshake.count, link.sentCommands.count)
+        XCTAssertEqual(handshake.count, 5)
+        XCTAssertTrue(handshake[0].contains("reqInitData"), handshake[0])
+
+        capture.clear()
+        link.clearSends()
+        try await session.setDacFilter(index: 2)
+        let one = capture.all.filter { $0.hasPrefix("[log] →") }
+        XCTAssertEqual(link.sentCommands, [.setDacFilter])
+        XCTAssertEqual(one.count, 1)
+        XCTAssertTrue(one[0].contains("setDacFilter"), one[0])
+    }
+
+    func testQuietDoesNotMirrorTransmittedCommands() async throws {
+        let capture = StdIOCapture()
+        StdIO.errorSink = { capture.append($0) }
+        Trace.verbose = false
+        defer { StdIO.errorSink = nil }
+
+        let link = answeringLink()
+        let session = try await connected(link)
+        defer { session.close() }
+        XCTAssertFalse(link.sentCommands.isEmpty)
+        XCTAssertTrue(capture.all.isEmpty, capture.text)
     }
 }

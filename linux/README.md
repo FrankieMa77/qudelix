@@ -41,6 +41,10 @@ qudelix library fetch <n> target <target-name>
                                  fit against a named target instead of the recommended one
 qudelix library fetch <n> save <name>
                                  keep what was applied as a library preset too
+qudelix history list             every recorded EQ edit, newest first
+qudelix history show <n>         the curve entry <n> would put back
+qudelix history restore <n>      write the curve of entry <n> back to the device
+qudelix history clear            forget every recorded entry
 ```
 
 The library lives in `~/.local/share/QudelixBar/presets.json` — the same file, in the same
@@ -69,6 +73,13 @@ at all.
 `library save`, `library fetch … save` and `library fetch … target` are spelled without
 dashes because global flags are parsed before a subcommand sees them. The dashed spellings
 work after `--`: `qudelix -- library save --replace Bassy`.
+
+Every command that rewrites the live EQ — `import`, `preset push`, `preset load` and
+`history restore` — first records the curve the device was holding, so
+`qudelix history restore 1` steps back to where the previous command started.
+Entries are numbered from the newest, at most 40 are kept, and they live in
+`~/.local/share/QudelixBar/eq-history.json` (`$XDG_DATA_HOME/QudelixBar/` when that
+is set), next to the last-seen EQ the macOS app keeps.
 
 Preset slots are numbered 1 to 20, the same way they are shown.
 
@@ -105,8 +116,9 @@ is present but not readable.
 ## Persistence
 
 EQ changes are written to the device's flash, so they survive a power cycle:
-`qudelix import`, `qudelix preset push` and `qudelix eq on|off` each ask the device
-to save its settings once the command has finished. Read-only commands never do.
+`qudelix import`, `qudelix preset push`, `qudelix eq on|off` and
+`qudelix history restore` each ask the device to save its settings once the command
+has finished. Read-only commands never do.
 
 ## Bluetooth
 

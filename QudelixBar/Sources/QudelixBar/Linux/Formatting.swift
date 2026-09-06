@@ -5,13 +5,22 @@ enum Trace {
 
     static func log(_ msg: String) {
         DebugLog.shared.log(msg)
+        mirror(msg)
+    }
+
+    static func tx(_ cmd: QxCmd, _ data: [UInt8]) {
         guard verbose else { return }
-        StdIO.error("[log] " + DebugLog.sanitized(msg))
+        mirror("→ \(cmd) \(hex(data))")
     }
 
     static func rx(_ cmdId: UInt16, _ data: [UInt8]) {
         let name = QxCmd(rawValue: cmdId).map { "\($0)" } ?? String(format: "0x%04X", cmdId)
         log("← \(name) \(hex(data))")
+    }
+
+    private static func mirror(_ msg: String) {
+        guard verbose else { return }
+        StdIO.error("[log] " + DebugLog.sanitized(msg))
     }
 
     private static func hex(_ b: [UInt8]) -> String {
@@ -21,11 +30,16 @@ enum Trace {
 }
 
 enum StdIO {
+    static var outSink: ((String) -> Void)?
+    static var errorSink: ((String) -> Void)?
+
     static func out(_ line: String) {
+        if let outSink { outSink(line); return }
         FileHandle.standardOutput.write(Data((line + "\n").utf8))
     }
 
     static func error(_ line: String) {
+        if let errorSink { errorSink(line); return }
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 }
@@ -61,6 +75,22 @@ enum QxFormat {
     static func gain(_ v: Double) -> String { String(format: "%+.1f", v) }
 
     static func q(_ v: Double) -> String { String(format: "%.2f", v) }
+
+    private static let stamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f
+    }()
+
+    static func timestamp(_ date: Date) -> String { stamp.string(from: date) }
+
+    private static let isoStamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    static func isoTimestamp(_ date: Date) -> String { isoStamp.string(from: date) }
 
     static func onOff(_ v: Bool?) -> String {
         guard let v else { return "unknown" }
