@@ -15,6 +15,7 @@ final class BluezTransport: QxLink {
     private static let maxReconnectDelay: TimeInterval = 8
     private static let txErrorLimit = 5
     private static let writeSpacing: TimeInterval = 0.02
+    private static let readPollTimeoutMilliseconds: Int32 = 200
 
     var kind: QxLinkKind { .bluetooth }
 
@@ -33,7 +34,8 @@ final class BluezTransport: QxLink {
     private var writeFD: Int32 = -1
     private var writeBudget = 20
     private var notifyBudget = 512
-    private var reader: Thread?
+    private var generation = 0
+    private var readerGeneration: Int?
     private var vendor = GaiaFraming.Vendor.qudelix
     private var triedFallbackVendor = false
     private var sawGoodReply = false
@@ -253,7 +255,13 @@ final class BluezTransport: QxLink {
 
         do {
             let notify = try acquire("AcquireNotify", path: responsePath, on: connection)
-            let write = try acquire("AcquireWrite", path: commandPath, on: connection)
+            let write: (fd: Int32, mtu: UInt16)
+            do {
+                write = try acquire("AcquireWrite", path: commandPath, on: connection)
+            } catch {
+                close(notify.fd)
+                throw error
+            }
             lock.lock()
             notifyFD = notify.fd
             writeFD = write.fd
@@ -264,6 +272,7 @@ final class BluezTransport: QxLink {
             sawGoodReply = false
             consecutiveTxErrors = 0
             reconnectDelay = Self.minReconnectDelay
+            announcedUnusable = false
             lock.unlock()
         } catch {
             DebugLog.shared.log("BLE cannot open the GAIA channels: \(error)")
@@ -324,11 +333,23 @@ final class BluezTransport: QxLink {
                                         method: method,
                                         arguments: [.dictionary([])])
         let fields = reply.count >= 2 ? reply : (reply.first?.items ?? [])
+        let harvested = Self.descriptors(in: reply)
         guard fields.count >= 2, let fd = fields[0].fdValue, fd >= 0,
               let mtu = fields[1].uint16Value else {
+            for descriptor in harvested { close(descriptor) }
             throw DBusCallError(name: "", message: "\(method) returned no usable descriptor")
         }
+        for descriptor in harvested where descriptor != fd { close(descriptor) }
         return (fd, mtu)
+    }
+
+    private static func descriptors(in values: [DBusValue]) -> [Int32] {
+        values.flatMap { value -> [Int32] in
+            let inner = value.unwrapped
+            if case .unixFD(let descriptor) = inner { return descriptor >= 0 ? [descriptor] : [] }
+            if case .dictEntry(let key, let element) = inner { return descriptors(in: [key, element]) }
+            return descriptors(in: inner.items ?? [])
+        }
     }
 
     private func waitForServicesResolved(_ connection: DBusConnection, path: String) -> Bool {
@@ -397,51 +418,76 @@ final class BluezTransport: QxLink {
     }
 
     private func startReader() {
-        let thread = Thread { [weak self] in self?.readLoop() }
+        lock.lock()
+        generation += 1
+        let gen = generation
+        let descriptor = notifyFD
+        let capacity = max(notifyBudget, 64)
+        readerGeneration = descriptor >= 0 ? gen : nil
+        lock.unlock()
+        guard descriptor >= 0 else { return }
+        let thread = Thread { [weak self] in
+            var buffer = [UInt8](repeating: 0, count: capacity)
+            var reason = "the device closed the channel"
+            loop: while true {
+                guard let self, self.readerShouldContinue(gen) else {
+                    reason = ""
+                    break loop
+                }
+                var descriptors = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                let ready = Glibc.poll(&descriptors, 1, Self.readPollTimeoutMilliseconds)
+                if ready < 0 {
+                    if errno == EINTR || errno == EAGAIN { continue }
+                    reason = String(cString: strerror(errno))
+                    break loop
+                }
+                if ready == 0 { continue }
+                let count = buffer.withUnsafeMutableBytes { raw -> Int in
+                    guard let base = raw.baseAddress else { return -1 }
+                    return Glibc.read(descriptor, base, raw.count)
+                }
+                if count > 0 {
+                    self.deliver(Array(buffer[0..<count]), generation: gen)
+                } else if count == 0 {
+                    break loop
+                } else if errno == EINTR || errno == EAGAIN {
+                    continue
+                } else {
+                    reason = String(cString: strerror(errno))
+                    break loop
+                }
+            }
+            close(descriptor)
+            let ended = reason
+            self?.queue.async { [weak self] in self?.readerFinished(gen, reason: ended) }
+        }
         thread.name = "qudelix.bluez.rx"
         thread.stackSize = 512 * 1024
-        reader = thread
         thread.start()
     }
 
-    private func readLoop() {
-        lock.lock()
-        let fd = notifyFD
-        let capacity = max(notifyBudget, 64)
-        lock.unlock()
-        guard fd >= 0 else { return }
-        var buffer = [UInt8](repeating: 0, count: capacity)
-        while true {
-            let n = buffer.withUnsafeMutableBytes { raw -> Int in
-                guard let base = raw.baseAddress else { return -1 }
-                return read(fd, base, raw.count)
-            }
-            if n > 0 {
-                deliver(Array(buffer[0..<n]))
-                continue
-            }
-            if n < 0 && (errno == EINTR || errno == EAGAIN) { continue }
-            let reason = n == 0 ? "the device closed the channel"
-                : String(cString: strerror(errno))
-            queue.async { [weak self] in
-                guard let self, self.ownsNotifyFD(fd) else { return }
-                self.teardown(reason: reason, notify: true)
-                self.scheduleReconnect()
-            }
-            return
-        }
-    }
-
-    private func ownsNotifyFD(_ fd: Int32) -> Bool {
+    private func readerShouldContinue(_ gen: Int) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return notifyFD == fd
+        return generation == gen
     }
 
-    private func deliver(_ raw: [UInt8]) {
+    private func readerFinished(_ gen: Int, reason: String) {
         lock.lock()
+        if readerGeneration == gen { readerGeneration = nil }
+        let live = generation == gen
+        lock.unlock()
+        guard live else { return }
+        teardown(reason: reason, notify: true)
+        scheduleReconnect()
+    }
+
+    private func deliver(_ raw: [UInt8], generation gen: Int) {
+        lock.lock()
+        let stale = generation != gen
         let currentVendor = vendor
         lock.unlock()
+        guard !stale else { return }
         guard let (packet, status) = GaiaFraming.decode(raw, expecting: currentVendor) else {
             ignoredFrames += 1
             if ignoredFrames == 1 || ignoredFrames % 50 == 0 {
@@ -515,8 +561,9 @@ final class BluezTransport: QxLink {
     private func teardown(reason: String, notify: Bool) {
         lock.lock()
         let wasUp = notifyFD >= 0 && writeFD >= 0
-        if notifyFD >= 0 { close(notifyFD) }
-        if writeFD >= 0 { close(writeFD) }
+        generation += 1
+        let orphanedNotify = readerGeneration == nil ? notifyFD : -1
+        let writeDescriptor = writeFD
         notifyFD = -1
         writeFD = -1
         vendor = .qudelix
@@ -524,7 +571,8 @@ final class BluezTransport: QxLink {
         sawGoodReply = false
         consecutiveTxErrors = 0
         lock.unlock()
-        reader = nil
+        if orphanedNotify >= 0 { close(orphanedNotify) }
+        if writeDescriptor >= 0 { close(writeDescriptor) }
         if wasUp {
             DebugLog.shared.log("BLE link torn down (\(reason))")
             if notify { onDisconnected?() }
@@ -547,10 +595,21 @@ final class BluezTransport: QxLink {
     }
 
     private func reportUnusable(_ message: String) {
-        guard !announcedUnusable else { return }
+        lock.lock()
+        let firstAnnouncement = !announcedUnusable
         announcedUnusable = true
-        DebugLog.shared.log(message)
-        onLinkUnusable?(message)
+        lock.unlock()
+        if firstAnnouncement {
+            DebugLog.shared.log(message)
+            onLinkUnusable?(message)
+        }
+        scheduleReconnect()
+    }
+
+    var reconnectBackoff: TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return reconnectDelay
     }
 
     private var isStopping: Bool {

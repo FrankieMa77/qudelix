@@ -274,8 +274,7 @@ final class DBusMessage {
         case DBusType.double:
             return .double(readBasic(iter, Double.self))
         case DBusType.unixFD:
-            let raw = readBasic(iter, Int32.self)
-            return .unixFD(raw < 0 ? raw : dup(raw))
+            return .unixFD(readBasic(iter, Int32.self))
         case DBusType.string:
             return .string(readString(iter))
         case DBusType.objectPath:
