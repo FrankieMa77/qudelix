@@ -51,7 +51,7 @@ if [[ -z "$BINARY" ]]; then
   fi
   cd "$QUDELIX_BAR"
   eval "$BUILD_CMD"
-  BINARY="$QUDELIX_BAR/.build/release/qudelix"
+  BINARY="${SCRATCH_PATH:-$QUDELIX_BAR/.build}/release/qudelix"
 fi
 
 cp "$BINARY" "$STAGE_DIR/usr/bin/qudelix"
