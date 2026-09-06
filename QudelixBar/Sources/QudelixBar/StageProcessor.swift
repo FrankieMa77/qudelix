@@ -755,6 +755,7 @@ final class StageProcessor {
     private var diagChannels: Int32 = 0
     private var diagStageRan: Bool = false
     private var diagBlockFrames: Int32 = 0
+    private var diagInputBuffers: Int32 = 0
     // Source L/R correlation accumulators (pre-stage): mono content defeats
     // width and crossfeed by design, and the UI should say so, not shrug.
     private var corrLR: Double = 0
@@ -768,10 +769,10 @@ final class StageProcessor {
         return frames
     }
 
-    func renderDiagnostics() -> (channels: Int, stageRan: Bool) {
+    func renderDiagnostics() -> (channels: Int, stageRan: Bool, inputBuffers: Int) {
         os_unfair_lock_lock(meterLock)
         defer { os_unfair_lock_unlock(meterLock) }
-        return (Int(diagChannels), diagStageRan)
+        return (Int(diagChannels), diagStageRan, Int(diagInputBuffers))
     }
 
     /// Correlation of the source's first two channels since the last call.
@@ -908,6 +909,8 @@ final class StageProcessor {
     // filter above it, and like them it must be wiped on re-engage.
     private var adaaPrevL: Float = 0
     private var adaaPrevR: Float = 0
+    private var adaaPrevFL: Double?
+    private var adaaPrevFR: Double?
     private var loudLowCur = BiquadSection.passthrough
     private var loudHighCur = BiquadSection.passthrough
     private var loudCurDcGain: Double = 1
@@ -926,6 +929,7 @@ final class StageProcessor {
     // not at silence — an envelope resting near zero makes every stage
     // engage open with a burst until the attack catches up.
     private var nightEnv: Double = 0.05
+    private var nightEngaged = false
 
     static let limRingSize = 128
     static let limLookahead = 64
@@ -957,7 +961,7 @@ final class StageProcessor {
     }
 
     private func resetLimiterState() {
-        for i in limDelay.indices { limDelay[i] = 0 }
+        limDelay.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
         for i in 0..<8 { tpHistL[i] = 0; tpHistR[i] = 0; limBlockMax[i] = 0 }
         limIdx = 0; limBlockIdx = 0; limSampleInBlock = 0
         limCurBlockMax = 0; limGain = 1
@@ -973,14 +977,19 @@ final class StageProcessor {
     /// The config epoch this thread last reset for. Render-thread owned.
     private var renderEpoch: UInt64 = 0
 
-    /// Render thread only — the engage edge and the epoch check both run
-    /// there. ~50k float stores: trivial as a one-shot, and the price of
-    /// never hearing a ghost.
+    @inline(__always)
+    private static func zeroRing(_ ring: inout [Float]) {
+        ring.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+    }
+
+    private(set) var stageResetCount = 0
+
     private func resetStageState() {
-        for i in 0..<Self.crossBufSize { crossDelayL[i] = 0; crossDelayR[i] = 0 }
-        for i in 0..<Self.roomBufSize { roomBufL[i] = 0; roomBufR[i] = 0 }
-        for i in 0..<Self.tailBufSize { tailBufL[i] = 0; tailBufR[i] = 0 }
-        for i in 0..<Self.alignBufSize { alignBufL[i] = 0; alignBufR[i] = 0 }
+        stageResetCount += 1
+        Self.zeroRing(&crossDelayL); Self.zeroRing(&crossDelayR)
+        Self.zeroRing(&roomBufL); Self.zeroRing(&roomBufR)
+        Self.zeroRing(&tailBufL); Self.zeroRing(&tailBufR)
+        Self.zeroRing(&alignBufL); Self.zeroRing(&alignBufR)
         crossIdx = 0; roomIdx = 0; tailIdxL = 0; tailIdxR = 0; alignIdx = 0
         crossLPl = 0; crossLPr = 0; tailLPL = 0; tailLPR = 0
         crossLoZ1L = 0; crossLoZ2L = 0; crossLoZ1R = 0; crossLoZ2R = 0
@@ -989,6 +998,7 @@ final class StageProcessor {
         sideShelfZ1 = 0; sideShelfZ2 = 0
         dialogueZ1 = 0; dialogueZ2 = 0
         adaaPrevL = 0; adaaPrevR = 0
+        adaaPrevFL = nil; adaaPrevFR = nil
         loudLowCur = .passthrough; loudHighCur = .passthrough
         loudCurDcGain = 1; loudWet = 0
         loudLoZ1L = 0; loudLoZ2L = 0; loudLoZ1R = 0; loudLoZ2R = 0
@@ -998,6 +1008,7 @@ final class StageProcessor {
         guardEnv = 0
         guardEngaged = false
         nightEnv = 0.05
+        nightEngaged = false
         convEngaged = false
     }
 
@@ -1054,14 +1065,8 @@ final class StageProcessor {
         let conv = slot?.takeUnretainedValue()
         let chains = chainSlot?.takeUnretainedValue()
 
-        // A new epoch means prepare() ran (engine start, rate change): the
-        // rings hold audio timed for another rate. Wipe them HERE, on the
-        // only thread that touches them.
         if cfg.epoch != renderEpoch {
             renderEpoch = cfg.epoch
-            resetStageState()
-            resetLimiterState()
-            resetAppChainState()
             stageEngaged = false
             kEngaged = false
             limEngaged = false
@@ -1069,7 +1074,6 @@ final class StageProcessor {
         }
         if cfg.perAppEpoch != renderPerAppEpoch {
             renderPerAppEpoch = cfg.perAppEpoch
-            resetAppChainState()
             perAppEngaged = false
         }
 
@@ -1080,10 +1084,10 @@ final class StageProcessor {
             memset(buf.mData, 0, Int(buf.mDataByteSize))
         }
 
-        // Locate each input channel; the stage filters them in place.
         let wantedStreams = cfg.perAppActive && !cfg.monitorOnly
             ? min(Int(cfg.perAppStreams), Self.maxTapStreams) : 1
-        let consumed = min(max(wantedStreams, 1), inList.count)
+        let consumed = wantedStreams > 1 && inList.count >= wantedStreams
+            ? wantedStreams : 1
         inRefs.removeAll(keepingCapacity: true)
         if consumed > 1 {
             if !perAppEngaged {
@@ -1107,6 +1111,7 @@ final class StageProcessor {
             os_unfair_lock_lock(meterLock)
             diagChannels = Int32(inRefs.count)
             diagStageRan = false
+            diagInputBuffers = Int32(clamping: inList.count)
             os_unfair_lock_unlock(meterLock)
             stageEngaged = false
             kEngaged = false
@@ -1210,6 +1215,7 @@ final class StageProcessor {
         diagChannels = Int32(inRefs.count)
         diagStageRan = stageRan
         diagBlockFrames = Int32(clamping: inRefs.first?.frames ?? 0)
+        diagInputBuffers = Int32(clamping: inList.count)
         corrLR += cLR; corrLL += cLL; corrRR += cRR
         os_unfair_lock_unlock(meterLock)
 
@@ -1381,6 +1387,14 @@ final class StageProcessor {
             }
         } else {
             guardEngaged = false
+        }
+        if p.night > 0 {
+            if !nightEngaged {
+                nightEnv = 0.05
+                nightEngaged = true
+            }
+        } else {
+            nightEngaged = false
         }
         let guardHalfKnee = p.guardKneeDb * 0.5
         var guardLocalRedDb: Float = 0
@@ -1555,32 +1569,6 @@ final class StageProcessor {
         func back(_ inL: Float, _ inR: Float) -> (Float, Float) {
             var L = inL, R = inR
 
-            if loudRunning {
-                loudWet += glide * (loudWetTarget - loudWet)
-
-                let dryL = Double(L)
-                var x = dryL
-                var y = loudLowCur.b0 * x + loudLoZ1L
-                loudLoZ1L = loudLowCur.b1 * x - loudLowCur.a1 * y + loudLoZ2L
-                loudLoZ2L = loudLowCur.b2 * x - loudLowCur.a2 * y
-                x = y
-                y = loudHighCur.b0 * x + loudHiZ1L
-                loudHiZ1L = loudHighCur.b1 * x - loudHighCur.a1 * y + loudHiZ2L
-                loudHiZ2L = loudHighCur.b2 * x - loudHighCur.a2 * y
-                L = Float(dryL + loudWet * (y - dryL))
-
-                let dryR = Double(R)
-                x = dryR
-                y = loudLowCur.b0 * x + loudLoZ1R
-                loudLoZ1R = loudLowCur.b1 * x - loudLowCur.a1 * y + loudLoZ2R
-                loudLoZ2R = loudLowCur.b2 * x - loudLowCur.a2 * y
-                x = y
-                y = loudHighCur.b0 * x + loudHiZ1R
-                loudHiZ1R = loudHighCur.b1 * x - loudHighCur.a1 * y + loudHiZ2R
-                loudHiZ2R = loudHighCur.b2 * x - loudHighCur.a2 * y
-                R = Float(dryR + loudWet * (y - dryR))
-            }
-
             if p.guardOn {
                 let xgl = Double(L), xgr = Double(R)
                 var yg = p.guardLP.b0 * xgl + guardLoZ1L
@@ -1613,6 +1601,32 @@ final class StageProcessor {
                 }
             }
 
+            if loudRunning {
+                loudWet += glide * (loudWetTarget - loudWet)
+
+                let dryL = Double(L)
+                var x = dryL
+                var y = loudLowCur.b0 * x + loudLoZ1L
+                loudLoZ1L = loudLowCur.b1 * x - loudLowCur.a1 * y + loudLoZ2L
+                loudLoZ2L = loudLowCur.b2 * x - loudLowCur.a2 * y
+                x = y
+                y = loudHighCur.b0 * x + loudHiZ1L
+                loudHiZ1L = loudHighCur.b1 * x - loudHighCur.a1 * y + loudHiZ2L
+                loudHiZ2L = loudHighCur.b2 * x - loudHighCur.a2 * y
+                L = Float(dryL + loudWet * (y - dryL))
+
+                let dryR = Double(R)
+                x = dryR
+                y = loudLowCur.b0 * x + loudLoZ1R
+                loudLoZ1R = loudLowCur.b1 * x - loudLowCur.a1 * y + loudLoZ2R
+                loudLoZ2R = loudLowCur.b2 * x - loudLowCur.a2 * y
+                x = y
+                y = loudHighCur.b0 * x + loudHiZ1R
+                loudHiZ1R = loudHighCur.b1 * x - loudHighCur.a1 * y + loudHiZ2R
+                loudHiZ2R = loudHighCur.b2 * x - loudHighCur.a2 * y
+                R = Float(dryR + loudWet * (y - dryR))
+            }
+
             // Soft clip instead of hard headroom: unity below ~0.5, gentle
             // saturation above, so theatrical levels survive the widening.
             // Anti-aliased, and per channel: the shaper's memory is the
@@ -1621,10 +1635,14 @@ final class StageProcessor {
             var xr = R * p.trim
             if !xl.isFinite { xl = 0 }
             if !xr.isFinite { xr = 0 }
-            L = softClipADAA(xl, prev: adaaPrevL)
-            R = softClipADAA(xr, prev: adaaPrevR)
+            let clippedL = softClipADAAStep(xl, prev: adaaPrevL, prevF: adaaPrevFL)
+            let clippedR = softClipADAAStep(xr, prev: adaaPrevR, prevF: adaaPrevFR)
+            L = clippedL.out
+            R = clippedR.out
             adaaPrevL = xl
             adaaPrevR = xr
+            adaaPrevFL = clippedL.f
+            adaaPrevFR = clippedR.f
             return (L, R)
         }
 
@@ -1849,17 +1867,19 @@ final class StageProcessor {
     /// THIS channel, and the caller owns it (see `adaaPrevL`/`adaaPrevR`).
     @inline(__always)
     func softClipADAA(_ x: Float, prev: Float) -> Float {
+        softClipADAAStep(x, prev: prev, prevF: nil).out
+    }
+
+    @inline(__always)
+    func softClipADAAStep(_ x: Float, prev: Float,
+                          prevF: Double?) -> (out: Float, f: Double?) {
         let x1 = Double(x), x0 = Double(prev)
         let dx = x1 - x0
-        // Held or barely-moving signals make the quotient 0/0. Near that
-        // limit the numerator is almost pure cancellation error and the
-        // denominator is vanishing, so the result explodes into noise;
-        // below the threshold the segment is short enough that the direct
-        // shaper at its midpoint is both well-conditioned and accurate.
         if abs(dx) < 1e-6 {
-            return softClip(Float((x1 + x0) * 0.5))
+            return (softClip(Float((x1 + x0) * 0.5)), nil)
         }
-        return Float((softClipF(x1) - softClipF(x0)) / dx)
+        let f1 = softClipF(x1)
+        return (Float((f1 - (prevF ?? softClipF(x0))) / dx), f1)
     }
 
     private func copyOut(_ outList: UnsafeMutableAudioBufferListPointer) {
