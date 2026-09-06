@@ -28,6 +28,12 @@ qudelix preset name <n> <name>   rename a device slot
 qudelix preset pull <file>       write the live EQ to a JSON file
 qudelix preset push <file>       apply a JSON file written by pull
 qudelix import <autoeq.txt>      apply a parametric-EQ text file (AutoEq, Equalizer APO, Peace)
+qudelix ai providers             every provider, its default model and its key
+qudelix ai key set <provider>    store an API key read from standard input
+qudelix ai key clear <provider>  forget the stored key for a provider
+qudelix ai key status            which providers have a key stored
+qudelix ai research <headphone>  what a provider knows about a headphone
+qudelix ai suggest <headphone>   design a preset for a headphone
 ```
 
 Preset slots are numbered 1 to 20, the same way they are shown.
@@ -67,6 +73,67 @@ is present but not readable.
 EQ changes are written to the device's flash, so they survive a power cycle:
 `qudelix import`, `qudelix preset push` and `qudelix eq on|off` each ask the device
 to save its settings once the command has finished. Read-only commands never do.
+
+## AI presets
+
+`qudelix ai` designs a parametric preset for a named headphone with your own account
+at an AI provider, the same way the macOS app's AI preset studio does. Nothing is
+billed to anyone but you, and no request is made until you ask for one.
+
+```
+qudelix ai providers
+qudelix ai key set openai            # reads the key from standard input
+qudelix ai research "Sennheiser HD 650"
+qudelix ai suggest "Sennheiser HD 650" --kind clarity
+qudelix ai suggest "Sennheiser HD 650" --kind clarity --apply
+```
+
+Flags `ai suggest` takes:
+
+```
+--kind <kind>                    what to design (default: correction)
+--provider <provider>            mistral, openai, anthropic or openrouter
+--model <model>                  the model name at that provider
+--bands 10 | 20                  bands to design for
+--apply                          write the draft to the device
+```
+
+`ai research` takes `--provider`, `--model` and `--refresh`. `qudelix ai suggest
+--kind wrong` lists every kind it accepts, and `qudelix ai key set wrong` every
+provider. If a run answers `unknown option --kind`, this build's shared option
+parser has not been taught to hand subcommand flags on yet — put `--` ahead of
+them: `qudelix ai suggest "Sennheiser HD 650" -- --kind clarity --apply`.
+
+Without `--apply` nothing touches the device: the draft is printed as a band table
+with the model's own notes, and the run needs no 5K attached. With `--apply` the
+draft is written to the live EQ and then saved to the device's flash, and the band
+count defaults to the bank the device is in rather than 10.
+
+`--kind correction` needs no AI key when a published measurement of the headphone
+is available: the filters come straight from that measurement, as they do in the
+macOS app.
+
+### Where the key is kept
+
+One file per provider, `$XDG_CONFIG_HOME/qudelix/ai-key-<provider>`
+(`~/.config/qudelix/ai-key-<provider>` by default), created at mode 0600 inside a
+0700 directory. The key is read from standard input rather than from the command
+line so it never lands in the shell history, it is never printed by any command,
+and it never reaches the log. A file other users can read is refused rather than
+used, with the `chmod` to fix it. `QUDELIX_AI_KEY_<PROVIDER>`, or
+`QUDELIX_AI_KEY` for any provider, overrides the file.
+
+The key travels in one request header to the provider you picked and nowhere else.
+The only hosts reached are `api.mistral.ai`, `api.openai.com`,
+`api.anthropic.com`, `openrouter.ai` and — for the published measurement —
+`raw.githubusercontent.com`.
+
+### What is cached
+
+What a provider answers about a headphone is kept in
+`~/.local/share/QudelixBar/ai-research.json`, the same file and format the macOS
+app uses, so `ai research` and the first `ai suggest` for a model are the only
+requests made for it. `ai research --refresh` asks again.
 
 ## Bluetooth
 
