@@ -176,16 +176,74 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(noTransport, CLIExit.noTransport)
     }
 
-    func testDeviceErrorExitsOneWhenTheLinkNeverAnswers() async {
+    func testALinkThatNeverComesUpIsNoTransportNotADeviceError() async {
         let link = FakeLink()
         link.onSend = { _, _ in }
         let exit = await QudelixCLI.run(arguments: ["--timeout", "0.2", "status"],
                                         makeLinks: { _ in [link] })
+        XCTAssertEqual(exit, CLIExit.noTransport)
+    }
+
+    func testADeviceThatConnectsAndThenGoesQuietExitsOne() async {
+        let link = FakeLink()
+        link.autoConnectOnStart = true
+        link.onSend = { _, _ in }
+        let exit = await QudelixCLI.run(arguments: ["--timeout", "0.3", "status"],
+                                        makeLinks: { _ in [link] })
         XCTAssertEqual(exit, CLIExit.deviceError)
     }
 
-    private func deviceLink(nameMask: Int = 0) -> FakeLink {
-        let link = QxFixtures.answeringLink(nameMask: nameMask)
+    func testAnUnusableLinkIsNoTransport() async {
+        let link = FakeLink(kind: .bluetooth)
+        link.onSend = { _, _ in }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            link.declareUnusable("BlueZ is not on the system bus")
+        }
+        let exit = await QudelixCLI.run(arguments: ["--timeout", "2", "status"],
+                                        makeLinks: { _ in [link] })
+        XCTAssertEqual(exit, CLIExit.noTransport)
+    }
+
+    func testBothLinksAreTriedAndBothFailuresAreKept() async {
+        let usb = FakeLink(kind: .usb)
+        usb.onSend = { _, _ in }
+        let bluetooth = FakeLink(kind: .bluetooth)
+        bluetooth.onSend = { _, _ in }
+        let exit = await QudelixCLI.run(arguments: ["--timeout", "0.2", "status"],
+                                        makeLinks: { _ in [usb, bluetooth] })
+        XCTAssertEqual(exit, CLIExit.noTransport)
+        XCTAssertTrue(usb.started)
+        XCTAssertTrue(bluetooth.started)
+    }
+
+    func testMissingTransportClassification() {
+        XCTAssertTrue(QudelixCLI.isMissingTransport(
+            QxSessionError.timedOut(QxSession.deviceAppearance)))
+        XCTAssertTrue(QudelixCLI.isMissingTransport(
+            QxSessionError.linkUnusable("no adapter with LE")))
+        XCTAssertFalse(QudelixCLI.isMissingTransport(
+            QxSessionError.timedOut("the handshake reply")))
+        XCTAssertFalse(QudelixCLI.isMissingTransport(QxSessionError.linkClosed))
+        XCTAssertFalse(QudelixCLI.isMissingTransport(CLIUsageError(message: "nope")))
+    }
+
+    func testTheUsbWaitTimeoutSaysWhatWasLookedFor() {
+        let waiting = QxSessionError.timedOut(QxSession.deviceAppearance)
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .usb, sawUsbNode: false),
+                       "no Qudelix 5K found on USB (no matching /dev/hidraw node)")
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .usb, sawUsbNode: true),
+                       waiting.description)
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .bluetooth,
+                                                     sawUsbNode: false),
+                       waiting.description)
+        let unusable = QxSessionError.linkUnusable("BlueZ is not on the system bus")
+        XCTAssertEqual(QudelixCLI.connectFailureText(unusable, kind: .bluetooth,
+                                                     sawUsbNode: false),
+                       "BlueZ is not on the system bus")
+    }
+
+    private func deviceLink(nameMask: Int = 0, eqEnabled: Bool = true) -> FakeLink {
+        let link = QxFixtures.answeringLink(nameMask: nameMask, eqEnabled: eqEnabled)
         link.autoConnectOnStart = true
         return link
     }
@@ -250,7 +308,7 @@ final class CLITests: XCTestCase {
         """.write(to: URL(fileURLWithPath: path), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let link = deviceLink()
+        let link = deviceLink(eqEnabled: false)
         let exit = await run(["import", path], link)
         XCTAssertEqual(exit, CLIExit.ok)
         XCTAssertEqual(link.payload(for: .setEqEnable), [0, 1])
@@ -268,15 +326,86 @@ final class CLITests: XCTestCase {
         }
     }
 
-    func testImportOfANonPresetFileIsADeviceLevelFailureNotACrash() async throws {
+    func testImportOfANonPresetFileIsAUsageErrorNotACrash() async throws {
         let path = NSTemporaryDirectory() + "/qudelix-junk-" + UUID().uuidString + ".txt"
         try "nothing here".write(to: URL(fileURLWithPath: path),
                                  atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: path) }
         let link = deviceLink()
         let exit = await run(["import", path], link)
-        XCTAssertEqual(exit, CLIExit.deviceError)
+        XCTAssertEqual(exit, CLIExit.usageError)
         XCTAssertTrue(link.payloads(for: .setEqBandParam).isEmpty)
+        XCTAssertTrue(link.payloads(for: .saveAll).isEmpty)
+    }
+
+    func testUsageErrorsRaisedAfterConnectExitTwo() async throws {
+        let missing = NSTemporaryDirectory() + "/qudelix-absent-" + UUID().uuidString + ".txt"
+        let imported = await run(["import", missing], deviceLink())
+        XCTAssertEqual(imported, CLIExit.usageError)
+        let pushed = await run(["preset", "push", missing], deviceLink())
+        XCTAssertEqual(pushed, CLIExit.usageError)
+        let pulled = await run(["preset", "pull", "/nope/qudelix/eq.json"], deviceLink())
+        XCTAssertEqual(pulled, CLIExit.usageError)
+    }
+
+    func testMutatingCommandsAskTheDeviceToPersistExactlyOnce() async throws {
+        let path = NSTemporaryDirectory() + "/qudelix-autoeq-" + UUID().uuidString + ".txt"
+        try """
+        Preamp: -6.1 dB
+        Filter 1: ON PK Fc 1000 Hz Gain 2.0 dB Q 1.00
+        """.write(to: URL(fileURLWithPath: path), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let importLink = deviceLink()
+        let imported = await run(["import", path], importLink)
+        XCTAssertEqual(imported, CLIExit.ok)
+        XCTAssertEqual(importLink.payloads(for: .saveAll).count, 1)
+        XCTAssertEqual(importLink.sentCommands.last, .saveAll)
+
+        let toggleLink = deviceLink()
+        let toggled = await run(["eq", "off"], toggleLink)
+        XCTAssertEqual(toggled, CLIExit.ok)
+        XCTAssertEqual(toggleLink.payloads(for: .saveAll).count, 1)
+    }
+
+    func testPresetPushPersistsAndReadOnlyCommandsDoNot() async throws {
+        let path = NSTemporaryDirectory() + "/qudelix-pull-" + UUID().uuidString + ".json"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let puller = deviceLink()
+        let pull = await run(["preset", "pull", path], puller)
+        XCTAssertEqual(pull, CLIExit.ok)
+        XCTAssertTrue(puller.payloads(for: .saveAll).isEmpty)
+
+        let pusher = deviceLink()
+        let push = await run(["preset", "push", path], pusher)
+        XCTAssertEqual(push, CLIExit.ok)
+        XCTAssertEqual(pusher.payloads(for: .saveAll).count, 1)
+
+        for arguments in [["status"], ["volume"], ["filter"], ["eq", "show"],
+                          ["preset", "list"], ["volume", "-20"], ["filter", "2"],
+                          ["preset", "save", "3"], ["preset", "load", "3"],
+                          ["preset", "name", "3", "Bassy"]] {
+            let link = deviceLink(nameMask: 0b101)
+            let exit = await run(arguments, link)
+            XCTAssertEqual(exit, CLIExit.ok, "\(arguments)")
+            XCTAssertTrue(link.payloads(for: .saveAll).isEmpty, "\(arguments)")
+        }
+    }
+
+    func testPersistenceTriggersMirrorTheMacControllersEqEditedSet() {
+        for command in [CLICommand.importFile("/tmp/x.txt"),
+                        .presetPush("/tmp/x.json"),
+                        .eqEnable(true), .eqEnable(false)] {
+            XCTAssertTrue(QudelixCLI.persistsToFlash(command), "\(command)")
+        }
+        for command in [CLICommand.status, .watch, .probe, .help, .eqShow,
+                        .volumeShow, .volumeSet(-20), .volumeMute(true),
+                        .filterList, .filterSet(2), .presetList,
+                        .presetLoad(2), .presetSave(2),
+                        .presetRename(index: 2, name: "Bassy"),
+                        .presetPull("/tmp/x.json")] {
+            XCTAssertFalse(QudelixCLI.persistsToFlash(command), "\(command)")
+        }
     }
 
     private func fakeTree(_ nodes: [(String, String)]) throws -> URL {
@@ -363,7 +492,8 @@ final class CLITests: XCTestCase {
         let report = Probe.report(environment(root: root, accessible: false))
         let advice = Probe.permissionAdvice(report)
         XCTAssertNotNil(advice)
-        XCTAssertTrue(advice?.contains("70-qudelix.rules") ?? false)
+        XCTAssertTrue(advice?.contains("/lib/udev/rules.d/70-qudelix.rules") ?? false)
+        XCTAssertFalse(advice?.contains("/etc/udev/rules.d") ?? true)
         XCTAssertTrue(advice?.contains("replug") ?? false)
         XCTAssertTrue(advice?.contains("/dev/hidraw0") ?? false)
         XCTAssertTrue(Probe.lines(report).contains { $0.contains("no read") })

@@ -53,10 +53,20 @@ Exit codes:
 
 ```
 0   ok
-1   device error or timeout
-2   usage error
-3   no transport, or permission denied on the device node
+1   the device answered and then failed, or stopped answering mid-conversation
+2   usage error, including a file that cannot be read, parsed or written
+3   no transport: no link could be used, and none ever reached the device
 ```
+
+When no link reaches the device, one line per link is printed to stderr — `qudelix:
+usb: …` and `qudelix: bluetooth: …` — followed by the udev advice if a Qudelix node
+is present but not readable.
+
+## Persistence
+
+EQ changes are written to the device's flash, so they survive a power cycle:
+`qudelix import`, `qudelix preset push` and `qudelix eq on|off` each ask the device
+to save its settings once the command has finished. Read-only commands never do.
 
 ## Bluetooth
 
@@ -64,7 +74,8 @@ Bluetooth LE requires BlueZ 5.64 or newer and a Bluetooth adapter with LE suppor
 
 ## Troubleshooting
 
-If you see "Permission denied" when accessing the device, the udev rule did not apply. Reinstall the package or run:
+If you see "Permission denied" when accessing the device, the udev rule at
+`/lib/udev/rules.d/70-qudelix.rules` did not apply. Reinstall the package or run:
 
 ```
 sudo udevadm control --reload-rules

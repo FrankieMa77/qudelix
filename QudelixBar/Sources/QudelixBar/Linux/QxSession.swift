@@ -6,6 +6,7 @@ enum QxSessionError: Error, CustomStringConvertible, Equatable {
     case rejectedValue(String)
     case timedOut(String)
     case linkClosed
+    case linkUnusable(String)
 
     var description: String {
         switch self {
@@ -17,6 +18,8 @@ enum QxSessionError: Error, CustomStringConvertible, Equatable {
             return "timed out waiting for \(what)"
         case .linkClosed:
             return "the device disconnected"
+        case .linkUnusable(let reason):
+            return reason
         }
     }
 }
@@ -39,6 +42,8 @@ final class QxSession {
         .setEqPresetName,
         .saveAll,
     ]
+
+    static let deviceAppearance = "the device to appear"
 
     let link: QxLink
     let timeout: TimeInterval
@@ -84,11 +89,15 @@ final class QxSession {
         }
         link.onDisconnected = { [weak self] in
             guard let self else { return }
-            self.queue.async { self.linkWentDown("the device disconnected") }
+            self.queue.async {
+                self.linkWentDown("the device disconnected", failingWith: .linkClosed)
+            }
         }
         link.onLinkUnusable = { [weak self] reason in
             guard let self else { return }
-            self.queue.async { self.linkWentDown(reason) }
+            self.queue.async {
+                self.linkWentDown(reason, failingWith: .linkUnusable(reason))
+            }
         }
         link.onPacket = { [weak self] bytes in
             guard let self else { return }
@@ -103,7 +112,7 @@ final class QxSession {
             self.link.start()
         }
         let deadline = Date().addingTimeInterval(timeout)
-        try await wait("the device to appear", timeout: timeout) {
+        try await wait(Self.deviceAppearance, timeout: timeout) {
             self.connectedName != nil
         }
         var attempt = 0
@@ -267,28 +276,42 @@ final class QxSession {
     }
 
     @discardableResult
-    func applyParametric(_ file: ParametricEQFile) async throws -> QxUserEqPreset {
-        let group = await read { self.eqGroup }
-        let existing = await read { self.lastPreset?.bands ?? [] }
-        let bandCount = group.bandCount
-        var writes: [Int: QxEqBandValue] = [:]
-        for index in 0..<bandCount {
-            if index < file.bands.count {
-                writes[index] = Self.clamped(file.bands[index])
-            } else if existing.indices.contains(index) {
-                var band = existing[index]
-                band.filter = .bypass
-                writes[index] = Self.clamped(band)
-            } else {
-                writes[index] = QxEqBandValue(filter: .bypass,
-                                              freq: group.defaultFreqs[index],
-                                              gain: 0, q: 1)
-            }
-        }
-        let preGain = EQHeadroom.clamp(file.preamp)
-        let scaledPreGain = Int((preGain * QxScale.gain).rounded())
+    func applyParametric(_ file: ParametricEQFile,
+                         expecting expected: QxEqGroup? = nil) async throws -> QxUserEqPreset {
         try await perform {
-            try self.transmit(.setEqEnable, [group.rawValue, 1])
+            let group = self.eqGroup
+            if let expected, expected != group {
+                throw QxSessionError.rejectedValue(
+                    "the device switched to the " + QxFormat.groupLabel(group)
+                        + " EQ group while this was being prepared — nothing was written")
+            }
+            let existing = self.lastPreset?.bands ?? []
+            let bandCount = group.bandCount
+            var writes: [Int: QxEqBandValue] = [:]
+            for index in 0..<bandCount {
+                if index < file.bands.count {
+                    writes[index] = Self.clamped(file.bands[index])
+                } else if existing.indices.contains(index) {
+                    var band = existing[index]
+                    band.filter = .bypass
+                    writes[index] = Self.clamped(band)
+                } else {
+                    writes[index] = QxEqBandValue(filter: .bypass,
+                                                  freq: group.defaultFreqs[index],
+                                                  gain: 0, q: 1)
+                }
+            }
+            let preGain = EQHeadroom.clamp(file.preamp)
+            let scaledPreGain = Int((preGain * QxScale.gain).rounded())
+            guard self.eqGroup == group else {
+                throw QxSessionError.rejectedValue(
+                    "the device switched EQ group while this was being prepared "
+                        + "— nothing was written")
+            }
+            if self.state.eqEnabled != true {
+                self.state.eqEnabled = true
+                try self.transmit(.setEqEnable, [group.rawValue, 1])
+            }
             try self.transmit(.setEqType, [group.rawValue, 1])
             for mask in [UInt8(1), UInt8(2)] {
                 try self.transmit(.setEqPreGain,
@@ -349,7 +372,6 @@ final class QxSession {
         guard Self.allowed.contains(cmd) else {
             throw QxSessionError.disallowedCommand(cmd)
         }
-        Trace.tx(cmd, data)
         link.send(cmd, data)
     }
 
@@ -507,11 +529,11 @@ final class QxSession {
         wake()
     }
 
-    private func linkWentDown(_ why: String) {
+    private func linkWentDown(_ why: String, failingWith error: QxSessionError) {
         connectedName = nil
         initParsed = false
         emit(why)
-        failPending(QxSessionError.linkClosed)
+        failPending(error)
     }
 
     private func volumeCeiling() -> Double {
