@@ -26,6 +26,9 @@ enum CLICommand: Equatable {
     case presetPull(String)
     case presetPush(String)
     case importFile(String)
+    case library(LibraryCommand)
+    case ai(AICommand)
+    case history(HistoryCommand)
 }
 
 struct CLIInvocation: Equatable {
@@ -71,6 +74,9 @@ enum CLI {
       preset pull <file>        write the live EQ to a JSON file
       preset push <file>        apply a JSON file written by pull
       import <autoeq.txt>       apply a parametric-EQ text file
+    \(LibraryCommand.usageLines.joined(separator: "\n"))
+    \(AICommand.usageLines.joined(separator: "\n"))
+    \(HistoryCommand.usageLines.joined(separator: "\n"))
 
     flags:
       --usb                     use the USB link
@@ -160,6 +166,12 @@ enum CLI {
             return try eq(rest)
         case "preset":
             return try preset(rest)
+        case LibraryCommand.name:
+            return .library(try LibraryCommand.parse(rest))
+        case AICommand.name:
+            return .ai(try AICommand.parse(rest))
+        case HistoryCommand.name:
+            return .history(try HistoryCommand.parse(rest))
         case "import":
             guard rest.count == 1 else {
                 throw CLIUsageError(message: "import needs one file path")
@@ -288,6 +300,9 @@ enum CLI {
     static func needsDevice(_ command: CLICommand) -> Bool {
         switch command {
         case .help, .probe: return false
+        case .library(let family): return family.needsDevice
+        case .ai(let family): return family.needsDevice
+        case .history(let family): return family.needsDevice
         default: return true
         }
     }
@@ -324,6 +339,19 @@ enum QudelixCLI {
             return CLIExit.ok
         default:
             break
+        }
+
+        if !CLI.needsDevice(invocation.command) {
+            do {
+                try await execute(invocation, nil)
+                return CLIExit.ok
+            } catch let error as CLIUsageError {
+                StdIO.error("qudelix: " + error.message)
+                return CLIExit.usageError
+            } catch {
+                StdIO.error("qudelix: " + describe(error))
+                return CLIExit.deviceError
+            }
         }
 
         let links = makeLinks(invocation.options.preferred)
@@ -399,6 +427,9 @@ enum QudelixCLI {
     static func persistsToFlash(_ command: CLICommand) -> Bool {
         switch command {
         case .importFile, .presetPush, .eqEnable: return true
+        case .library(let family): return family.persistsToFlash
+        case .ai(let family): return family.persistsToFlash
+        case .history(let family): return family.persistsToFlash
         default: return false
         }
     }
@@ -409,10 +440,26 @@ enum QudelixCLI {
         return "\(error)"
     }
 
-    private static func execute(_ invocation: CLIInvocation, _ session: QxSession) async throws {
+    private static func execute(_ invocation: CLIInvocation, _ session: QxSession?) async throws {
         let json = invocation.options.json
         switch invocation.command {
         case .help, .probe:
+            return
+        case .library(let family):
+            try await family.run(options: invocation.options, session: session)
+            return
+        case .ai(let family):
+            try await family.run(options: invocation.options, session: session)
+            return
+        case .history(let family):
+            try await family.run(options: invocation.options, session: session)
+            return
+        default:
+            break
+        }
+        guard let session else { throw CLIUsageError(message: "this command needs the device") }
+        switch invocation.command {
+        case .help, .probe, .library, .ai, .history:
             return
 
         case .status:
@@ -639,4 +686,13 @@ enum QudelixCLI {
         }
         return only
     }
+}
+
+protocol CLIFamily: Equatable {
+    static var name: String { get }
+    static var usageLines: [String] { get }
+    static func parse(_ rest: [String]) throws -> Self
+    var needsDevice: Bool { get }
+    var persistsToFlash: Bool { get }
+    func run(options: CLIOptions, session: QxSession?) async throws
 }
