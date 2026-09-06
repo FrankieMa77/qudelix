@@ -30,6 +30,38 @@ struct AIKeychain {
         return configHome.appendingPathComponent("qudelix", isDirectory: true)
     }
 
+    private static func lstatMode(_ url: URL) -> mode_t? {
+        var status = stat()
+        return url.withUnsafeFileSystemRepresentation { path -> mode_t? in
+            guard let path, lstat(path, &status) == 0 else { return nil }
+            return status.st_mode
+        }
+    }
+
+    private func prepareDirectory() {
+        let fm = FileManager.default
+        let parent = directory.deletingLastPathComponent()
+        switch Self.lstatMode(directory) {
+        case let mode? where mode & S_IFMT == S_IFDIR:
+            if mode & 0o777 != 0o700 {
+                try? fm.setAttributes([.posixPermissions: 0o700],
+                                      ofItemAtPath: directory.path)
+            }
+        case .some:
+            let aside = parent.appendingPathComponent(
+                directory.lastPathComponent
+                    + ".displaced-\(Int(Date().timeIntervalSince1970))")
+            try? fm.moveItem(at: directory, to: aside)
+            Trace.log("key directory path was not a directory — moved aside as "
+                + aside.lastPathComponent)
+            fallthrough
+        case nil:
+            try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+        }
+    }
+
     static func slug(_ provider: String) -> String {
         let kept = provider.lowercased().unicodeScalars.filter {
             (0x61...0x7A).contains($0.value) || (0x30...0x39).contains($0.value)
@@ -70,10 +102,8 @@ struct AIKeychain {
     func save(key: String, provider: String) -> Bool {
         let clean = Self.printable(key)
         guard !clean.isEmpty else { return false }
+        prepareDirectory()
         let url = url(provider: provider)
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700])
         let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return -1 }
             unlink(path)

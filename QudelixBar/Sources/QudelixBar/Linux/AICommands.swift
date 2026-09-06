@@ -267,10 +267,11 @@ enum AICommand: CLIFamily {
                     case "--provider": request.provider = try provider(pair.value)
                     case "--model": request.model = try modelName(pair.value)
                     case "--bands": request.bands = try bandCount(pair.value)
-                    default: throw unknownFlag(pair.flag)
+                    default: throw unknownFlag(pair.flag, of: "ai suggest",
+                                               taking: suggestFlags)
                     }
                 } else if token.hasPrefix("-"), token.count > 1 {
-                    throw unknownFlag(token)
+                    throw unknownFlag(token, of: "ai suggest", taking: suggestFlags)
                 } else {
                     words.append(token)
                 }
@@ -299,10 +300,11 @@ enum AICommand: CLIFamily {
                     switch pair.flag {
                     case "--provider": request.provider = try provider(pair.value)
                     case "--model": request.model = try modelName(pair.value)
-                    default: throw unknownFlag(pair.flag)
+                    default: throw unknownFlag(pair.flag, of: "ai research",
+                                               taking: researchFlags)
                     }
                 } else if token.hasPrefix("-"), token.count > 1 {
-                    throw unknownFlag(token)
+                    throw unknownFlag(token, of: "ai research", taking: researchFlags)
                 } else {
                     words.append(token)
                 }
@@ -320,9 +322,14 @@ enum AICommand: CLIFamily {
                 String(token[token.index(after: equals)...]))
     }
 
-    private static func unknownFlag(_ token: String) -> CLIUsageError {
+    static let suggestFlags = "--kind, --provider, --model, --bands and --apply"
+
+    static let researchFlags = "--provider, --model and --refresh"
+
+    private static func unknownFlag(_ token: String, of subcommand: String,
+                                    taking flags: String) -> CLIUsageError {
         CLIUsageError(message: "unknown option " + SafeText.scrubbed(token, limit: 40)
-            + " — ai suggest takes --kind, --provider, --model, --bands and --apply")
+            + " — \(subcommand) takes " + flags)
     }
 
     private static func modelName(_ raw: String) throws -> String {
@@ -428,10 +435,12 @@ enum AICommand: CLIFamily {
                     ["id": provider.rawValue,
                      "key": hasKey(reading),
                      "key_state": keyState(reading),
+                     "environment_variable":
+                        AIKeychain.environmentVariable(provider: provider.rawValue),
                      "path": runtime.keychain.url(provider: provider.rawValue).path]
                 },
             ]
-            object["environment_variable"] = AIKeychain.environmentVariable
+            object["shared_environment_variable"] = AIKeychain.environmentVariable
             StdIO.out(QxFormat.json(object))
             return
         }
@@ -630,6 +639,14 @@ enum AICommand: CLIFamily {
         }
         var group: QxEqGroup?
         if let session { group = await session.snapshot().eqGroup }
+        if request.apply, let group, let asked = request.bands,
+           asked != group.bandCount {
+            throw CLIUsageError(
+                message: "--bands \(asked) does not match the device, which is in "
+                    + QxFormat.groupLabel(group) + " mode and takes "
+                    + "\(group.bandCount) bands — drop --bands, or leave "
+                    + "--apply off")
+        }
         let bandCount = request.bands ?? group?.bandCount ?? defaultBandCount
         let provider = request.provider ?? defaultProvider(runtime)
         let model = request.model ?? provider.defaultModel
@@ -654,12 +671,14 @@ enum AICommand: CLIFamily {
             guard outcome.draft.bands.count <= group.bandCount else {
                 throw CLIUsageError(
                     message: "this draft has \(outcome.draft.bands.count) bands and the "
-                        + "device is in " + QxFormat.groupLabel(group) + " mode")
+                        + "device is in " + QxFormat.groupLabel(group) + " mode, which "
+                        + "takes \(group.bandCount)")
             }
             var file = ParametricEQFile()
             file.preamp = outcome.draft.preGain
             file.bands = outcome.draft.bands
-            applied = try await session.applyParametric(file, expecting: group)
+            applied = try await session.applyParametric(
+                file, expecting: group, recording: "ai " + request.headphone)
         }
 
         let preGain = applied?.preGain ?? outcome.draft.preGain
