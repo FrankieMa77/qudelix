@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import QudelixBar
 
 /// The optimizer correction source: what we ask the API for, and what we do
