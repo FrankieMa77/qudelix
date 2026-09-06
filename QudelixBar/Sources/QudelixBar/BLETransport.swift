@@ -31,14 +31,7 @@ final class BLETransport: NSObject {
     /// underlying chip protocol, which are reachable only under a different vendor
     /// value. Making that value unrepresentable means no later edit can turn a
     /// routine setting into a reset.
-    enum Vendor: UInt16, CaseIterable {
-        /// The original 5K. Verified against firmware 3.1.8 and 3.2.7.
-        case qudelix = 0xF001
-        /// The other generation. Untested: a 5K rejects it.
-        case qudelixMk2 = 0xF003
-
-        var label: String { String(format: "0x%04X", rawValue) }
-    }
+    typealias Vendor = GaiaFraming.Vendor
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -67,24 +60,16 @@ final class BLETransport: NSObject {
     /// GAIA frame for one Qudelix command. The vendor can only ever be one of
     /// `Vendor`, so this cannot address GAIA's built-in command handlers.
     static func frame(_ vendor: Vendor, _ cmd: QxCmd, _ data: [UInt8]) -> [UInt8] {
-        [UInt8(vendor.rawValue >> 8), UInt8(vendor.rawValue & 0xFF)]
-            + QxPacket.payload(cmd, data)
+        GaiaFraming.frame(vendor, cmd, data)
     }
 
     /// Turn a GAIA reply into the `[len, cmdHi, cmdLo, payload…]` shape the rest
     /// of the app already parses, so nothing downstream needs to know about BLE.
     /// Returns nil for frames that are not ours, or that carry a failure status.
     static func decode(_ raw: [UInt8], expecting vendor: Vendor) -> (packet: [UInt8], status: UInt8)? {
-        guard raw.count >= 5 else { return nil }
-        let seen = UInt16(raw[0]) << 8 | UInt16(raw[1])
-        guard seen == vendor.rawValue else { return nil }
-        let status = raw[4]
-        let payload = Array(raw[5...])
         // The length byte is what `QxPacket.parseRx` uses to bound the payload;
         // a frame longer than it can express would be silently truncated there.
-        guard payload.count + 2 <= 0xFF else { return nil }
-        let packet = [UInt8(payload.count + 2), raw[2] & 0x7F, raw[3]] + payload
-        return (packet, status)
+        GaiaFraming.decode(raw, expecting: vendor)
     }
 
     /// Why a frame may not go out, or nil if it fits. Refusal, never a trim:
@@ -93,8 +78,7 @@ final class BLETransport: NSObject {
     /// under a header that still claims the original length is precisely how a
     /// stored field ends up corrupt. Better a name that was never written.
     static func writeRefusal(frame: [UInt8], budget: Int) -> String? {
-        guard frame.count > budget else { return nil }
-        return "\(frame.count) bytes, over the \(budget)-byte single-write budget"
+        GaiaFraming.writeRefusal(frame: frame, budget: budget)
     }
 
     func send(_ cmd: QxCmd, _ data: [UInt8] = []) {
