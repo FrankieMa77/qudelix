@@ -28,7 +28,47 @@ qudelix preset name <n> <name>   rename a device slot
 qudelix preset pull <file>       write the live EQ to a JSON file
 qudelix preset push <file>       apply a JSON file written by pull
 qudelix import <autoeq.txt>      apply a parametric-EQ text file (AutoEq, Equalizer APO, Peace)
+qudelix library list             every preset saved on this machine
+qudelix library show <n|name>    pre-gain and the band table of a saved preset
+qudelix library apply <n|name>   write a saved preset to the device
+qudelix library save <name>      save the live EQ into the library
+qudelix library save replace <name>
+                                 overwrite the preset already saved under that name
+qudelix library delete <n|name>  forget a saved preset
+qudelix library search <query>   find a headphone in the AutoEq catalogue
+qudelix library fetch <n|name>   fit an AutoEq correction for it and apply it
+qudelix library fetch <n> target <target-name>
+                                 fit against a named target instead of the recommended one
+qudelix library fetch <n> save <name>
+                                 keep what was applied as a library preset too
 ```
+
+The library lives in `~/.local/share/QudelixBar/presets.json` — the same file, in the same
+format, that the macOS app keeps its saved presets in, so a library copied between the two
+is readable on either. `$XDG_DATA_HOME` moves it if it is set.
+
+A saved preset records which of the device's two EQ banks it was made for. `library apply`
+refuses a 20-band preset while the device is in 10-band mode rather than stretching the
+curve to fit.
+
+`library` takes a saved preset either by its number in `library list` or by name:
+a case-insensitive exact match first, then a unique prefix. A prefix matching more than one
+preset is an error listing them.
+
+`library search` downloads the AutoEq catalogue, prints up to 20 measurements with a number
+each, and remembers them in `~/.local/share/QudelixBar/autoeq-search.json` so
+`library fetch <n>` can pick one. The catalogue itself is not cached: it is fetched on every
+run and kept in memory. `library fetch <name>` skips the search when the name resolves to a
+single measurement; a headphone measured on more than one rig has to be fetched by number.
+
+`library apply` and `library fetch` ask the device to save its settings once they finish,
+the same way `import` and `preset push` do. Every other `library` subcommand only touches
+the file on this machine, and `library list`, `show`, `delete` and `search` need no device
+at all.
+
+`library save`, `library fetch … save` and `library fetch … target` are spelled without
+dashes because global flags are parsed before a subcommand sees them. The dashed spellings
+work after `--`: `qudelix -- library save --replace Bassy`.
 
 Preset slots are numbered 1 to 20, the same way they are shown.
 
