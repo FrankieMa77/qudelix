@@ -13,7 +13,7 @@ final class HidrawTransport: QxLink {
 
     var onConnected: ((String) -> Void)?
     var onDisconnected: (() -> Void)?
-    var onLinkUnusable: (() -> Void)?
+    var onLinkUnusable: ((String) -> Void)?
     var onPacket: (([UInt8]) -> Void)?
 
     private let sysRoot: String
@@ -230,7 +230,7 @@ final class HidrawTransport: QxLink {
                 : "short write \(written)/\(buffer.count)"
             DebugLog.shared.log("TX error \(reason) cmd=\(cmd)"
                 + (consecutiveTxErrors >= Self.txErrorLimit ? " — suspending TX until reattach" : ""))
-            if tripped { onLinkUnusable?() }
+            if tripped { onLinkUnusable?("USB writes keep failing (\(reason)); the link is suspended until the device is reattached") }
         }
         Thread.sleep(forTimeInterval: Self.txPacing)
     }

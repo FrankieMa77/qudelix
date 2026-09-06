@@ -6,7 +6,7 @@ final class FakeLink: QxLink {
     private(set) var isConnected = false
     var onConnected: ((String) -> Void)?
     var onDisconnected: (() -> Void)?
-    var onLinkUnusable: (() -> Void)?
+    var onLinkUnusable: ((String) -> Void)?
     var onPacket: (([UInt8]) -> Void)?
 
     private let lock = NSLock()

@@ -20,7 +20,7 @@ final class BluezTransport: QxLink {
 
     var onConnected: ((String) -> Void)?
     var onDisconnected: (() -> Void)?
-    var onLinkUnusable: (() -> Void)?
+    var onLinkUnusable: ((String) -> Void)?
     var onPacket: (([UInt8]) -> Void)?
 
     private let queue = DispatchQueue(label: "qudelix.bluez")
@@ -177,7 +177,7 @@ final class BluezTransport: QxLink {
             lock.unlock()
             DebugLog.shared.log("BLE write error \(String(cString: strerror(code))) cmd=\(cmd)"
                 + (count >= Self.txErrorLimit ? " — suspending TX until the link comes back" : ""))
-            if count == Self.txErrorLimit { onLinkUnusable?() }
+            if count == Self.txErrorLimit { onLinkUnusable?("Bluetooth writes keep failing (\(String(cString: strerror(code)))); the link is suspended until it comes back") }
         }
         Thread.sleep(forTimeInterval: Self.writeSpacing)
     }
@@ -550,7 +550,7 @@ final class BluezTransport: QxLink {
         guard !announcedUnusable else { return }
         announcedUnusable = true
         DebugLog.shared.log(message)
-        onLinkUnusable?()
+        onLinkUnusable?(message)
     }
 
     private var isStopping: Bool {

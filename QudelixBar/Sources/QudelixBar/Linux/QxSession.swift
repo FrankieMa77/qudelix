@@ -86,9 +86,9 @@ final class QxSession {
             guard let self else { return }
             self.queue.async { self.linkWentDown("the device disconnected") }
         }
-        link.onLinkUnusable = { [weak self] in
+        link.onLinkUnusable = { [weak self] reason in
             guard let self else { return }
-            self.queue.async { self.linkWentDown("the link became unusable") }
+            self.queue.async { self.linkWentDown(reason) }
         }
         link.onPacket = { [weak self] bytes in
             guard let self else { return }

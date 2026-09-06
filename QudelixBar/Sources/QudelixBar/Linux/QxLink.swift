@@ -10,7 +10,7 @@ protocol QxLink: AnyObject {
     var isConnected: Bool { get }
     var onConnected: ((String) -> Void)? { get set }
     var onDisconnected: (() -> Void)? { get set }
-    var onLinkUnusable: (() -> Void)? { get set }
+    var onLinkUnusable: ((String) -> Void)? { get set }
     var onPacket: (([UInt8]) -> Void)? { get set }
     func start()
     func stop()
