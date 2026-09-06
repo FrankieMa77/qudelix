@@ -328,10 +328,9 @@ final class DebugLog: ObservableObject {
     /// gets to move it.
     private(set) var fileURL: URL?
 
-    /// logQueue-owned. Seeded from the existing file so rotation also applies
-    /// to a log inherited from previous runs.
-    private var bytesWritten = 0
-    private static let maxLogBytes = 2_000_000
+    private let file: AppendingLog?
+
+    static let maxLogBytes = 2_000_000
 
     private init() {
         let logs = try? FileManager.default.url(
@@ -341,9 +340,10 @@ final class DebugLog: ObservableObject {
             try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
             let url = logs.appendingPathComponent("QudelixBar.log")
             fileURL = url
-            bytesWritten = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            file = AppendingLog(url: url, maxBytes: Self.maxLogBytes)
         } else {
             fileURL = nil
+            file = nil
         }
     }
 
@@ -366,51 +366,14 @@ final class DebugLog: ObservableObject {
         return out
     }
 
-    /// Append-only handle that refuses to follow a symlink and creates the file
-    /// private to the user. `FileHandle(forWritingTo:)` would happily append
-    /// through a symlink planted at this path, and `Data.write(to:)` creates
-    /// with the process umask (0644 here).
-    private func appendHandle(_ url: URL) -> FileHandle? {
-        let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
-            guard let path else { return -1 }
-            return open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
-        }
-        guard fd >= 0 else { return nil }
-        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-    }
-
-    /// Roll over instead of truncating: the log is what users attach to bug
-    /// reports, and wiping it at the 2 MB mark loses the run that mattered.
-    private func rotate(_ url: URL) {
-        let previous = url.appendingPathExtension("1")
-        try? FileManager.default.removeItem(at: previous)
-        try? FileManager.default.moveItem(at: url, to: previous)
-        bytesWritten = 0
-    }
-
     func log(_ msg: String) {
         let line = "\(formatter.string(from: Date())) \(Self.sanitized(msg))"
         DispatchQueue.main.async {
             self.lines.append(line)
             if self.lines.count > 200 { self.lines.removeFirst(self.lines.count - 200) }
         }
-        guard let url = fileURL, let data = (line + "\n").data(using: .utf8) else { return }
-        logQueue.async {
-            if self.bytesWritten > Self.maxLogBytes { self.rotate(url) }
-            guard let h = self.appendHandle(url) else { return }
-            // `write(_:)` is the Objective-C method behind the Swift name: it
-            // raises NSFileHandleOperationException when the write fails, and
-            // Swift cannot catch an ObjC exception, so a full disk would take
-            // the whole app down while merely trying to note something. The
-            // throwing overload turns the same ENOSPC into an error, which for
-            // a log line is something to shrug at — there is nowhere left to
-            // report it to anyway. The byte count only advances on a write that
-            // happened, so rotation still measures the real file.
-            if (try? h.write(contentsOf: data)) != nil {
-                self.bytesWritten += data.count
-            }
-            try? h.close()
-        }
+        guard let file, let data = (line + "\n").data(using: .utf8) else { return }
+        logQueue.async { file.append(data) }
     }
 
     private let logQueue = DispatchQueue(label: "qudelix.log")
@@ -427,5 +390,59 @@ final class DebugLog: ObservableObject {
     private func hex(_ b: [UInt8]) -> String {
         b.prefix(24).map { String(format: "%02X", $0) }.joined(separator: " ")
             + (b.count > 24 ? "…(\(b.count))" : "")
+    }
+}
+
+final class AppendingLog {
+    private let url: URL
+    private let maxBytes: Int
+    private var handle: FileHandle?
+
+    private(set) var bytesWritten: Int
+
+    init(url: URL, maxBytes: Int) {
+        self.url = url
+        self.maxBytes = maxBytes
+        bytesWritten = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    }
+
+    deinit { try? handle?.close() }
+
+    func append(_ data: Data) {
+        if bytesWritten > maxBytes { rotate() }
+        guard let handle = liveHandle() else { return }
+        if (try? handle.write(contentsOf: data)) != nil {
+            bytesWritten += data.count
+        } else {
+            close()
+        }
+    }
+
+    func close() {
+        try? handle?.close()
+        handle = nil
+    }
+
+    private func liveHandle() -> FileHandle? {
+        if let handle { return handle }
+        handle = openAppending()
+        return handle
+    }
+
+    private func openAppending() -> FileHandle? {
+        let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+        }
+        guard fd >= 0 else { return nil }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private func rotate() {
+        close()
+        let previous = url.appendingPathExtension("1")
+        try? FileManager.default.removeItem(at: previous)
+        try? FileManager.default.moveItem(at: url, to: previous)
+        bytesWritten = 0
     }
 }

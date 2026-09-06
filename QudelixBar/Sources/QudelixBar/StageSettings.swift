@@ -167,6 +167,40 @@ struct StageSettings: Codable, Equatable {
     }
 }
 
+struct StageDeviceStore: Equatable {
+    static let defaultLimit = 64
+
+    private(set) var settings: [String: StageSettings] = [:]
+    private(set) var order: [String] = []
+    private let limit: Int
+
+    init(_ loaded: [String: StageSettings] = [:], limit: Int = defaultLimit) {
+        self.limit = max(limit, 1)
+        order = loaded.keys.sorted().suffix(self.limit).map { $0 }
+        let kept = Set(order)
+        settings = loaded.filter { kept.contains($0.key) }
+    }
+
+    subscript(uid: String) -> StageSettings? { settings[uid] }
+
+    var values: Dictionary<String, StageSettings>.Values { settings.values }
+
+    mutating func set(_ value: StageSettings, for uid: String) {
+        settings[uid] = value
+        touch(uid)
+    }
+
+    mutating func touch(_ uid: String) {
+        guard settings[uid] != nil else { return }
+        order.removeAll { $0 == uid }
+        order.append(uid)
+        while settings.count > limit, let oldest = order.first {
+            order.removeFirst()
+            settings.removeValue(forKey: oldest)
+        }
+    }
+}
+
 /// One day of listening, measured as digital signal level (dBFS) — not
 /// calibrated sound pressure, which the app has no way to know.
 struct DayExposure: Codable, Equatable {
@@ -325,18 +359,27 @@ enum StageStateFile {
     /// refusing to read it beats decoding a crafted mountain into memory.
     private static let maxBytes = 1_000_000
 
-    static func load() -> PersistedStageState? {
-        guard let data = SafeFile.read(url, cap: maxBytes) else { return nil }
+    enum LoadOutcome {
+        case absent
+        case loaded(PersistedStageState)
+        case unreadable
+    }
+
+    static func loadOutcome(_ url: URL = url) -> LoadOutcome {
+        guard let data = SafeFile.read(url, cap: maxBytes) else {
+            return lstatMode(url) == nil ? .absent : .unreadable
+        }
         if let state = try? JSONDecoder().decode(PersistedStageState.self, from: data) {
-            return state
+            return .loaded(state)
         }
         // Decode failed — the next save would overwrite the file with
         // defaults and silently destroy the settings in it. Park the
         // undecodable document where the user (or a newer app version) can
         // recover it.
-        let parked = directory.appendingPathComponent("stage.json.recovered")
+        let parked = url.deletingLastPathComponent()
+            .appendingPathComponent(url.lastPathComponent + ".recovered")
         SafeFile.writeAtomic(data, to: parked)
-        return nil
+        return .unreadable
     }
 
     static func save(_ state: PersistedStageState) {

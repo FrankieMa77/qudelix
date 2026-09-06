@@ -214,12 +214,19 @@ extension AppAssignments {
     nonisolated static let maxListedApps = 24
 
     nonisolated static func clampedBundleID(_ raw: String) -> String {
-        String(SafeText.scrubbed(raw, limit: maxBundleIDLength)
+        String(SafeText.scrubbed(headroom(raw, limit: maxBundleIDLength),
+                                 limit: maxBundleIDLength)
             .prefix(maxBundleIDLength))
     }
 
     nonisolated static func clampedName(_ raw: String) -> String {
-        String(SafeText.scrubbed(raw, limit: maxNameLength).prefix(maxNameLength))
+        String(SafeText.scrubbed(headroom(raw, limit: maxNameLength),
+                                 limit: maxNameLength)
+            .prefix(maxNameLength))
+    }
+
+    nonisolated static func headroom(_ raw: String, limit: Int) -> String {
+        String(String.UnicodeScalarView(raw.unicodeScalars.prefix(limit * 4)))
     }
 
     nonisolated static func displayName(for bundleID: String, fallbackName: String) -> String {

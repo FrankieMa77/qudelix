@@ -30,6 +30,7 @@ final class StageState: ObservableObject {
 
     @Published private(set) var impulseInfo: ImpulseInfo?
     @Published private(set) var impulseStatus: StageProcessor.ImpulseStatus = .off
+    private(set) var impulseStatusLive: StageProcessor.ImpulseStatus = .off
     @Published private(set) var impulseBusy = false
     private var loadedImpulseName: String?
 
@@ -97,18 +98,26 @@ final class StageState: ObservableObject {
     /// which width and crossfeed cannot widen — the UI says so.
     @Published private(set) var sourceCorrelation: Double?
     @Published private(set) var limiterGainReductionDb: Double = 0
+    private(set) var limiterGainReductionDbLive: Double = 0
     @Published private(set) var loudnessShelfDb: Double = 0
+    private(set) var loudnessShelfDbLive: Double = 0
     private var loudnessTargetDb: Double = 0
     @Published private(set) var bassGuardBoostDb: Double = 0
+    private(set) var bassGuardBoostDbLive: Double = 0
     @Published private(set) var bassGuardCeilingDb: Double = 0
+    private(set) var bassGuardCeilingDbLive: Double = 0
     @Published private(set) var bassGuardGainReductionDb: Double = 0
+    private(set) var bassGuardGainReductionDbLive: Double = 0
     var bassGuardInert: Bool { bassGuardBoostDb <= Self.bassGuardInertDb }
     var deviceEqCurve: (() -> [QxEqBandValue]?)?
 
     @Published private(set) var earLevel: EarLevelEstimate = .unavailable
+    private(set) var earLevelLive: EarLevelEstimate = .unavailable
     @Published private(set) var earLevelAverageDb: Double?
+    private(set) var earLevelAverageDbLive: Double?
     @Published private(set) var earCalibrationDb = EarLevel.defaultCalibrationDb
     @Published private(set) var earAnchor: EarVolumeAnchor?
+    private(set) var earAnchorLive: EarVolumeAnchor?
     var earLevelDb: Double? {
         if case .estimated(let db) = earLevel { return db }
         return nil
@@ -136,18 +145,35 @@ final class StageState: ObservableObject {
         self[keyPath: keyPath] = value
     }
 
+    private func publish<T: Equatable>(_ value: T,
+                                       live: ReferenceWritableKeyPath<StageState, T>,
+                                       into published: ReferenceWritableKeyPath<StageState, T>) {
+        self[keyPath: live] = value
+        mirror(value, into: published)
+    }
+
     private func flushMirrors() {
         mirror(currentLevelDbLive, into: \.currentLevelDb)
         mirror(sourceCorrelationLive, into: \.sourceCorrelation)
         mirror(exposureDaysLive, into: \.exposureDays)
         mirror(qualityVerdictLive, into: \.qualityVerdict)
         mirror(callActiveLive, into: \.callActive)
+        mirror(limiterGainReductionDbLive, into: \.limiterGainReductionDb)
+        mirror(impulseStatusLive, into: \.impulseStatus)
+        mirror(loudnessShelfDbLive, into: \.loudnessShelfDb)
+        mirror(bassGuardBoostDbLive, into: \.bassGuardBoostDb)
+        mirror(bassGuardCeilingDbLive, into: \.bassGuardCeilingDb)
+        mirror(bassGuardGainReductionDbLive, into: \.bassGuardGainReductionDb)
+        mirror(earAnchorLive, into: \.earAnchor)
+        mirror(earLevelLive, into: \.earLevel)
+        mirror(earLevelAverageDbLive, into: \.earLevelAverageDb)
     }
 
     static let silenceFloorDb: Double = -55
     static let loudThresholdDb: Double = -12
 
-    private var stageByDevice: [String: StageSettings] = [:]
+    private var stageByDevice = StageDeviceStore()
+    private var settingsUnreadable = false
     static let maxCalibratedDevices = 64
     private var meterTimer: Timer?
     private var meterTicksSinceSave = 0
@@ -192,8 +218,10 @@ final class StageState: ObservableObject {
         watcher.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &forwarders)
-        if let saved = StageStateFile.load() {
-            stageByDevice = saved.stageByDevice.mapValues { $0.clamped() }
+        let outcome = StageStateFile.loadOutcome()
+        if case .unreadable = outcome { settingsUnreadable = true }
+        if case .loaded(let saved) = outcome {
+            stageByDevice = StageDeviceStore(saved.stageByDevice.mapValues { $0.clamped() })
             levelTracking = saved.levelTracking
             detectQuality = saved.detectQuality ?? true
             autoRate = saved.autoRate ?? true
@@ -233,6 +261,7 @@ final class StageState: ObservableObject {
         started = true
         watcher.onChange = { [weak self] in self?.outputsChanged() }
         engine.onProcessListChange = { [weak self] in
+            AudioOutputs.invalidateProcessCache()
             self?.onProcessListRefresh?()
             self?.applyAssignmentChange()
         }
@@ -263,7 +292,7 @@ final class StageState: ObservableObject {
         let wasEnabled = stage.enabled
         stage = settings.clamped()
         if stage.enabled != wasEnabled { onStatusChange?() }
-        if let uid = outputUID { stageByDevice[uid] = stage }
+        if let uid = outputUID { stageByDevice.set(stage, for: uid) }
         engine.processor.applyStage(stage)
         syncImpulse()
         updateBassGuard()
@@ -317,9 +346,9 @@ final class StageState: ObservableObject {
     private func clearEarLevel() {
         shortTerm.reset()
         earAverage.reset()
-        if earLevel != .unavailable { earLevel = .unavailable }
-        if earLevelAverageDb != nil { earLevelAverageDb = nil }
-        if earAnchor != nil { earAnchor = nil }
+        publish(EarLevelEstimate.unavailable, live: \.earLevelLive, into: \.earLevel)
+        publish(Double?.none, live: \.earLevelAverageDbLive, into: \.earLevelAverageDb)
+        publish(EarVolumeAnchor?.none, live: \.earAnchorLive, into: \.earAnchor)
     }
 
     func setPerAppEQ(_ on: Bool) {
@@ -365,15 +394,15 @@ final class StageState: ObservableObject {
     private func applyAssignmentChange() {
         guard started else { return }
         let plan = desiredTapPlan()
-        let wanted = plan.map(\.bundleID)
+        let sameTaps = StageEngine.sameTaps(engine.activeAppPlan, plan)
         engine.appTapPlan = plan
         engine.followProcessList = wantsPerAppEQ
-        if engine.isRunning, engine.mode == .insert, engine.activeAppTaps == wanted {
+        if engine.isRunning, engine.mode == .insert, sameTaps {
             engine.processor.applyAppChains(plan.map(\.chain))
             return
         }
-        if engine.isRunning, engine.activeAppTaps != wanted { engine.stop() }
-        reconcile()
+        if engine.isRunning, !sameTaps { engine.stop() }
+        reconcile(plan: plan)
     }
 
     nonisolated static func perAppDiag(taps: Int, assigned: Int) -> String {
@@ -465,9 +494,9 @@ final class StageState: ObservableObject {
 
     /// The one place that decides whether the engine should run, and on what.
     /// Called after every edit and every device event; safe to call twice.
-    private func reconcile() {
+    private func reconcile(plan: [StageEngine.AppTapEntry]? = nil) {
         engine.followProcessList = wantsPerAppEQ
-        if !engine.isRunning { engine.appTapPlan = desiredTapPlan() }
+        if !engine.isRunning { engine.appTapPlan = plan ?? desiredTapPlan() }
         let device = watcher.defaultOutput
         let hold = callActiveLive && wantedMode != nil && device != nil
         let desired = desiredMode
@@ -542,9 +571,10 @@ final class StageState: ObservableObject {
                 // A device appearing must adopt them, not silently discard
                 // them — but only onto a device with no saved profile of
                 // its own.
-                stageByDevice[uid] = stage
+                stageByDevice.set(stage, for: uid)
                 scheduleSave()
             } else {
+                stageByDevice.touch(uid)
                 let deviceStage = stageByDevice[uid] ?? StageSettings()
                 if !deviceStage.audiblyEquals(stage) || deviceStage.enabled != stage.enabled {
                     stage = deviceStage
@@ -609,7 +639,9 @@ final class StageState: ObservableObject {
         case .failure(let error):
             let message = (error as? ImpulseError)?.message
                 ?? error.localizedDescription
-            impulseStatus = .refused(SafeText.scrubbed(message, limit: 300))
+            publish(StageProcessor.ImpulseStatus.refused(
+                        SafeText.scrubbed(message, limit: 300)),
+                    live: \.impulseStatusLive, into: \.impulseStatus)
             DebugLog.shared.log("impulse install refused: \(message)")
         }
     }
@@ -637,7 +669,8 @@ final class StageState: ObservableObject {
         engine.processor.setImpulse(response)
         impulseInfo = response.map(ImpulseInfo.init)
         loadedImpulseName = response?.fileName
-        impulseStatus = engine.processor.impulseStatus
+        publish(engine.processor.impulseStatus,
+                live: \.impulseStatusLive, into: \.impulseStatus)
     }
 
     private func syncImpulse() {
@@ -675,12 +708,14 @@ final class StageState: ObservableObject {
                 ?? error.localizedDescription
             engine.processor.setImpulse(nil)
             impulseInfo = nil
-            impulseStatus = .refused(SafeText.scrubbed(message, limit: 300))
+            publish(StageProcessor.ImpulseStatus.refused(
+                        SafeText.scrubbed(message, limit: 300)),
+                    live: \.impulseStatusLive, into: \.impulseStatus)
         }
     }
 
     private func sweepImpulses() {
-        guard !persistenceDisabled else { return }
+        guard !persistenceDisabled, !settingsUnreadable else { return }
         var referenced = Set(stageByDevice.values.compactMap(\.impulseFile))
         if let current = stage.impulseFile { referenced.insert(current) }
         IRLibrary.sweep(keeping: referenced)
@@ -714,7 +749,9 @@ final class StageState: ObservableObject {
                     earCalibrationDb: Double = EarLevel.defaultCalibrationDb) {
         persistenceDisabled = true
         self.earLevel = earLevel
+        earLevelLive = earLevel
         self.earAnchor = earAnchor
+        earAnchorLive = earAnchor
         self.earCalibrationDb = EarLevel.clampedCalibration(earCalibrationDb)
         self.stage = stage
         exposureDays = exposure
@@ -725,10 +762,15 @@ final class StageState: ObservableObject {
         sourceCorrelationLive = correlation
         self.levelTracking = levelTracking
         self.limiterGainReductionDb = limiterGainReductionDb
+        limiterGainReductionDbLive = limiterGainReductionDb
         self.loudnessShelfDb = loudnessShelfDb
+        loudnessShelfDbLive = loudnessShelfDb
         self.bassGuardBoostDb = bassGuardBoostDb
+        bassGuardBoostDbLive = bassGuardBoostDb
         self.bassGuardCeilingDb = bassGuardCeilingDb
+        bassGuardCeilingDbLive = bassGuardCeilingDb
         self.bassGuardGainReductionDb = bassGuardGainReductionDb
+        bassGuardGainReductionDbLive = bassGuardGainReductionDb
         qualityVerdict = verdict
         qualityVerdictLive = verdict
     }
@@ -737,12 +779,18 @@ final class StageState: ObservableObject {
                            status: StageProcessor.ImpulseStatus) {
         impulseInfo = response.map(ImpulseInfo.init)
         impulseStatus = status
+        impulseStatusLive = status
         loadedImpulseName = response?.fileName
     }
 
     func previewPublishLevel(_ db: Double?) {
         currentLevelDbLive = db
         mirror(db, into: \.currentLevelDb)
+    }
+
+    func previewPublishLimiter(_ db: Double) {
+        publish(db, live: \.limiterGainReductionDbLive,
+                into: \.limiterGainReductionDb)
     }
 
     func previewPublishVerdict(_ verdict: QualityAnalyzer.Verdict?) {
@@ -756,7 +804,7 @@ final class StageState: ObservableObject {
     func saveNow() {
         guard !persistenceDisabled else { return }
         StageStateFile.save(PersistedStageState(
-            stageByDevice: stageByDevice,
+            stageByDevice: stageByDevice.settings,
             exposure: exposureDaysLive,
             levelTracking: levelTracking,
             detectQuality: detectQuality,
@@ -793,48 +841,52 @@ final class StageState: ObservableObject {
 
     private var limiterDiag: String {
         guard stage.limiterValue else { return "lim=off" }
-        return String(format: "lim=-%.1fdB", limiterGainReductionDb)
+        return String(format: "lim=-%.1fdB", limiterGainReductionDbLive)
     }
 
     private var loudDiag: String {
         guard stage.loudnessValue else { return "loud=off" }
-        return String(format: "loud=%.1f/%.1f", loudnessTargetDb, loudnessShelfDb)
+        return String(format: "loud=%.1f/%.1f", loudnessTargetDb, loudnessShelfDbLive)
     }
 
     private var impulseDiag: String {
-        switch impulseStatus {
+        Self.impulseDiag(impulseStatusLive, mix: stage.impulseMixValue)
+    }
+
+    nonisolated static func impulseDiag(_ status: StageProcessor.ImpulseStatus,
+                                        mix: Double) -> String {
+        switch status {
         case .off:
             return "ir=off"
         case .refused:
             return "ir=refused"
-        case .ready(let name, let partitions, let taps, let hop, _):
-            return String(format: "ir=%@/%dx%d/%dtaps/mix%.2f",
-                          SafeText.scrubbed(name, limit: 24), partitions, hop,
-                          taps, stage.impulseMixValue)
+        case .ready(_, let partitions, let taps, let hop, _):
+            return String(format: "ir=on/%dx%d/%dtaps/mix%.2f",
+                          partitions, hop, taps, mix)
         }
     }
 
     private var bassDiag: String {
         guard stage.bassGuardValue else { return "bass=off" }
-        return String(format: "bass=%.1f/-%.1fdB", bassGuardCeilingDb,
-                      bassGuardGainReductionDb)
+        return String(format: "bass=%.1f/-%.1fdB", bassGuardCeilingDbLive,
+                      bassGuardGainReductionDbLive)
     }
 
     private var earDiag: String {
         let lufs = shortTerm.lufs.map { String(format: "%.1f", $0) } ?? "nil"
         let anchor: String
-        switch earAnchor {
+        switch earAnchorLive {
         case .qudelix(let db): anchor = String(format: "5k/%.1f", db)
         case .system(let db): anchor = String(format: "system/%.1f", db)
         case nil: anchor = "none"
         }
         let estimate: String
-        switch earLevel {
+        switch earLevelLive {
         case .unavailable: estimate = "nil"
         case .tooQuiet: estimate = "quiet"
         case .estimated(let db): estimate = String(format: "%.0f", db)
         }
-        let average = earLevelAverageDb.map { String(format: "%.0f", $0) } ?? "nil"
+        let average = earLevelAverageDbLive.map { String(format: "%.0f", $0) } ?? "nil"
         return "ear: lufs=\(lufs) anchor=\(anchor) "
             + String(format: "cal=%.0f ", earCalibrationDb)
             + "est=\(estimate) avg=\(average)"
@@ -889,21 +941,8 @@ final class StageState: ObservableObject {
                 let suffix = repeats > 0
                     ? " (+\(repeats) identical ticks suppressed)" : ""
                 let line = Self.diagFormatter.string(from: Date()) + " "
-                    + content + suffix + "\n"
-                let url = StageStateFile.directory.appendingPathComponent("diag.txt")
-                // Append, keep the tail: the history between two snapshots is
-                // exactly what a "worked then, broken now" hunt needs.
-                // Serial queue: two overlapping read-modify-writes on the
-                // global pool would interleave and drop lines.
-                Self.diagQueue.async {
-                    let existing = Self.readDiagTail(url)
-                    let kept = existing.split(separator: "\n").suffix(200)
-                        .joined(separator: "\n")
-                    // Device names are personal data; same posture as the
-                    // packet log.
-                    SafeFile.writeAtomic(
-                        Data((kept + (kept.isEmpty ? "" : "\n") + line).utf8), to: url)
-                }
+                    + content + suffix
+                diagLog.append(line)
             } else {
                 diagSuppressed += 1
             }
@@ -914,13 +953,15 @@ final class StageState: ObservableObject {
             mirror(currentLevelDbLive, into: \.currentLevelDb)
             sourceCorrelationLive = nil
             mirror(sourceCorrelationLive, into: \.sourceCorrelation)
-            if limiterGainReductionDb != 0 { limiterGainReductionDb = 0 }
+            publish(0.0, live: \.limiterGainReductionDbLive,
+                    into: \.limiterGainReductionDb)
             if loudnessTargetDb != 0 { loudnessTargetDb = 0 }
-            if loudnessShelfDb != 0 { loudnessShelfDb = 0 }
+            publish(0.0, live: \.loudnessShelfDbLive, into: \.loudnessShelfDb)
             engine.processor.applyLoudness(shelfDb: 0)
-            if bassGuardBoostDb != 0 { bassGuardBoostDb = 0 }
-            if bassGuardCeilingDb != 0 { bassGuardCeilingDb = 0 }
-            if bassGuardGainReductionDb != 0 { bassGuardGainReductionDb = 0 }
+            publish(0.0, live: \.bassGuardBoostDbLive, into: \.bassGuardBoostDb)
+            publish(0.0, live: \.bassGuardCeilingDbLive, into: \.bassGuardCeilingDb)
+            publish(0.0, live: \.bassGuardGainReductionDbLive,
+                    into: \.bassGuardGainReductionDb)
             engine.processor.applyBassGuard(ceilingDb: 0, predictedBoostDb: 0)
             correlationSmoothed = nil
             clearEarLevel()
@@ -981,17 +1022,20 @@ final class StageState: ObservableObject {
         engine.processor.refreshImpulseLayout()
         let next = engine.processor.impulseStatus
         if next == .off {
-            if !stage.hasImpulse, impulseStatus != .off { impulseStatus = .off }
+            if !stage.hasImpulse {
+                publish(next, live: \.impulseStatusLive, into: \.impulseStatus)
+            }
             return
         }
-        if next != impulseStatus { impulseStatus = next }
+        publish(next, live: \.impulseStatusLive, into: \.impulseStatus)
     }
 
     private func updateLimiterTelemetry() {
         let floor = engine.processor.drainLimiterFloor()
         let reduction = floor.isFinite && floor > 0 && floor < 0.999
             ? -20 * log10(Double(floor)) : 0
-        if limiterGainReductionDb != reduction { limiterGainReductionDb = reduction }
+        publish(reduction, live: \.limiterGainReductionDbLive,
+                into: \.limiterGainReductionDb)
     }
 
     private func updateEarLevel() {
@@ -999,12 +1043,12 @@ final class StageState: ObservableObject {
         shortTerm.add(sumSquares: sumSquares, frames: frames)
 
         let anchor = volumeAnchor()
-        if earAnchor != anchor { earAnchor = anchor }
+        publish(anchor, live: \.earAnchorLive, into: \.earAnchor)
 
         let next = EarLevel.estimate(shortTermLUFS: shortTerm.lufs,
                                      volumeDb: anchor?.db,
                                      calibrationDb: earCalibrationDb)
-        if earLevel != next { earLevel = next }
+        publish(next, live: \.earLevelLive, into: \.earLevel)
 
         if case .estimated = next, let lufs = shortTerm.lufs { earAverage.add(lufs) }
         let average: Double? = earAverage.lufs.flatMap {
@@ -1013,7 +1057,7 @@ final class StageState: ObservableObject {
                 calibrationDb: earCalibrationDb) { return db }
             return nil
         }
-        if earLevelAverageDb != average { earLevelAverageDb = average }
+        publish(average, live: \.earLevelAverageDbLive, into: \.earLevelAverageDb)
     }
 
     nonisolated static let bassGuardScanLowHz: Double = 20
@@ -1063,11 +1107,11 @@ final class StageState: ObservableObject {
         if measuring {
             let bands = deviceEqCurve?() ?? []
             if bands != scannedBands
-                || abs(loudnessShelfDb - scannedShelfDb) >= 0.1 {
+                || abs(loudnessShelfDbLive - scannedShelfDb) >= 0.1 {
                 scannedBands = bands
-                scannedShelfDb = loudnessShelfDb
+                scannedShelfDb = loudnessShelfDbLive
                 scannedBoostDb = Self.bassGuardBoostDb(
-                    bands: bands, loudnessShelfDb: loudnessShelfDb)
+                    bands: bands, loudnessShelfDb: loudnessShelfDbLive)
             }
             boost = scannedBoostDb
         } else if scannedBands != nil {
@@ -1079,35 +1123,34 @@ final class StageState: ObservableObject {
             ? Self.bassGuardCeilingDb(worstBoostDb: boost,
                                       strength: stage.bassGuardStrengthValue)
             : 0
-        let moved = abs(boost - bassGuardBoostDb) >= 0.1
-            || abs(ceiling - bassGuardCeilingDb) >= 0.1
-            || (boost == 0 && bassGuardBoostDb != 0)
-            || (ceiling == 0 && bassGuardCeilingDb != 0)
+        let moved = abs(boost - bassGuardBoostDbLive) >= 0.1
+            || abs(ceiling - bassGuardCeilingDbLive) >= 0.1
+            || (boost == 0 && bassGuardBoostDbLive != 0)
+            || (ceiling == 0 && bassGuardCeilingDbLive != 0)
         if moved {
-            bassGuardBoostDb = boost
-            bassGuardCeilingDb = ceiling
+            publish(boost, live: \.bassGuardBoostDbLive, into: \.bassGuardBoostDb)
+            publish(ceiling, live: \.bassGuardCeilingDbLive, into: \.bassGuardCeilingDb)
         }
-        engine.processor.applyBassGuard(ceilingDb: bassGuardCeilingDb,
-                                        predictedBoostDb: bassGuardBoostDb)
+        engine.processor.applyBassGuard(ceilingDb: bassGuardCeilingDbLive,
+                                        predictedBoostDb: bassGuardBoostDbLive)
     }
 
     private func updateBassGuardTelemetry() {
         let deepest = engine.processor.drainBassGuardReduction()
         let reduction = deepest.isFinite && deepest > 0.05 ? Double(deepest) : 0
-        if bassGuardGainReductionDb != reduction {
-            bassGuardGainReductionDb = reduction
-        }
+        publish(reduction, live: \.bassGuardGainReductionDbLive,
+                into: \.bassGuardGainReductionDb)
     }
 
     private func updateLoudness() {
         let target = stage.loudnessValue
-            ? EarLevel.shelfDb(earLevelDb: earLevelAverageDb,
+            ? EarLevel.shelfDb(earLevelDb: earLevelAverageDbLive,
                                strength: stage.loudnessStrengthValue)
             : 0
         loudnessTargetDb = target
         engine.processor.applyLoudness(shelfDb: target)
-        let applied = engine.processor.appliedLoudnessShelfDb
-        if loudnessShelfDb != applied { loudnessShelfDb = applied }
+        publish(engine.processor.appliedLoudnessShelfDb,
+                live: \.loudnessShelfDbLive, into: \.loudnessShelfDb)
     }
 
     func volumeAnchor() -> EarVolumeAnchor? {
@@ -1185,12 +1228,13 @@ final class StageState: ObservableObject {
         saveNow()
     }
 
-    private static let diagQueue = DispatchQueue(label: "stage.diag", qos: .utility)
+    private lazy var diagLog = DiagLog(
+        url: StageStateFile.directory.appendingPathComponent("diag.txt"))
 
     /// The diag file is ours, but a symlink could be planted at its path and
     /// `String(contentsOf:)` would follow it into an arbitrarily large file.
     /// Refuse symlinks and cap the read; oversized or unreadable starts fresh.
-    private nonisolated static func readDiagTail(_ url: URL) -> String {
+    nonisolated static func readDiagTail(_ url: URL) -> String {
         let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return -1 }
             return open(path, O_RDONLY | O_NOFOLLOW)
@@ -1378,5 +1422,90 @@ final class StageState: ObservableObject {
 
     static func dayKey(_ date: Date = Date()) -> String {
         dayFormatter.string(from: date)
+    }
+}
+
+final class DiagLog {
+    static let defaultMaxLines = 200
+    static let defaultMaxBytes = 192 << 10
+
+    private let url: URL
+    private let queue: DispatchQueue
+    private let maxLines: Int
+    private let maxBytes: Int
+
+    private var tail: [String] = []
+    private var bytes = 0
+    private var loaded = false
+
+    init(url: URL, maxLines: Int = defaultMaxLines,
+         maxBytes: Int = defaultMaxBytes,
+         queue: DispatchQueue = DispatchQueue(label: "stage.diag", qos: .utility)) {
+        self.url = url
+        self.maxLines = max(maxLines, 1)
+        self.maxBytes = max(maxBytes, 1)
+        self.queue = queue
+    }
+
+    func append(_ line: String) {
+        queue.async { self.write(line) }
+    }
+
+    func flush() {
+        queue.sync {}
+    }
+
+    private func write(_ line: String) {
+        if !loaded { adoptExistingFile() }
+        tail.append(line)
+        if tail.count > maxLines { tail.removeFirst(tail.count - maxLines) }
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        guard bytes + data.count <= maxBytes, appendToFile(data) else {
+            rewrite()
+            return
+        }
+        bytes += data.count
+    }
+
+    private func adoptExistingFile() {
+        loaded = true
+        tail = StageState.readDiagTail(url).split(separator: "\n")
+            .suffix(maxLines).map(String.init)
+        rewrite()
+    }
+
+    private func rewrite() {
+        while tail.count > 1, Self.encodedSize(tail) > maxBytes / 2 {
+            tail.removeFirst()
+        }
+        let text = tail.isEmpty ? "" : tail.joined(separator: "\n") + "\n"
+        let data = Data(text.utf8)
+        bytes = SafeFile.writeAtomic(data, to: url) ? data.count : 0
+    }
+
+    private static func encodedSize(_ lines: [String]) -> Int {
+        lines.reduce(0) { $0 + $1.utf8.count + 1 }
+    }
+
+    private func appendToFile(_ data: Data) -> Bool {
+        let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+        }
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var written = 0
+        return data.withUnsafeBytes { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return false }
+            while written < buffer.count {
+                let n = Darwin.write(fd, base + written, buffer.count - written)
+                if n <= 0 {
+                    if n < 0, errno == EINTR { continue }
+                    return false
+                }
+                written += n
+            }
+            return true
+        }
     }
 }

@@ -53,8 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard !started, let wiring = Self.makeStatusUI?() else { return }
         started = true
         self.wiring = wiring
-        startServices(wiring)
         buildStatusUI(wiring)
+        startServices(wiring)
     }
 
     private func startServices(_ w: Wiring) {

@@ -60,7 +60,17 @@ final class StageEngine: ObservableObject {
 
     var appTapPlan: [AppTapEntry] = []
     var followProcessList = false
-    private(set) var activeAppTaps: [String] = []
+
+    private(set) var activeAppPlan: [AppTapEntry] = []
+
+    var activeAppTaps: [String] { activeAppPlan.map(\.bundleID) }
+
+    nonisolated static func sameTaps(_ a: [AppTapEntry], _ b: [AppTapEntry]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy {
+            $0.bundleID == $1.bundleID && $0.objects == $1.objects
+        }
+    }
 
     private var tapIDs: [AudioObjectID] = []
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -107,7 +117,6 @@ final class StageEngine: ObservableObject {
             failure = Failure(message: error.localizedDescription,
                               summary: engineError?.summary ?? "the engine couldn't start")
             status = error.localizedDescription
-            NSLog("stage engine start failed: %@", error.localizedDescription)
             DebugLog.shared.log("stage engine start failed: \(error.localizedDescription)")
         }
     }
@@ -165,7 +174,7 @@ final class StageEngine: ObservableObject {
             }
             tapIDs.removeAll()
         }
-        activeAppTaps = []
+        activeAppPlan = []
         processor.applyAppChains([])
         // The mute belongs to a tone session, but sessions can die with
         // their engine (device vanished). A stopped engine must never leave
@@ -222,7 +231,7 @@ final class StageEngine: ObservableObject {
         try check(AudioHardwareCreateProcessTap(desc, &catchAllID),
                   "Creating the system audio tap")
         tapIDs.append(catchAllID)
-        activeAppTaps = built.map(\.bundleID)
+        activeAppPlan = built
 
         // Design the stage at the rate the device is actually clocked at,
         // read fresh — the watcher's cached value can predate a rate change.

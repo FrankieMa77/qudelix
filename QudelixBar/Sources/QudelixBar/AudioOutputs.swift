@@ -1,6 +1,41 @@
 import CoreAudio
 import Foundation
 
+final class TimedCache<Value> {
+    private let lock = NSLock()
+    private var held: (value: Value, at: TimeInterval)?
+    private let ttl: TimeInterval
+    private let now: () -> TimeInterval
+
+    init(ttl: TimeInterval,
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.ttl = ttl
+        self.now = now
+    }
+
+    func value(_ produce: () -> Value) -> Value {
+        let stamp = now()
+        lock.lock()
+        if let held, stamp >= held.at, stamp - held.at < ttl {
+            let fresh = held.value
+            lock.unlock()
+            return fresh
+        }
+        lock.unlock()
+        let produced = produce()
+        lock.lock()
+        held = (produced, stamp)
+        lock.unlock()
+        return produced
+    }
+
+    func invalidate() {
+        lock.lock()
+        held = nil
+        lock.unlock()
+    }
+}
+
 struct AudioOutput: Identifiable, Hashable {
     let id: AudioDeviceID
     let uid: String
@@ -48,9 +83,9 @@ enum AudioOutputs {
         var addr = address(kAudioDevicePropertyAvailableNominalSampleRates)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
-              size > 0 else { return [] }
-        var ranges = [AudioValueRange](repeating: AudioValueRange(),
-                                       count: Int(size) / MemoryLayout<AudioValueRange>.size)
+              let count = elementCount(size, of: AudioValueRange.self) else { return [] }
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: count)
+        size = UInt32(count * MemoryLayout<AudioValueRange>.size)
         guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &ranges) == noErr
         else { return [] }
         var rates: [Double] = []
@@ -80,9 +115,9 @@ enum AudioOutputs {
                            scope: kAudioObjectPropertyScopeOutput)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr,
-              size > 0 else { return nil }
-        var streams = [AudioStreamID](repeating: 0,
-                                      count: Int(size) / MemoryLayout<AudioStreamID>.size)
+              let count = elementCount(size, of: AudioStreamID.self) else { return nil }
+        var streams = [AudioStreamID](repeating: 0, count: count)
+        size = UInt32(count * MemoryLayout<AudioStreamID>.size)
         guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &streams) == noErr,
               let stream = streams.first else { return nil }
         var fmtAddr = AudioObjectPropertyAddress(
@@ -110,7 +145,17 @@ enum AudioOutputs {
         return object
     }
 
+    static let processCacheTTL: TimeInterval = 0.5
+
+    static let processCache = TimedCache<[RunningAudioProcess]>(ttl: processCacheTTL)
+
+    static func invalidateProcessCache() { processCache.invalidate() }
+
     static func audioProcesses() -> [RunningAudioProcess] {
+        processCache.value { readAudioProcesses() }
+    }
+
+    private static func readAudioProcesses() -> [RunningAudioProcess] {
         guard #available(macOS 14.2, *) else { return [] }
         var out: [RunningAudioProcess] = []
         for object in processObjectList() {
@@ -144,16 +189,7 @@ enum AudioOutputs {
     }
 
     private static func processObjectList() -> [AudioObjectID] {
-        var addr = address(kAudioHardwarePropertyProcessObjectList)
-        var size: UInt32 = 0
-        let system = AudioObjectID(kAudioObjectSystemObject)
-        guard AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size) == noErr,
-              size > 0 else { return [] }
-        var objects = [AudioObjectID](repeating: 0,
-                                      count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &objects) == noErr
-        else { return [] }
-        return objects
+        objectList(kAudioHardwarePropertyProcessObjectList, cap: maxProcessObjects)
     }
 
     static func outputVolume(_ id: AudioDeviceID) -> Float? {
@@ -301,16 +337,32 @@ enum AudioOutputs {
     }
 
     private static func deviceIDs() -> [AudioDeviceID] {
-        var addr = address(kAudioHardwarePropertyDevices)
+        objectList(kAudioHardwarePropertyDevices, cap: maxDevices)
+    }
+
+    private static func objectList(_ selector: AudioObjectPropertySelector,
+                                   cap: Int) -> [AudioObjectID] {
+        var addr = address(selector)
         var size: UInt32 = 0
         let system = AudioObjectID(kAudioObjectSystemObject)
         guard AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size) == noErr,
-              size > 0 else { return [] }
-        var ids = [AudioDeviceID](repeating: 0,
-                                  count: Int(size) / MemoryLayout<AudioDeviceID>.size)
-        guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &ids) == noErr
+              let count = elementCount(size, of: AudioObjectID.self) else { return [] }
+        var objects = [AudioObjectID](repeating: 0, count: count)
+        size = UInt32(count * MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &objects) == noErr
         else { return [] }
-        return ids
+        return Array(objects.prefix(cap))
+    }
+
+    static let maxPropertyBytes: UInt32 = 1 << 20
+
+    static let maxProcessObjects = 512
+    static let maxDevices = 512
+
+    static func elementCount<T>(_ size: UInt32, of type: T.Type) -> Int? {
+        guard size > 0, size <= maxPropertyBytes else { return nil }
+        let count = Int(size) / MemoryLayout<T>.size
+        return count > 0 ? count : nil
     }
 
     private static func transportType(_ id: AudioDeviceID) -> UInt32 {
