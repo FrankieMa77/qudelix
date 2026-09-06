@@ -806,7 +806,12 @@ final class AIPresetStudio: ObservableObject {
     private let keychain: AIKeychain
     private let transport: AITransport
     private let defaults: UserDefaults
-    private var measurementCache: [String: HeadphoneDossier.Measurement] = [:]
+    struct CachedMeasurement: AILastUsed {
+        var measurement: HeadphoneDossier.Measurement
+        var lastUsedAt: Date
+    }
+
+    private var measurementCache: [String: CachedMeasurement] = [:]
     private var generation = 0
     private var task: Task<Void, Never>?
 
@@ -908,7 +913,7 @@ final class AIPresetStudio: ObservableObject {
         let previous = refreshResearch
             ? research.dossier(for: researchKey, touch: false) : nil
         let known = cached?.measurement ?? previous?.measurement
-            ?? measurementCache[researchKey]
+            ?? cachedMeasurement(researchKey)
 
         if kind == .correction, !refreshResearch, let known,
            let local = AIPresetService.correctionDraft(from: known, bandCount: bandCount) {
@@ -959,7 +964,7 @@ final class AIPresetStudio: ObservableObject {
             var measurement = known
             if measurement == nil {
                 measurement = await self.measurement(for: name)
-                if let measurement { self.measurementCache[researchKey] = measurement }
+                if let measurement { self.cacheMeasurement(measurement, for: researchKey) }
             }
             guard token == self.generation else { return }
 
@@ -1023,6 +1028,22 @@ final class AIPresetStudio: ObservableObject {
             }
         }
         return true
+    }
+
+    private func cachedMeasurement(_ key: String) -> HeadphoneDossier.Measurement? {
+        guard var hit = measurementCache[key] else { return nil }
+        hit.lastUsedAt = Date()
+        measurementCache[key] = hit
+        return hit.measurement
+    }
+
+    private func cacheMeasurement(_ measurement: HeadphoneDossier.Measurement,
+                                  for key: String) {
+        guard !key.isEmpty else { return }
+        measurementCache[key] = CachedMeasurement(measurement: measurement,
+                                                  lastUsedAt: Date())
+        measurementCache = AIResearchStore.evicted(measurementCache,
+                                                   limit: AIResearchStore.maxEntries)
     }
 
     private func publish(_ draft: AIDraft, context: DraftContext, grounded: Bool) {
@@ -1097,6 +1118,13 @@ final class AIPresetStudio: ObservableObject {
         self.errorText = error
         previewExpanded = true
     }
+
+    func previewCacheMeasurement(_ measurement: HeadphoneDossier.Measurement,
+                                 for key: String) {
+        cacheMeasurement(measurement, for: key)
+    }
+
+    var previewCachedMeasurementKeys: Set<String> { Set(measurementCache.keys) }
 
     func previewSetDossier(confidence: String, researchedAt: Date) {
         dossierInfo = DossierInfo(confidence: confidence, researchedAt: researchedAt)

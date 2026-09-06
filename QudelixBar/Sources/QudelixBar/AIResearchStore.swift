@@ -1,6 +1,10 @@
 import Foundation
 
-struct HeadphoneDossier: Codable, Equatable {
+protocol AILastUsed {
+    var lastUsedAt: Date { get }
+}
+
+struct HeadphoneDossier: Codable, Equatable, AILastUsed {
     struct Issue: Codable, Equatable {
         let region: String
         let issue: String
@@ -37,7 +41,9 @@ struct HeadphoneDossier: Codable, Equatable {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             title = (try? c.decode(String.self, forKey: .title)) ?? ""
             preGain = (try? c.decode(Double.self, forKey: .preGain)) ?? 0
-            bands = (try? c.decode([QxEqBandValue].self, forKey: .bands)) ?? []
+            let rows = (try? c.decode([FailableDecodable<QxEqBandValue>].self,
+                                      forKey: .bands)) ?? []
+            bands = rows.compactMap(\.value)
         }
 
         func sanitized() -> Measurement {
@@ -233,12 +239,13 @@ final class AIResearchStore {
 
     nonisolated static func decode(_ data: Data?) -> [String: HeadphoneDossier] {
         guard let data,
-              let raw = try? JSONDecoder().decode([String: HeadphoneDossier].self, from: data)
+              let raw = try? JSONDecoder()
+                .decode([String: FailableDecodable<HeadphoneDossier>].self, from: data)
         else { return [:] }
         var out: [String: HeadphoneDossier] = [:]
-        for (rawKey, dossier) in raw {
+        for (rawKey, row) in raw {
             let key = key(for: rawKey)
-            guard !key.isEmpty else { continue }
+            guard !key.isEmpty, let dossier = row.value else { continue }
             let clean = dossier.sanitized()
             if let existing = out[key], existing.lastUsedAt >= clean.lastUsedAt { continue }
             out[key] = clean
@@ -246,16 +253,17 @@ final class AIResearchStore {
         return evicted(out)
     }
 
-    nonisolated static func evicted(_ map: [String: HeadphoneDossier])
-        -> [String: HeadphoneDossier] {
-        guard map.count > maxEntries else { return map }
+    nonisolated static func evicted<T: AILastUsed>(_ map: [String: T],
+                                                   limit: Int = maxEntries)
+        -> [String: T] {
+        guard map.count > limit else { return map }
         let ordered = map.sorted {
             $0.value.lastUsedAt == $1.value.lastUsedAt
                 ? $0.key < $1.key
                 : $0.value.lastUsedAt < $1.value.lastUsedAt
         }
         var out = map
-        for (key, _) in ordered.prefix(map.count - maxEntries) {
+        for (key, _) in ordered.prefix(map.count - limit) {
             out.removeValue(forKey: key)
         }
         return out

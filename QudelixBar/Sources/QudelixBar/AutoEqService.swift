@@ -608,7 +608,7 @@ final class AutoEqService: ObservableObject, CorrectionSource {
 
     private func fetchEntries() async throws -> [AutoEqModel] {
         let data = try await get("/entries", limit: Self.maxEntriesBytes)
-        return try Self.parseEntries(data)
+        return try await Self.parsedEntries(data)
     }
 
     private func fetchTargets() async throws -> [AutoEqTarget] {
@@ -626,6 +626,10 @@ final class AutoEqService: ObservableObject, CorrectionSource {
 
     /// `{"Model Name": [{"form": …, "rig": …, "source": …}, …], …}`. `rig` can
     /// be explicitly null for sources that publish only one rig.
+    nonisolated static func parsedEntries(_ data: Data) async throws -> [AutoEqModel] {
+        try parseEntries(data)
+    }
+
     nonisolated static func parseEntries(_ data: Data) throws -> [AutoEqModel] {
         struct Measurement: Decodable {
             var form: String?
@@ -638,10 +642,13 @@ final class AutoEqService: ObservableObject, CorrectionSource {
         } catch {
             throw CorrectionError.badResponse("the headphone catalogue didn't parse")
         }
-        let names = raw.keys.sorted {
-            let order = $0.localizedCaseInsensitiveCompare($1)
-            return order == .orderedAscending || (order == .orderedSame && $0 < $1)
+        var folded: [(folded: String, name: String)] = []
+        folded.reserveCapacity(raw.count)
+        for name in raw.keys { folded.append((folded: name.lowercased(), name: name)) }
+        folded.sort { left, right in
+            left.folded == right.folded ? left.name < right.name : left.folded < right.folded
         }
+        let names = folded.map(\.name)
         var out: [AutoEqModel] = []
         for name in names {
             guard out.count < maxCatalogueEntries else { break }

@@ -512,6 +512,27 @@ final class TuneHonestyTests: XCTestCase {
         XCTAssertFalse(c.byEarSessionActive)
     }
 
+    func testStoppingAfterABankSwitchWritesNothingIntoTheOtherBank() {
+        let baseline = correction()
+        let c = connected(bands: baseline)
+        let tuner = ABTuner()
+        tuner.start(c)
+        var steps = 0
+        while c.bands == baseline, tuner.phase == .running, steps < 20 {
+            steps += 1
+            tuner.choose(preferA: true, c)
+        }
+        let onDevice = c.bands
+        XCTAssertNotEqual(onDevice, baseline, "a trial curve is loaded, not the baseline")
+
+        c.applyPreviewGroup(.b20)
+        tuner.cancel(c)
+
+        XCTAssertEqual(c.bands, onDevice,
+                       "the baseline belongs to the bank the session started in")
+        XCTAssertFalse(c.byEarSessionActive)
+    }
+
     func testStoppingASessionHandsTheCurveBack() {
         let c = connected(bands: correction())
         let tuner = ABTuner()

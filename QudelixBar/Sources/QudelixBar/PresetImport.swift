@@ -353,6 +353,7 @@ struct AutoEqEntry: Identifiable, Hashable {
     /// must not contain traversal segments.
     var presetURL: URL? {
         guard !path.hasPrefix("/"), !path.contains("?"), !path.contains("#"),
+              !path.contains(".."),
               let decoded = path.removingPercentEncoding,
               !decoded.contains("..") else { return nil }
         let leaf = path.split(separator: "/").last.map(String.init) ?? ""
@@ -416,7 +417,7 @@ final class AutoEqIndex: ObservableObject {
                 guard let text = String(data: data, encoding: .utf8) else {
                     throw URLError(.cannotDecodeContentData)
                 }
-                entries = Self.parseIndex(text)
+                entries = await Self.parsedIndex(text)
                 state = entries.isEmpty ? .failed("Index was empty") : .ready
                 DebugLog.shared.log("AutoEq index: \(entries.count) headphones")
             } catch {
@@ -432,11 +433,15 @@ final class AutoEqIndex: ObservableObject {
 
     /// Index lines look like:
     ///   `- [Sennheiser HD 650](./oratory1990/over-ear/Sennheiser%20HD%20650)`
-    static let maxIndexEntries = 20_000
-    static let maxIndexTitleLength = 120
-    static let maxIndexPathLength = 400
+    nonisolated static let maxIndexEntries = 20_000
+    nonisolated static let maxIndexTitleLength = 120
+    nonisolated static let maxIndexPathLength = 400
 
-    static func parseIndex(_ markdown: String) -> [AutoEqEntry] {
+    nonisolated static func parsedIndex(_ markdown: String) async -> [AutoEqEntry] {
+        parseIndex(markdown)
+    }
+
+    nonisolated static func parseIndex(_ markdown: String) -> [AutoEqEntry] {
         var out: [AutoEqEntry] = []
         for line in markdown.split(whereSeparator: \.isNewline) {
             guard out.count < maxIndexEntries else { break }
@@ -447,16 +452,19 @@ final class AutoEqIndex: ObservableObject {
                   let end = t.lastIndex(of: ")"),
                   open < end else { continue }
 
-            let title = String(t[t.index(t.startIndex, offsetBy: 3)..<close])
+            let rawTitle = String(t[t.index(t.startIndex, offsetBy: 3)..<close])
             var path = String(t[t.index(after: open)..<end])
             if path.hasPrefix("./") { path.removeFirst(2) }
             // Skip the doc links at the top of the README (INDEX.md, RANKING.md…).
             guard path.contains("/"), !path.hasSuffix(".md"), !path.hasPrefix("http") else { continue }
-            guard title.count <= maxIndexTitleLength,
+            guard rawTitle.count <= maxIndexTitleLength,
                   path.count <= maxIndexPathLength else { continue }
 
-            let source = path.split(separator: "/").first
+            let title = SafeText.scrubbed(rawTitle, limit: maxIndexTitleLength)
+            guard !title.isEmpty else { continue }
+            let rawSource = path.split(separator: "/").first
                 .map { $0.replacingOccurrences(of: "%20", with: " ") } ?? ""
+            let source = SafeText.scrubbed(rawSource, limit: maxIndexTitleLength)
             out.append(AutoEqEntry(title: title, source: source, path: path))
         }
         return out

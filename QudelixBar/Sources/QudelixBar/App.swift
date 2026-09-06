@@ -259,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverWillShow(_ notification: Notification) {
         wiring?.stageState.setUIVisible(true)
+        wiring?.headphoneSuggestions.uiShown()
     }
 
     func popoverDidClose(_ notification: Notification) {

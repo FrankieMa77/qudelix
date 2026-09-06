@@ -211,6 +211,9 @@ final class QudelixController: ObservableObject {
 
     /// Single choke point for writes, so no caller has to know which link is up.
     private func transportSend(_ cmd: QxCmd, _ data: [UInt8] = []) {
+        #if DEBUG
+        trace("\(cmd)")
+        #endif
         switch link {
         case .usb: hid.send(cmd, data)
         case .bluetooth: ble.send(cmd, data)
@@ -219,12 +222,36 @@ final class QudelixController: ObservableObject {
     }
 
     private func transportSendCoalesced(_ cmd: QxCmd, _ data: [UInt8], key: String) {
+        #if DEBUG
+        trace("coalesced:\(cmd)")
+        #endif
         switch link {
         case .usb: hid.sendCoalesced(cmd, data, key: key)
         case .bluetooth: ble.sendCoalesced(cmd, data, key: key)
         case .none: DebugLog.shared.log("coalesced send dropped (no link): \(cmd)")
         }
     }
+
+    func flushPendingEqSends() {
+        #if DEBUG
+        trace("flush")
+        #endif
+        switch link {
+        case .usb: hid.flushPending()
+        case .bluetooth: ble.flushPending()
+        case .none: break
+        }
+    }
+
+    #if DEBUG
+    private(set) var sendTrace: [String] = []
+    private static let sendTraceDepth = 64
+    private func trace(_ entry: String) {
+        sendTrace.append(entry)
+        if sendTrace.count > Self.sendTraceDepth { sendTrace.removeFirst() }
+    }
+    func clearSendTrace() { sendTrace.removeAll() }
+    #endif
 
     /// Outlives connections deliberately: its once-per-episode latches must
     /// survive a Bluetooth blip, or every reconnect re-announces the same
@@ -277,6 +304,7 @@ final class QudelixController: ObservableObject {
         var bands: [QxEqBandValue]
         var preGain: Double
         var mutedBands: [Int: QxFilter]
+        var enabled: Bool
         var activePreset: Int?
         /// What the curve was understood to be at the time. Restored with it:
         /// undoing an import that left a requested-curve overlay behind would
@@ -310,7 +338,7 @@ final class QudelixController: ObservableObject {
 
     private var currentEqEdit: EqEdit {
         EqEdit(bands: bands, preGain: preGain, mutedBands: mutedBands,
-               activePreset: activePreset,
+               enabled: eqEnabled, activePreset: activePreset,
                sourceName: eqSourceName, requested: requestedCorrection,
                sourceCurve: sourceCurve, sourcePreGain: sourcePreGain, label: "")
     }
@@ -337,7 +365,7 @@ final class QudelixController: ObservableObject {
         // stack holds — a click that changes nothing should not cost a step.
         if let top = undoStack.last,
            top.bands == entry.bands, top.preGain == entry.preGain,
-           top.mutedBands == entry.mutedBands { return }
+           top.mutedBands == entry.mutedBands, top.enabled == entry.enabled { return }
         undoStack.append(entry)
         if undoStack.count > Self.undoDepth { undoStack.removeFirst() }
         redoStack.removeAll()
@@ -366,6 +394,9 @@ final class QudelixController: ObservableObject {
         // Mutes first: restoring a band's shape and then muting it again would
         // write the band twice and leave the mute map disagreeing with it.
         mutedBands = entry.mutedBands
+        if eqEnabled != entry.enabled {
+            setEqEnabled(entry.enabled, persistToFlash: false)
+        }
         setPreGain(entry.preGain, persistToFlash: false)
         for (i, band) in entry.bands.enumerated() where i < bandCount {
             guard bands.indices.contains(i), bands[i] != band else { continue }
@@ -1556,6 +1587,7 @@ final class QudelixController: ObservableObject {
 
     func savePreset(_ index: Int) {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
+        flushPendingEqSends()
         transportSend(.saveEqPreset, [UInt8(index)])
         // The slot now holds this correction, so give it the correction's
         // name. Saving into slot 7 and reading back "Preset 7" is the gap

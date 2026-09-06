@@ -866,6 +866,32 @@ final class AutoEqServiceTests: XCTestCase {
         XCTAssertEqual(AutoEqIndex.parseIndex(markdown).map(\.title), ["Sennheiser HD 650"])
     }
 
+    func testARawTraversalSegmentIsRefusedWhateverItIsWrappedIn() {
+        for path in ["oratory1990/../secret", "oratory1990/..%GG/secret", "..",
+                     "oratory1990/over-ear/..%2fsecret"] {
+            XCTAssertNil(AutoEqEntry(title: "t", source: "s", path: path).presetURL,
+                         "accepted \(path)")
+        }
+    }
+
+    func testIndexTitlesAndSourcesAreScrubbedBeforeTheyAreDrawn() {
+        let markdown = "- [Sennheiser\u{202E} HD 650]"
+            + "(./orat\u{200B}ory1990/over-ear/Sennheiser%20HD%20650)"
+
+        let entries = AutoEqIndex.parseIndex(markdown)
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertFalse(entries[0].title.unicodeScalars.contains { $0.value == 0x202E },
+                       "a title from the network cannot carry a direction override")
+        XCTAssertFalse(entries[0].source.unicodeScalars.contains { $0.value == 0x200B })
+        XCTAssertEqual(entries[0].source, "oratory1990")
+    }
+
+    func testATitleThatScrubsAwayToNothingIsDropped() {
+        let markdown = "- [\u{202E}\u{200B}](./oratory1990/over-ear/x)"
+        XCTAssertTrue(AutoEqIndex.parseIndex(markdown).isEmpty)
+    }
+
     func testTargetsParseAndRecommendationWins() throws {
         let data = """
         [{"label":"AutoEq in-ear","recommended":[{"source":"crinacle","form":"in-ear","rig":"711"}],

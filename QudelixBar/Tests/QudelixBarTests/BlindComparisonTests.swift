@@ -334,6 +334,44 @@ final class BlindComparisonTests: XCTestCase {
         XCTAssertFalse(c.byEarSessionActive)
     }
 
+    func testABankSwitchStopsTheSessionWithoutWritingIntoTheOtherBank() {
+        let baseline = correction()
+        let c = connected(bands: baseline)
+        let blind = BlindTuner()
+        blind.start(c, mode: .shape, chance: alwaysHigh)
+        var steps = 0
+        while c.bands == baseline, blind.phase == .running, steps < 20 {
+            steps += 1
+            blind.choose(preferA: true, c)
+        }
+        let onDevice = c.bands
+        XCTAssertNotEqual(onDevice, baseline, "a trial curve is loaded, not the baseline")
+
+        c.applyPreviewGroup(.b20)
+        blind.cancel(c)
+
+        XCTAssertEqual(c.bands, onDevice,
+                       "the baseline belongs to the bank the session started in")
+        XCTAssertEqual(blind.phase, .idle)
+        XCTAssertFalse(c.byEarSessionActive)
+    }
+
+    func testAResultIsNotKeptIntoABankTheSessionWasNeverMadeFor() {
+        let baseline = correction()
+        let c = connected(bands: baseline)
+        let blind = BlindTuner()
+        blind.start(c, mode: .shape, chance: alwaysHigh)
+        runShape(blind, c, answerRealTrials: .preferA, answerChecks: .same)
+        XCTAssertEqual(blind.verdict, .usable)
+        let onDevice = c.bands
+
+        c.applyPreviewGroup(.b20)
+        blind.keepResult(c)
+
+        XCTAssertEqual(c.bands, onDevice, "no band write lands in the other bank")
+        XCTAssertEqual(blind.phase, .idle)
+    }
+
     func testDiscardingPutsBackTheCurveAndThePreGain() {
         let baseline = correction()
         let c = connected(bands: baseline, preGain: -2)

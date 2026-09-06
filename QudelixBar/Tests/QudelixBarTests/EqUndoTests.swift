@@ -239,6 +239,49 @@ final class EqUndoTests: XCTestCase {
         XCTAssertFalse(c.canRedo)
     }
 
+    func testUndoingAnImportPutsTheEqualizerSwitchBackToo() {
+        let c = connected()
+        c.setEqEnabled(false)
+        XCTAssertFalse(c.eqEnabled)
+        let before = c.bands
+        let beforePreGain = c.preGain
+
+        var file = ParametricEQFile()
+        file.preamp = -3
+        file.bands = [QxEqBandValue(filter: .peak, freq: 100, gain: 5, q: 1.0)]
+        XCTAssertTrue(c.apply(file, named: "Alder AR-5"))
+        XCTAssertTrue(c.eqEnabled, "an import switches the equalizer on")
+
+        c.undoEqEdit()
+
+        XCTAssertFalse(c.eqEnabled,
+                       "undo has to put the switch back, not just the curve")
+        XCTAssertEqual(c.bands, before)
+        XCTAssertEqual(c.preGain, beforePreGain, accuracy: 1e-9)
+
+        c.redoEqEdit()
+        XCTAssertTrue(c.eqEnabled, "redo puts the switch back on with the curve")
+    }
+
+    func testAnEditThatOnlyChangesTheSwitchIsStillAStep() {
+        let c = connected()
+        var band = c.bands[0]
+        band.gain = 4
+        c.updateBand(0, band)
+        let depth = c.undoStack.count
+        c.setEqEnabled(false)
+
+        var file = ParametricEQFile()
+        file.preamp = 0
+        file.bands = c.bands
+        XCTAssertTrue(c.apply(file, named: "same curve"))
+
+        XCTAssertEqual(c.undoStack.count, depth + 1,
+                       "the switch moving is something to undo back to")
+        c.undoEqEdit()
+        XCTAssertFalse(c.eqEnabled)
+    }
+
     func testTheStackIsBounded() {
         let c = connected()
         for i in 0..<200 {

@@ -17,6 +17,13 @@ struct AIPresetSection: View {
 
     static let maxNote = AIPresetService.maxNoteLength
     static let bodyHeight: CGFloat = 195
+    static let applyLabel = "Apply"
+    static let researchAgainLabel = "Research again"
+    static let billingCaption = "Uses your own account at the provider "
+        + "\u{2014} generations are billed to you."
+    static let unsavedCurveWarning =
+        "Your current EQ is a custom setting that isn\u{2019}t saved to a "
+        + "slot \u{2014} applying this will replace it."
 
     private var headphoneName: String {
         library.headphoneName.trimmingCharacters(in: .whitespaces)
@@ -118,6 +125,17 @@ struct AIPresetSection: View {
 
     @ViewBuilder
     private var keyRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            keyControls
+            Text(Self.billingCaption)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var keyControls: some View {
         HStack(spacing: 6) {
             if enteringKey {
                 SecureField("API key", text: $keyEntry)
@@ -207,7 +225,7 @@ struct AIPresetSection: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Button("Refresh") { refreshResearch = true }
+                Button(Self.researchAgainLabel) { refreshResearch = true }
                     .buttonStyle(.borderless)
                     .font(.system(size: 9))
                     .help("Research this headphone again on the next generate")
@@ -368,8 +386,14 @@ struct AIPresetSection: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if controller.activePreset == nil {
+                Text(Self.unsavedCurveWarning)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 6) {
-                Button("Apply to 5K") {
+                Button(Self.applyLabel) {
                     studio.apply(draft, using: controller, group: controller.eqGroup)
                 }
                 .controlSize(.small)
