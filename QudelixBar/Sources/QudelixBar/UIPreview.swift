@@ -1,0 +1,627 @@
+#if DEBUG
+import SwiftUI
+import AppKit
+
+private struct VisualEffectBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ v: NSVisualEffectView, context: Context) {}
+}
+
+enum UIPreview {
+    @MainActor
+    static func runIfRequested() {
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--render-ui") {
+            let dir = i + 1 < args.count ? args[i + 1] : NSTemporaryDirectory()
+            render(into: URL(fileURLWithPath: dir))
+            exit(0)
+        }
+        if let i = args.firstIndex(of: "--render-shots") {
+            let dir = i + 1 < args.count ? args[i + 1] : NSTemporaryDirectory()
+            renderShots(into: URL(fileURLWithPath: dir))
+            exit(0)
+        }
+    }
+
+    @MainActor
+    private static func renderShots(into dir: URL) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        for (name, scheme) in [("light", NSAppearance(named: .aqua)),
+                               ("dark", NSAppearance(named: .darkAqua))] {
+            for (pane, controller, stage, blind) in mocks() {
+                let root = PopoverView()
+                    .environmentObject(controller)
+                    .environmentObject(stage)
+                    .environmentObject(profilesMock(pane))
+                    .environmentObject(libraryMock(pane))
+                    .environmentObject(appsMock(pane))
+                    .environmentObject(suggestionsMock(pane))
+                    .environmentObject(studioMock(pane))
+                    .environmentObject(ABTuner())
+                    .environmentObject(ToneTester())
+                    .environmentObject(blind)
+                    .environmentObject(guardMock(pane))
+                    .frame(width: 400)
+                    .background(VisualEffectBackground())
+
+                let hosting = NSHostingView(rootView: root)
+                hosting.appearance = scheme
+                let fitting = hosting.fittingSize
+                hosting.frame = NSRect(origin: .zero,
+                                       size: CGSize(width: 400, height: max(fitting.height, 200)))
+
+                let window = NSWindow(contentRect: hosting.frame,
+                                      styleMask: [.borderless],
+                                      backing: .buffered, defer: false)
+                window.appearance = scheme
+                window.isOpaque = false
+                window.backgroundColor = .clear
+                window.contentView = hosting
+                window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
+                window.orderFrontRegardless()
+                hosting.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+
+                guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+                    window.close(); continue
+                }
+                hosting.cacheDisplay(in: hosting.bounds, to: rep)
+                if let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: dir.appendingPathComponent("\(pane)-\(name).png"))
+                }
+                if name == "light" {
+                    switch pane {
+                    case "eq", "b20":
+                        reportPaneFit(pane, VStack(spacing: 14) {
+                            BandInspector(selected: .constant(0))
+                            EqEditorView(editingBand: .constant(nil))
+                        }, controller, stage, blind)
+                    case "presets", "presets-busy", "suggest", "presets-ai",
+                         "presets-apps":
+                        reportPaneFit(pane, PresetsView(), controller, stage, blind)
+                    case "import":
+                        reportPaneFit(pane, ImportView(), controller, stage, blind)
+                    case "tune", "shape", "shape-quiet", "shape-refused",
+                         "check", "check-none":
+                        reportPaneFit(pane, TuneView(), controller, stage, blind)
+                    case "stage":
+                        reportPaneFit(pane, StageView(), controller, stage, blind)
+                    case "level":
+                        reportPaneFit(pane, LevelView(), controller, stage, blind)
+                    default: break
+                    }
+                }
+                window.close()
+            }
+        }
+        renderIconStates(into: dir)
+        print("shots written to \(dir.path)")
+    }
+
+    @MainActor
+    private static func iconStates() -> [(String, StatusIcon.State)] {
+        var eqOn = StatusIcon.State(); eqOn.connected = true
+        var bypassed = eqOn; bypassed.eqEnabled = false
+        var withStage = eqOn; withStage.stageOn = true
+        var lossless = eqOn; lossless.quality = .hi
+        var lossy = eqOn; lossy.quality = .low
+        var stageLossless = withStage; stageLossless.quality = .hi
+        var batteryLow = eqOn; batteryLow.batteryLow = true
+        var charging = eqOn; charging.charging = true
+        var lowAndCharging = eqOn
+        lowAndCharging.batteryLow = true; lowAndCharging.charging = true
+        var onCall = lossless; onCall.onCall = true
+        var awayOnCall = StatusIcon.State()
+        awayOnCall.onCall = true; awayOnCall.batteryLow = true
+        var worstCase = eqOn
+        worstCase.eqEnabled = false; worstCase.stageOn = true
+        worstCase.quality = .low; worstCase.batteryLow = true
+
+        return [
+            ("01-away", StatusIcon.State()),
+            ("02-eq-on", eqOn),
+            ("03-eq-off", bypassed),
+            ("04-stage", withStage),
+            ("05-lossless", lossless),
+            ("06-lossy", lossy),
+            ("07-stage-lossless", stageLossless),
+            ("08-battery-low", batteryLow),
+            ("09-charging", charging),
+            ("10-low-and-charging", lowAndCharging),
+            ("11-on-call", onCall),
+            ("12-away-on-call", awayOnCall),
+            ("13-eq-off-stage-lossy-low", worstCase),
+        ]
+    }
+
+    @MainActor
+    private static func rasterize(size: NSSize, draw: (NSRect) -> Void) -> NSBitmapImageRep {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width),
+                                   pixelsHigh: Int(size.height), bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                   colorSpaceName: .deviceRGB, bitmapFormat: [],
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        draw(NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    @MainActor
+    private static func tinted(_ image: NSImage, color: NSColor, size: NSSize) -> NSBitmapImageRep {
+        rasterize(size: size) { rect in
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+            NSGraphicsContext.current?.compositingOperation = .sourceIn
+            color.setFill()
+            rect.fill()
+        }
+    }
+
+    @MainActor
+    private static func renderIconStates(into dir: URL) {
+        let states = iconStates()
+        let cell: CGFloat = 144
+        let cols = CGFloat(states.count)
+        let sheet = rasterize(size: NSSize(width: cell * cols, height: cell * 2)) { _ in
+            NSColor(white: 0.93, alpha: 1).setFill()
+            NSRect(x: 0, y: cell, width: cell * cols, height: cell).fill()
+            NSColor(white: 0.12, alpha: 1).setFill()
+            NSRect(x: 0, y: 0, width: cell * cols, height: cell).fill()
+            for (i, (_, state)) in states.enumerated() {
+                let image = StatusIcon.image(for: state)
+                let x = CGFloat(i) * cell
+                let cellSize = NSSize(width: cell, height: cell)
+                tinted(image, color: .black, size: cellSize)
+                    .draw(in: NSRect(x: x, y: cell, width: cell, height: cell),
+                          from: .zero, operation: .sourceOver, fraction: 1,
+                          respectFlipped: true, hints: nil)
+                tinted(image, color: .white, size: cellSize)
+                    .draw(in: NSRect(x: x, y: 0, width: cell, height: cell),
+                          from: .zero, operation: .sourceOver, fraction: 1,
+                          respectFlipped: true, hints: nil)
+            }
+        }
+        if let data = sheet.representation(using: .png, properties: [:]) {
+            try? data.write(to: dir.appendingPathComponent("icon-states.png"))
+        }
+        for (name, state) in states {
+            print("icon \(name): \(StatusIcon.describe(state))")
+        }
+    }
+
+    @MainActor
+    private static func reportPaneFit(_ pane: String, _ content: some View,
+                                      _ controller: QudelixController,
+                                      _ stage: StageState,
+                                      _ blind: BlindTuner) {
+        let root = content
+            .environmentObject(controller)
+            .environmentObject(stage)
+            .environmentObject(profilesMock(pane))
+            .environmentObject(libraryMock(pane))
+            .environmentObject(appsMock(pane))
+            .environmentObject(suggestionsMock(pane))
+            .environmentObject(studioMock(pane))
+            .environmentObject(ABTuner())
+            .environmentObject(ToneTester())
+            .environmentObject(blind)
+            .frame(width: 372)
+        let host = NSHostingView(rootView: AnyView(root))
+        host.layoutSubtreeIfNeeded()
+        let wanted = host.fittingSize.height
+        print(String(format: "%@: content %.1f pt vs %.0f pt pane — %@",
+                     pane, wanted, PopoverView.contentHeight,
+                     wanted <= PopoverView.contentHeight ? "fits" : "OVERFLOWS"))
+    }
+
+    @MainActor
+    private static func render(into dir: URL) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        for (name, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
+            for (pane, controller, stage, blind) in mocks() {
+                let view = PopoverView()
+                    .environmentObject(controller)
+                    .environmentObject(stage)
+                    .environmentObject(profilesMock(pane))
+                    .environmentObject(libraryMock(pane))
+                    .environmentObject(appsMock(pane))
+                    .environmentObject(suggestionsMock(pane))
+                    .environmentObject(studioMock(pane))
+                    .environmentObject(ABTuner())
+                    .environmentObject(ToneTester())
+                    .environmentObject(blind)
+                    .environmentObject(guardMock(pane))
+                    .environment(\.colorScheme, scheme)
+                    .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
+
+                let renderer = ImageRenderer(content: AnyView(view))
+                renderer.scale = 2
+                guard let image = renderer.nsImage,
+                      let tiff = image.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:]) else { continue }
+                try? png.write(to: dir.appendingPathComponent("popover-\(pane)-\(name).png"))
+            }
+        }
+        print("rendered to \(dir.path)")
+    }
+
+    @MainActor
+    private static func mocks() -> [(String, QudelixController, StageState, BlindTuner)] {
+        [("eq", make(.equalizer), stageMock(), BlindTuner()),
+         ("presets", make(.presets), stageMock(), BlindTuner()),
+         ("presets-busy", presetsBusy(), stageMock(), BlindTuner()),
+         ("presets-ai", make(.presets), stageMock(), BlindTuner()),
+         ("presets-apps", make(.presets), stageMock(), BlindTuner()),
+         ("import", make(.importing), stageMock(), BlindTuner()),
+         ("tune", make(.tune), stageMock(), BlindTuner()),
+         ("shape", make(.tune), stageMock(), shapeMock()),
+         ("shape-quiet", make(.tune), stageMock(), shapeQuietMock()),
+         ("shape-refused", make(.tune), stageMock(), shapeRefusedMock()),
+         ("check", make(.tune), stageMock(),
+          BlindTuner.previewBypass(eq: 4, flat: 1, same: 0)),
+         ("check-none", make(.tune), stageMock(),
+          BlindTuner.previewBypass(eq: 2, flat: 2, same: 1)),
+         ("stage", make(.stage), stageMock(running: true), BlindTuner()),
+         ("level", make(.level), levelMock(), BlindTuner()),
+         ("disconnected", disconnected(), stageMock(running: true), BlindTuner()),
+         ("unsupported", unsupported(), stageMock(), BlindTuner()),
+         ("b20", twentyBand(), stageMock(), BlindTuner()),
+         ("lowbatt", lowBattery(), stageMock(), BlindTuner()),
+         ("micguard", micHijacked(), stageMock(), BlindTuner()),
+         ("suggest", make(.presets), stageMock(), BlindTuner())]
+    }
+
+    @MainActor
+    private static func shapeMock() -> BlindTuner {
+        BlindTuner.previewShape { trial in
+            trial.axis == nil ? .same : (trial.highIsA ? .preferA : .preferB)
+        }
+    }
+
+    @MainActor
+    private static func shapeQuietMock() -> BlindTuner {
+        BlindTuner.previewShape { _ in .same }
+    }
+
+    @MainActor
+    private static func shapeRefusedMock() -> BlindTuner {
+        BlindTuner.previewShape { _ in .preferA }
+    }
+
+    @MainActor
+    private static func profilesMock(_ pane: String) -> ProfileRules {
+        let r = ProfileRules()
+        let suggestion = pane == "presets-busy"
+            ? ProfileRules.Suggestion(outputUID: "mock-qudelix",
+                                      outputName: "Qudelix-5K USB DAC",
+                                      presetIndex: 2, presetLabel: "Alder AR-5")
+            : nil
+        r.previewSet(rules: [ProfileRule(outputUID: "mock-qudelix",
+                                         outputName: "Qudelix-5K USB DAC",
+                                         presetIndex: 2, eqGroupRaw: 0,
+                                         confirmed: true, automatic: true)],
+                     currentOutputUID: "mock-qudelix",
+                     currentOutputName: "Qudelix-5K USB DAC",
+                     suggestion: suggestion)
+        return r
+    }
+
+    @MainActor
+    private static func presetsBusy() -> QudelixController {
+        let c = make(.presets)
+        c.activePreset = nil
+        return c
+    }
+
+    @MainActor
+    private static func studioMock(_ pane: String) -> AIPresetStudio {
+        let studio = AIPresetStudio(
+            research: AIResearchStore(directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("qudelixbar-preview-\(UUID().uuidString)")),
+            defaults: UserDefaults(suiteName: "qudelixbar.preview") ?? .standard)
+        guard pane == "presets-ai" else { return studio }
+        let freqs = [42, 96, 187, 340, 610, 1180, 2350, 4300, 7200, 12400]
+        let gains: [Double] = [4.8, 2.6, -1.4, -2.2, 0.6, 1.4, 3.1, -2.8, 1.9, -1.2]
+        let bands = zip(freqs, gains).map { f, g in
+            QxEqBandValue(filter: .peak, freq: f, gain: g, q: 1.1)
+        }
+        studio.previewSetDossier(confidence: "medium",
+                                 researchedAt: Date().addingTimeInterval(-86_400))
+        studio.previewSet(
+            draft: AIDraft(name: "Alder AR-5 · Clarity", bands: bands, preGain: -4.8,
+                           rationale: "Lifts the 2–5 kHz presence band and trims the "
+                               + "low-mid thickness this model is known for, keeping "
+                               + "sibilance in check above 7 kHz."),
+            grounded: true,
+            context: AIPresetStudio.DraftContext(headphone: "Alder AR-5",
+                                                 kind: "Clarity", bands: 10))
+        return studio
+    }
+
+    @MainActor
+    private static func libraryMock(_ pane: String) -> PresetLibrary {
+        let library = PresetLibrary()
+        guard pane == "presets" || pane == "presets-busy" || pane == "suggest"
+                || pane == "presets-ai" || pane == "presets-apps"
+        else { return library }
+        let ten = QxEqGroup.user.defaultFreqs.map {
+            QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
+        }
+        let twenty = QxEqGroup.b20.defaultFreqs.map {
+            QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1.0)
+        }
+        library.previewSet(presets: [
+            LibraryPreset(name: "Alder AR-5 · Harman", group: .user,
+                          bands: ten, preGain: -6.1, sourceName: "Alder AR-5"),
+            LibraryPreset(name: "Late night", scope: .output(uid: "mock-qudelix",
+                                                             name: "Qudelix-5K USB DAC"),
+                          group: .user, bands: ten, preGain: -2.0),
+            LibraryPreset(name: "Studio reference", group: .b20,
+                          bands: twenty, preGain: -5.5),
+            LibraryPreset(name: "Desk speakers", scope: .output(uid: "mock-speakers",
+                                                                name: "MacBook Pro Speakers"),
+                          group: .user, bands: ten, preGain: 0),
+        ], headphoneName: "Alder AR-5",
+           message: pane == "presets-busy"
+            ? "\u{201C}Studio reference\u{201D} was made for the 20-band EQ and the "
+              + "device is in 10-band mode. Those are two separate banks with different "
+              + "numbers of bands, so this curve is not stretched to fit — switch the "
+              + "device to 20-band mode to use it."
+            : nil)
+        return library
+    }
+
+    @MainActor
+    private static func appsMock(_ pane: String) -> AppAssignments {
+        let apps = AppAssignments()
+        let library = libraryMock(pane)
+        apps.libraryPresets = { library.presets }
+        guard pane == "presets-apps" else {
+            apps.previewSet(assignments: [], enabled: true)
+            return apps
+        }
+        apps.previewExpanded = true
+        let harman = library.presets.first { $0.name.contains("Harman") }?.id
+        let studio = library.presets.first { $0.name.contains("Studio") }?.id
+        apps.previewSet(
+            assignments: [
+                AppAssignment(bundleID: "com.spotify.client", displayName: "Spotify",
+                              presetID: harman),
+                AppAssignment(bundleID: "com.apple.Music", displayName: "Music",
+                              presetID: studio),
+                AppAssignment(bundleID: "com.gone.player", displayName: "Old Player",
+                              presetID: UUID()),
+            ],
+            enabled: true,
+            running: [
+                RunningAudioProcess(bundleID: "com.spotify.client", pid: 501,
+                                    object: 11, playing: true),
+                RunningAudioProcess(bundleID: "com.apple.Safari", pid: 502,
+                                    object: 12, playing: true),
+                RunningAudioProcess(bundleID: "com.apple.Music", pid: 503,
+                                    object: 13, playing: false),
+            ])
+        return apps
+    }
+
+    @MainActor
+    private static func suggestionsMock(_ pane: String) -> HeadphoneSuggestions {
+        let suggestions = HeadphoneSuggestions(library: PresetLibrary())
+        guard pane == "suggest" else { return suggestions }
+        let entries = [
+            AutoEqEntry(title: "Alder AR-5", source: "oratory1990",
+                        path: "oratory1990/over-ear/Alder%20AR-5"),
+            AutoEqEntry(title: "Alder AR-5", source: "crinacle",
+                        path: "crinacle/over-ear/Alder%20AR-5"),
+            AutoEqEntry(title: "Alder AR-5X", source: "rtings",
+                        path: "rtings/over-ear/Alder%20AR-5X"),
+        ]
+        suggestions.previewSet(HeadphoneSuggestions.Suggestion(
+            name: "Alder AR-5", entry: entries[0], alternatives: entries))
+        return suggestions
+    }
+
+    @MainActor
+    private static func guardMock(_ pane: String) -> A2dpGuard {
+        let g = A2dpGuard()
+        if pane == "micguard" {
+            g.previewSetMode(.ask)
+            g.previewSetHijack(id: 3, name: "Qudelix-5K", reason: .asking)
+        }
+        return g
+    }
+
+    @MainActor
+    private static func micHijacked() -> QudelixController {
+        let c = make(.equalizer)
+        c.inputSource = "HFP 1"
+        c.codecLabel = "AAC"
+        c.sampleRate = "16 kHz"
+        return c
+    }
+
+    @MainActor
+    private static func lowBattery() -> QudelixController {
+        let c = make(.equalizer)
+        c.batteryPercent = 8
+        c.charging = false
+        return c
+    }
+
+    @MainActor
+    private static func stageMock(running: Bool = false) -> StageState {
+        let s = StageState()
+        var stage = StageSettings.movie
+        stage.enabled = running
+        stage.limiter = running
+        stage.loudness = running
+        stage.bassGuard = running
+        if running {
+            stage.impulseFile = "Ambio_Room-1a2b3c4d.wav"
+            stage.impulseMix = 0.6
+        }
+        s.previewSet(stage: stage, exposure: exposureMock(),
+                     currentDb: running ? -21 : nil,
+                     loudnessShelfDb: running ? 4.2 : 0,
+                     bassGuardBoostDb: running ? 7.5 : 0,
+                     bassGuardCeilingDb: running ? 7.5 : 0,
+                     bassGuardGainReductionDb: running ? 2.1 : 0,
+                     earLevel: running ? .estimated(71) : .unavailable,
+                     earAnchor: running ? .system(-18) : nil)
+        s.watcher.previewSetDevices(
+            [AudioOutput(id: 1, uid: "mock-speakers",
+                         name: "MacBook Pro Speakers", sampleRate: 48000),
+             AudioOutput(id: 2, uid: "mock-qudelix",
+                         name: "Qudelix-5K USB DAC", sampleRate: 96000)],
+            defaultUID: "mock-speakers")
+        if running {
+            s.engine.previewSetRunning(true, status: "Stage active → MacBook Pro Speakers @ 48 kHz")
+            let tail = [Float](repeating: 0, count: 26_400)
+            s.previewSetImpulse(
+                ImpulseResponse(fileName: "Ambio_Room-1a2b3c4d.wav",
+                                displayName: "Ambio_Room", hash: "1a2b3c4d",
+                                sourceRate: 48000, sourceChannels: 2,
+                                channels: [tail, tail]),
+                status: .ready(name: "Ambio_Room", partitions: 52, taps: 26_400,
+                               hop: 512, rate: 48000))
+        }
+        return s
+    }
+
+    @MainActor
+    private static func levelMock() -> StageState {
+        let s = stageMock()
+        var stage = StageSettings.music
+        stage.enabled = true
+        stage.limiter = true
+        stage.loudness = true
+        stage.bassGuard = true
+        s.previewSet(stage: stage, exposure: exposureMock(),
+                     currentDb: -23, levelTracking: true,
+                     verdict: .losslessLike(cutoffKHz: 21.9),
+                     limiterGainReductionDb: 2.4,
+                     loudnessShelfDb: 1.8,
+                     bassGuardBoostDb: 6.4,
+                     bassGuardCeilingDb: 6.4,
+                     bassGuardGainReductionDb: 1.6,
+                     earLevel: .estimated(78), earAnchor: .qudelix(-24))
+        s.engine.previewSetRunning(true, status: "Metering → MacBook Pro Speakers @ 48 kHz")
+        return s
+    }
+
+    @MainActor
+    private static func exposureMock() -> [DayExposure] {
+        let today = StageState.dayKey()
+        let calendar = Calendar.current
+        var days: [DayExposure] = (1...7).reversed().compactMap { back in
+            guard let date = calendar.date(byAdding: .day, value: -back, to: Date())
+            else { return nil }
+            let seconds = [4100.0, 7900, 2400, 9800, 6300, 300, 5200][back - 1]
+            return DayExposure(day: StageState.dayKey(date),
+                               audibleSeconds: seconds,
+                               loudSeconds: seconds * [0.1, 0.4, 0, 0.55, 0.2, 0, 0.15][back - 1],
+                               energySum: seconds * 3e-3)
+        }
+        days.append(DayExposure(day: today, audibleSeconds: 4520,
+                                loudSeconds: 610, energySum: 4520 * 4.2e-3))
+        return days
+    }
+
+    @MainActor
+    private static func make(_ pane: PopoverView.Pane) -> QudelixController {
+        let c = QudelixController()
+        c.connection = .connected(name: "Qudelix-5K USB DAC 96KHz")
+        c.compatibility = .ok
+        c.firmwareVersion = "3.1.8"
+        c.batteryPercent = 81
+        c.charging = true
+        c.sampleRate = "96 kHz"
+        c.inputSource = "USB"
+        c.volumeDb = -24
+        c.volumeMax = 6
+        c.eqEnabled = true
+        c.usbFsMode = 0
+        c.trimLeftDb = 0
+        c.trimRightDb = -1.5
+        c.volumeLimitDb = 0
+        c.dacFilterType = 3
+        c.crossfeedLevel = 0
+        c.preGain = -6.1
+        c.activePreset = 2
+        c.presetNames = [0: "Harman", 2: "Alder AR-5", 5: "Bass boost"]
+        c.bands = [
+            .init(filter: .lowShelf, freq: 105, gain: 6.4, q: 0.70),
+            .init(filter: .peak, freq: 8800, gain: 5.1, q: 1.42),
+            .init(filter: .peak, freq: 118, gain: -3.1, q: 0.50),
+            .init(filter: .peak, freq: 37, gain: 0.7, q: 3.96),
+            .init(filter: .peak, freq: 3169, gain: -1.7, q: 3.89),
+            .init(filter: .highShelf, freq: 10000, gain: -2.1, q: 0.70),
+            .init(filter: .peak, freq: 1227, gain: -1.2, q: 2.53),
+            .init(filter: .peak, freq: 2055, gain: 1.2, q: 3.23),
+            .init(filter: .peak, freq: 587, gain: 0.4, q: 1.19),
+            .init(filter: .peak, freq: 5332, gain: -1.1, q: 5.75),
+        ]
+        c.previewPane = pane
+        if pane == .importing {
+            c.previewAutoEq = (entries: [
+                AutoEqEntry(title: "Alder AR-5", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-5"),
+                AutoEqEntry(title: "Alder AR-5 Pro", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-5%20Pro"),
+                AutoEqEntry(title: "Alder AR-3", source: "crinacle",
+                            path: "crinacle/harman_over-ear_2018/Alder%20AR-3"),
+                AutoEqEntry(title: "Alder AR-5X", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-5X"),
+                AutoEqEntry(title: "Alder AR-2", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-2"),
+                AutoEqEntry(title: "Alder AR-9 Reference", source: "oratory1990",
+                            path: "oratory1990/over-ear/Alder%20AR-9%20Reference"),
+                AutoEqEntry(title: "Alder AR-1 Studio", source: "crinacle",
+                            path: "crinacle/harman_over-ear_2018/Alder%20AR-1%20Studio"),
+            ], query: "AR")
+        }
+        return c
+    }
+
+    @MainActor
+    private static func twentyBand() -> QudelixController {
+        let c = make(.equalizer)
+        c.applyPreviewGroup(.b20)
+        let gains: [Double] = [5.5, 4.0, 2.5, 1.0, -0.5, -2.0, -3.0, -2.5, -1.0, 0.5,
+                               1.5, 2.0, 1.0, -1.5, -3.0, -2.0, 0.5, 3.0, 1.5, -2.0]
+        c.bands = zip(QxEqGroup.b20.defaultFreqs, gains).map { f, g in
+            QxEqBandValue(filter: .peak, freq: f, gain: g, q: 1.0)
+        }
+        c.preGain = -5.5
+        return c
+    }
+
+    @MainActor
+    private static func unsupported() -> QudelixController {
+        let c = make(.equalizer)
+        c.firmwareVersion = "2.4.1"
+        c.compatibility = .unsupported(
+            title: "Firmware 2.4.1 uses a different protocol",
+            detail: "Qudelix changed the EQ command format in firmware 3. "
+                  + "Update with the official app, then reconnect.")
+        return c
+    }
+
+    @MainActor
+    private static func disconnected() -> QudelixController {
+        let c = QudelixController()
+        c.connection = .disconnected
+        return c
+    }
+}
+#endif
