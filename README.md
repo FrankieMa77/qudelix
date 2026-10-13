@@ -1053,3 +1053,8 @@ Especially useful right now:
   the Qudelix HID protocol
 - [AutoEq](https://github.com/jaakkopasanen/AutoEq) by Jaakko Pasanen — the
   headphone correction database
+- [oratory1990](https://buymeacoffee.com/oratory1990) — the headphone
+  measurements and EQ presets behind most of the corrections the app offers,
+  and years of patient, generous work for the whole headphone community. If
+  those presets have made your headphones sound better, consider
+  [buying them a coffee](https://buymeacoffee.com/oratory1990).
