@@ -4,7 +4,7 @@ A native macOS menu bar app for configuring the **Qudelix 5K** DAC/amp, over USB
 or Bluetooth.
 
 [![Download](https://img.shields.io/github/v/release/FrankieMa77/qudelix?label=download&style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/latest)
-[![Downloads](https://img.shields.io/badge/downloads-56-brightgreen?style=flat-square)](https://github.com/FrankieMa77/qudelix/releases)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFrankieMa77%2Fqudelix%2Fbadges%2Fdownloads.json&style=flat-square&cacheSeconds=3600)](https://github.com/FrankieMa77/qudelix/releases)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?style=flat-square&logo=apple)](https://github.com/FrankieMa77/qudelix/releases/latest)
 [![Universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue?style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/latest)
 [![MIT](https://img.shields.io/badge/licence-MIT-green?style=flat-square)](LICENSE)
