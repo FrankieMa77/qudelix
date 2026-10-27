@@ -172,6 +172,19 @@ final class HeadphoneSuggestions: ObservableObject {
         }.map(\.entry)
     }
 
+    static func relatives(for name: String,
+                          in entries: [AutoEqEntry]) -> (family: String, entries: [AutoEqEntry])? {
+        var words = name.split(separator: " ").map(String.init)
+        while words.count > 1 {
+            words.removeLast()
+            let family = words.joined(separator: " ")
+            guard normalized(family).count >= minNeedleLength else { continue }
+            let found = matches(for: family, in: entries)
+            if !found.isEmpty { return (family, found) }
+        }
+        return nil
+    }
+
     static func grounding(for name: String, in entries: [AutoEqEntry]) -> AutoEqEntry? {
         let needle = normalized(name)
         guard needle.count >= minNeedleLength else { return nil }
