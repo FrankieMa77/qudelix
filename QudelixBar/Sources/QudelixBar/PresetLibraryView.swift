@@ -40,7 +40,7 @@ struct PresetLibraryView: View {
                 Text("Used to find measurements and corrections for the pair you "
                     + "actually wear.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if saving { saveRow }
@@ -49,7 +49,7 @@ struct PresetLibraryView: View {
                     Text("Your current EQ is a custom setting that isn't saved to a "
                         + "slot — applying a preset will replace it.")
                         .font(.system(size: 9))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.cautionText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -107,13 +107,15 @@ struct PresetLibraryView: View {
                 draftBound = outputUID != nil
                 saving = true
                 expanded = true
-                nameFocused = true
+                DispatchQueue.main.async { nameFocused = true }
             } label: {
                 Text(verbatim: Self.saveButtonLabel).font(.system(size: 10))
             }
             .controlSize(.small)
-            .disabled(!controller.canWriteNow || saving)
-            .help(controller.canWriteNow
+            .disabled(!controller.canWriteNow || saving || controller.byEarSessionActive)
+            .help(controller.byEarSessionActive
+                  ? QudelixController.tuningSessionHelp
+                  : controller.canWriteNow
                   ? "Keep the curve the 5K is running now as a preset on this Mac"
                   : "Connect the 5K first — there is no live curve to keep.")
             Button {
@@ -125,7 +127,9 @@ struct PresetLibraryView: View {
             }
             .controlSize(.small)
             .disabled(library.currentGroup == nil)
-            .help("Add a parametric EQ file to the library without applying it")
+            .help(library.currentGroup == nil
+                  ? "Connect the 5K first — a file is filed under its current EQ mode."
+                  : "Add a parametric EQ file to the library without applying it")
         }
     }
 
@@ -133,7 +137,7 @@ struct PresetLibraryView: View {
         HStack(alignment: .top, spacing: 6) {
             Text(verbatim: message)
                 .font(.system(size: 9))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.cautionText)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button { library.clearMessage() } label: {
@@ -186,7 +190,8 @@ struct PresetLibraryView: View {
                     }
                     .buttonStyle(.link)
                     .font(.system(size: 9))
-                    .disabled(!controller.canEditEqNow)
+                    .disabled(!controller.eqControlsEnabled)
+                    .help(controller.eqControlsHelp ?? "")
                 }
                 Spacer(minLength: 0)
             }
@@ -227,7 +232,7 @@ struct PresetLibraryView: View {
                 Text("No default output is available, so this can only be saved for "
                     + "every output.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -266,11 +271,12 @@ struct PresetLibraryView: View {
                 Button("Apply") { library.apply(preset) }
                     .controlSize(.mini)
                     .font(.system(size: 10))
-                    .disabled(!controller.canEditEqNow)
+                    .disabled(!controller.eqControlsEnabled)
                     .accessibilityLabel(Text(verbatim: "Apply " + preset.name))
-                    .help(controller.canEditEqNow
+                    .help(controller.eqControlsEnabled
                           ? Text(verbatim: "Write " + preset.name + " to the 5K")
-                          : Text("The 5K isn\u{2019}t taking EQ writes right now."))
+                          : Text(verbatim: controller.eqControlsHelp
+                                 ?? "The 5K isn\u{2019}t taking EQ writes right now."))
                 Menu {
                     Button("Rename…") {
                         renameDraft = preset.name

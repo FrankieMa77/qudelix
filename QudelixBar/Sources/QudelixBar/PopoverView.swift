@@ -2,6 +2,14 @@ import Combine
 import CoreAudio
 import SwiftUI
 
+extension QudelixController {
+    var eqControlsEnabled: Bool { canEditEqNow && !byEarSessionActive }
+
+    static let tuningSessionHelp = "A tuning session is running \u{2014} finish or stop it in Tune to edit the EQ."
+
+    var eqControlsHelp: String? { byEarSessionActive ? Self.tuningSessionHelp : nil }
+}
+
 struct PopoverView: View {
     @EnvironmentObject var controller: QudelixController
     @State private var pane: Pane = .equalizer
@@ -58,6 +66,14 @@ struct PopoverView: View {
         .background(HostWindowReader(host: host))
         .onChange(of: editingBand, initial: true) { _, band in
             profileRules.editingNow = band != nil
+        }
+        .onChange(of: connected) { _, isConnected in
+            if !isConnected {
+                showDeviceSettings = false
+                showBattery = false
+                showAbout = false
+                showDiagnostics = false
+            }
         }
         .onChange(of: showBattery) { _, on in
             if on { showAbout = false; showDeviceSettings = false; showDiagnostics = false }
@@ -186,7 +202,7 @@ struct PopoverView: View {
 
     private var curve: some View {
         let lines = AutomationReadout.lines(AutomationReadout.inputs(automation, controller))
-        let readOnly = automation.following
+        let readOnly = automation.following || controller.byEarSessionActive
         let zero: ((Int) -> Void)? = readOnly ? nil : { controller.zeroBand($0) }
         let change: ((Int, QxEqBandValue) -> Void)? = readOnly
             ? nil : { controller.updateBand($0, $1) }
@@ -300,7 +316,8 @@ struct PopoverView: View {
                 } else {
                     Button("Apply") { suggestions.accept(offered.entry) }
                         .controlSize(.small)
-                        .disabled(!controller.canEditEqNow)
+                        .disabled(!controller.eqControlsEnabled)
+                        .help(controller.eqControlsHelp ?? "")
                     if offered.alternatives.count > 1 {
                         Menu {
                             ForEach(offered.alternatives) { entry in
@@ -318,7 +335,7 @@ struct PopoverView: View {
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
                         .frame(width: 18)
-                        .disabled(!controller.canEditEqNow)
+                        .disabled(!controller.eqControlsEnabled)
                     }
                 }
                 Button { suggestions.dismiss() } label: {
@@ -333,13 +350,13 @@ struct PopoverView: View {
                 Text("Your current EQ is a custom setting that isn\u{2019}t saved to a "
                     + "slot \u{2014} applying this will replace it.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let why = suggestions.lastError {
                 Text(verbatim: why)
                     .font(.system(size: 9))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -696,6 +713,7 @@ struct VolumeControl: View {
                    in: controller.volumeRange)
                 .disabled(controller.muted)
                 .accessibilityLabel("Volume in decibels")
+                .accessibilityValue(DisplayFormat.accessibleDecibels(controller.volumeDb))
 
             Text(String(format: "%.1f", controller.volumeDb))
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
@@ -767,7 +785,7 @@ private struct UsbAudioRateRow: View {
                             .font(.system(size: 10))
                             .foregroundStyle(fsMode == 4
                                              ? AnyShapeStyle(.secondary)
-                                             : AnyShapeStyle(.orange))
+                                             : AnyShapeStyle(Color.cautionText))
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
@@ -924,6 +942,8 @@ struct EqEditorView: View {
                 }
                 .toggleStyle(.switch)
                 .controlSize(.mini)
+                .disabled(controller.byEarSessionActive)
+                .help(controller.eqControlsHelp ?? "")
 
                 undoButton
                 redoButton
@@ -935,9 +955,10 @@ struct EqEditorView: View {
                                       set: { controller.setPreGain($0) }),
                        in: EQHeadroom.range, step: 0.5)
                     .frame(width: 92)
-                    .disabled(automation.following)
+                    .disabled(automation.following || controller.byEarSessionActive)
                     .accessibilityLabel("Pre-gain in decibels")
-                Text(String(format: "%+.1f", controller.preGain))
+                    .accessibilityValue(DisplayFormat.accessibleDecibels(controller.preGain))
+                Text(DisplayFormat.signed(controller.preGain))
                     .font(.system(size: 10).monospacedDigit())
                     .frame(width: 30, alignment: .trailing)
             }
@@ -953,18 +974,20 @@ struct EqEditorView: View {
             bandTable
                 .frame(maxHeight: .infinity, alignment: .top)
                 .opacity(controller.eqEnabled ? 1 : 0.45)
-                .disabled(!controller.eqEnabled)
+                .disabled(!controller.eqEnabled || controller.byEarSessionActive)
 
             Divider()
 
             HStack {
                 Button("Flatten") { controller.flatten() }
-                    .disabled(automation.following)
-                    .help("Take every band's gain to zero, keeping the "
+                    .disabled(automation.following || !controller.eqControlsEnabled)
+                    .help(controller.eqControlsHelp
+                          ?? "Take every band's gain to zero, keeping the "
                           + "frequencies, filter types and Q they have now.")
                 Button("Reset") { controller.resetBandLayout() }
-                    .disabled(automation.following)
-                    .help("Put the bands back to the factory layout for this mode: "
+                    .disabled(automation.following || !controller.eqControlsEnabled)
+                    .help(controller.eqControlsHelp
+                          ?? "Put the bands back to the factory layout for this mode: "
                           + "peak filters on the default frequencies, 0 dB, Q 1.")
                 Picker("", selection: Binding(
                     get: { controller.eqGroup == .b20 },
@@ -976,16 +999,17 @@ struct EqEditorView: View {
                 .labelsHidden()
                 .controlSize(.mini)
                 .frame(width: 76)
-                .disabled(automation.following)
+                .disabled(automation.following || controller.byEarSessionActive)
                 .accessibilityLabel("Number of EQ bands")
-                .help("EQ bands. The two modes keep separate presets, so "
+                .help(controller.eqControlsHelp
+                      ?? "EQ bands. The two modes keep separate presets, so "
                       + "switching changes the active curve.")
                 Spacer()
                 Button("Update") {
                     guard let active = controller.activePreset else { return }
                     controller.savePreset(active)
                 }
-                .disabled(controller.activePreset == nil || !controller.canWriteNow
+                .disabled(controller.activePreset == nil || !controller.eqControlsEnabled
                           || automation.following)
                 .help(updateHelp)
                 Menu("Save to slot…") {
@@ -998,7 +1022,8 @@ struct EqEditorView: View {
                     }
                 }
                 .fixedSize()
-                .disabled(automation.following)
+                .disabled(automation.following || !controller.eqControlsEnabled)
+                .help(controller.eqControlsHelp ?? "")
             }
             .controlSize(.small)
             .font(.system(size: 11))
@@ -1016,6 +1041,7 @@ struct EqEditorView: View {
     }
 
     private var updateHelp: Text {
+        if let busy = controller.eqControlsHelp { return Text(verbatim: busy) }
         guard let active = controller.activePreset else {
             return Text("No slot is active \u{2014} load or save one first.")
         }
@@ -1031,7 +1057,7 @@ struct EqEditorView: View {
                 .accessibilityLabel(controller.undoLabel.map { "Undo \($0)" } ?? "Undo")
         }
         .controlSize(.mini)
-        .disabled(!controller.canUndo || !controller.canEditEqNow || automation.following)
+        .disabled(!controller.canUndo || !controller.eqControlsEnabled || automation.following)
         .keyboardShortcut("z", modifiers: .command)
         .help(controller.undoLabel.map { "Undo \($0)" } ?? "Nothing to undo")
     }
@@ -1044,7 +1070,7 @@ struct EqEditorView: View {
                 .accessibilityLabel(controller.redoLabel.map { "Redo \($0)" } ?? "Redo")
         }
         .controlSize(.mini)
-        .disabled(!controller.canRedo || !controller.canEditEqNow || automation.following)
+        .disabled(!controller.canRedo || !controller.eqControlsEnabled || automation.following)
         .keyboardShortcut("z", modifiers: [.command, .shift])
         .help(controller.redoLabel.map { "Redo \($0)" } ?? "Nothing to redo")
     }
@@ -1055,7 +1081,10 @@ extension EqEditorView {
     var headroomRow: some View {
         let advice = controller.eqHeadroom
         HStack(spacing: 6) {
-            if automation.following {
+            if let busy = controller.eqControlsHelp {
+                Text(verbatim: busy)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if automation.following {
                 Text(AutomationReadout.readOnlyHelp)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -1068,12 +1097,14 @@ extension EqEditorView {
                 }
                 .buttonStyle(.link)
                 .controlSize(.mini)
-                .font(.system(size: 10))
+                .font(.system(size: 10, weight: .regular))
+                .foregroundStyle(.secondary)
                 .help("Auto-fit makes the 5K follow a measured correction, and Auto-trim "
                       + "nudges the balance toward the one you usually listen to \u{2014} "
                       + "both by moving gains on the 5K, never in your saved presets.")
             }
-            if !automation.following, let suggestion = advice.suggestion {
+            if !automation.following, !controller.byEarSessionActive,
+               let suggestion = advice.suggestion {
                 Button(String(format: "Set %.1f dB", suggestion)) {
                     controller.applySuggestedPreGain()
                 }
@@ -1136,7 +1167,8 @@ struct BandInspector: View {
                 .frame(maxWidth: .infinity)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
                 .opacity(controller.eqEnabled ? 1 : 0.45)
-                .disabled(!controller.eqEnabled || automation.following)
+                .disabled(!controller.eqEnabled || automation.following
+                           || controller.byEarSessionActive)
         }
     }
 
@@ -1180,7 +1212,8 @@ struct BandInspector: View {
                     .controlSize(.mini)
                     .disabled(!editsGain)
                     .accessibilityLabel("Band \(i + 1) gain in decibels")
-                Text(editsGain ? String(format: "%+.1f", band.gain) : "—")
+                    .accessibilityValue(DisplayFormat.accessibleDecibels(band.gain))
+                Text(editsGain ? DisplayFormat.signed(band.gain) : "—")
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(editsGain ? .primary : .secondary)
                     .frame(width: 30, alignment: .trailing)
@@ -1288,8 +1321,9 @@ struct BandRow: View {
                 .controlSize(.mini)
                 .disabled(!editsGain)
                 .accessibilityLabel("Band \(index + 1) gain in decibels")
+                .accessibilityValue(DisplayFormat.accessibleDecibels(band.gain))
 
-            Text(editsGain ? String(format: "%+.1f", band.gain) : "—")
+            Text(editsGain ? DisplayFormat.signed(band.gain) : "—")
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundStyle(editsGain && band.gain != 0 ? .primary : .secondary)
                 .frame(width: 32, alignment: .trailing)
@@ -1338,6 +1372,7 @@ enum PresetSectionStorage {
 
 struct PresetsView: View {
     @EnvironmentObject var controller: QudelixController
+    @EnvironmentObject var automation: EqAutomation
     @State private var renaming: Int?
     @State private var draftName = ""
     @State private var confirmingSave: Int?
@@ -1364,7 +1399,7 @@ struct PresetsView: View {
             if !connected {
                 Text(verbatim: Self.offlineNote)
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1415,10 +1450,15 @@ struct PresetsView: View {
     }
 
     private var eqWriteRefusal: Text {
-        Text("The 5K isn\u{2019}t taking EQ writes right now.")
+        if let busy = controller.eqControlsHelp { return Text(verbatim: busy) }
+        return Text("The 5K isn\u{2019}t taking EQ writes right now.")
     }
 
+    static let saveWhileFollowingHelp = "Overwrite this slot with your own EQ \u{2014} "
+        + "the gains Auto-fit or Auto-trim is moving aren\u{2019}t saved."
+
     private func commitRename(_ i: Int) {
+        guard controller.eqControlsEnabled else { return }
         controller.setPresetName(i, draftName)
         renaming = nil
     }
@@ -1450,6 +1490,10 @@ struct PresetsView: View {
                 Button("Save") { commitRename(i) }
                     .controlSize(.mini)
                     .font(.system(size: 10))
+                    .disabled(!controller.eqControlsEnabled)
+                    .help(controller.eqControlsEnabled
+                          ? Text("Rename this slot on the device.")
+                          : eqWriteRefusal)
                 Button("Cancel") { renaming = nil }
                     .controlSize(.mini)
                     .font(.system(size: 10))
@@ -1466,33 +1510,37 @@ struct PresetsView: View {
                 Button {
                     draftName = controller.presetNames[i] ?? ""
                     renaming = i
-                    nameFocused = true
+                    DispatchQueue.main.async { nameFocused = true }
                 } label: {
                     Image(systemName: "pencil").font(.system(size: 9))
                         .accessibilityLabel(Text(verbatim: "Rename "
                                                  + controller.presetLabel(i)))
                 }
                 .controlSize(.mini)
-                .disabled(!controller.canWriteNow)
-                .help(Text("Rename this slot on the device."))
+                .disabled(!controller.eqControlsEnabled)
+                .help(controller.eqControlsEnabled
+                      ? Text("Rename this slot on the device.")
+                      : eqWriteRefusal)
                 Button("Load") { controller.loadPreset(i) }
                     .controlSize(.mini)
-                    .disabled(!controller.canEditEqNow)
+                    .disabled(!controller.eqControlsEnabled)
                     .font(.system(size: 10))
                     .accessibilityLabel(Text(verbatim: "Load "
                                              + controller.presetLabel(i)))
-                    .help(controller.canEditEqNow
+                    .help(controller.eqControlsEnabled
                           ? Text(verbatim: "Load " + controller.presetLabel(i))
                           : eqWriteRefusal)
                 Button(Self.saveHereLabel) { saveToSlot(i) }
                     .controlSize(.mini)
-                    .disabled(!controller.canEditEqNow)
+                    .disabled(!controller.eqControlsEnabled)
                     .font(.system(size: 10))
                     .accessibilityLabel(Text(verbatim: "Save the current EQ to "
                                              + controller.presetLabel(i)))
-                    .help(controller.canEditEqNow
-                          ? Text("Overwrite this slot with the current EQ")
-                          : eqWriteRefusal)
+                    .help(!controller.eqControlsEnabled
+                          ? eqWriteRefusal
+                          : automation.following
+                          ? Text(verbatim: Self.saveWhileFollowingHelp)
+                          : Text("Overwrite this slot with the current EQ"))
             }
         }
         .padding(.horizontal, 7).padding(.vertical, 4)
@@ -1552,11 +1600,11 @@ struct UnsupportedDeviceView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Text("No settings have been changed.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             if let fw = controller.firmwareVersion {
                 Text(verbatim: "Reported firmware \(fw)")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity)

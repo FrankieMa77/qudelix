@@ -11,7 +11,7 @@ struct StageView: View {
             if let notice = stageState.settingsNotice {
                 Text(verbatim: notice)
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -32,14 +32,14 @@ struct StageView: View {
                 Spacer()
                 Text(verbatim: deviceLabel)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             if stageState.stage.enabled, !stageState.engine.isRunning {
                 Text(verbatim: stageState.engine.status)
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -152,7 +152,7 @@ struct StageView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .accessibilityHidden(true)
                         .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.cautionText)
                     Text("What's playing right now is mono — identical left and "
                          + "right. Width and Crossfeed have nothing to work "
                          + "with; only Dialogue, Room and Balance can act. Try "
@@ -170,7 +170,7 @@ struct StageView: View {
                  + "and sound doesn't track your head. Settings follow the "
                  + "current output device.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -227,7 +227,7 @@ struct StageView: View {
                 Text("Each of these scales the Crossfeed amount inside one "
                      + "range. 100 % everywhere is the plain Crossfeed above.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -243,7 +243,7 @@ struct StageView: View {
                                 stageState.stage.crossMidTrimValue * 100,
                                 stageState.stage.crossHighTrimValue * 100))
                         .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
             .help("Scales Crossfeed separately below 800 Hz, between 800 Hz "
@@ -283,7 +283,7 @@ struct StageView: View {
                  + "drifted apart, or one ear that hears less than the other. "
                  + "It acts on mono content too.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -305,7 +305,7 @@ struct StageView: View {
             .disabled(!stageState.stage.enabled)
             Text(limiterNote)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .opacity(stageState.stage.enabled ? 1 : 0.55)
@@ -347,7 +347,7 @@ struct StageView: View {
             }
             Text(loudnessNote)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .opacity(stageState.stage.enabled ? 1 : 0.55)
@@ -392,7 +392,7 @@ struct StageView: View {
             }
             Text(bassGuardNote)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .opacity(stageState.stage.enabled ? 1 : 0.55)
@@ -421,7 +421,7 @@ struct StageView: View {
                     if stageState.stage.hasImpulse, let info = stageState.impulseInfo {
                         Text(verbatim: impulseDetail(info))
                             .font(.system(size: 9).monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -440,7 +440,7 @@ struct StageView: View {
 
                     Text(impulseNote)
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -453,7 +453,7 @@ struct StageView: View {
                     if let info = stageState.impulseInfo, stageState.stage.hasImpulse {
                         Text(verbatim: info.displayName)
                             .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -467,7 +467,7 @@ struct StageView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .accessibilityHidden(true)
                         .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.cautionText)
                     Text(verbatim: problem)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -493,7 +493,7 @@ struct StageView: View {
 
     private var bassGuardNote: String {
         guard stageState.stage.enabled else {
-            return "Unavailable while Soundstage is off — with the stage off "
+            return "Soundstage is off — moving a control turns it on. With the stage off "
                 + "this app is not in the audio path at all, so it has "
                 + "nothing to ease."
         }
@@ -541,7 +541,7 @@ struct StageView: View {
 
     private var impulseNote: String {
         guard stageState.stage.enabled else {
-            return "Unavailable while Soundstage is off — with the stage off "
+            return "Soundstage is off — moving a control turns it on. With the stage off "
                 + "this app is not in the audio path at all, so it has nothing "
                 + "to convolve."
         }
@@ -561,7 +561,7 @@ struct StageView: View {
 
     private var loudnessNote: String {
         guard stageState.stage.enabled else {
-            return "Unavailable while Soundstage is off — with the stage off "
+            return "Soundstage is off — moving a control turns it on. With the stage off "
                 + "this app is not in the audio path at all, so it has "
                 + "nothing to shape."
         }
@@ -589,7 +589,7 @@ struct StageView: View {
 
     private var limiterNote: String {
         guard stageState.stage.enabled else {
-            return "Unavailable while Soundstage is off — with the stage off "
+            return "Soundstage is off — moving a control turns it on. With the stage off "
                 + "this app is not in the audio path at all, so it has no "
                 + "output of its own to protect."
         }
@@ -636,6 +636,7 @@ struct StageView: View {
             Slider(value: value, in: range)
                 .controlSize(.small)
                 .accessibilityLabel(label)
+                .accessibilityValue(display)
             Text(display)
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)

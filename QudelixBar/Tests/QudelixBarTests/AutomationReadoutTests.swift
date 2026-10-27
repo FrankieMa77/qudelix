@@ -76,7 +76,7 @@ final class AutomationReadoutTests: XCTestCase {
         XCTAssertEqual(AutomationReadout.referenceTexts(source: .catalog, reference: nil,
                                                         trim: .zero, autoTrimOn: false,
                                                         mode: .clarity).last,
-                       "catalog \u{2014} none yet")
+                       "AutoEq \u{2014} none yet")
         let named = AutomationReadout.referenceTexts(source: .auto, reference: curve(),
                                                      trim: .zero, autoTrimOn: false,
                                                      mode: .clarity)

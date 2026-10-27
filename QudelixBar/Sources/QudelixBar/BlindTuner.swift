@@ -626,6 +626,15 @@ final class BlindTuner: ObservableObject {
         phase = .idle
     }
 
+    func abandon(_ c: QudelixController) {
+        guard phase == .running, !c.byEarSessionActive else { return }
+        let reason = interruption(c) ?? .disconnected
+        endSession(c)
+        note = (mode == .shape ? "Shaping" : "Blind check")
+            + " stopped \u{2014} \(reason.reason)."
+        if mode == .trim { DebugLog.shared.log("trim blind: cancelled") }
+    }
+
     private func interruption(_ c: QudelixController) -> SessionInterruption? {
         var connected = false
         if case .connected = c.connection { connected = true }

@@ -194,6 +194,13 @@ final class ABTuner: ObservableObject {
         phase = .idle
     }
 
+    func abandon(_ c: QudelixController) {
+        guard phase == .running, !c.byEarSessionActive else { return }
+        let reason = interruption(c) ?? .disconnected
+        endSession(c)
+        note = "Comparison stopped \u{2014} \(reason.reason)."
+    }
+
     func toggleSide(_ c: QudelixController) {
         guard phase == .running, stillValid(c) else { return }
         showingA.toggle()

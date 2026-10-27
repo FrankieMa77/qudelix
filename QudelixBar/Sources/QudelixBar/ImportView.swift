@@ -32,13 +32,16 @@ struct ImportView: View {
                 } label: {
                     Label("Import file…", systemImage: "square.and.arrow.down")
                 }
+                .disabled(controller.byEarSessionActive)
+                .help(controller.eqControlsHelp ?? "")
                 Button {
                     pasteText()
                 } label: {
                     Label("Paste", systemImage: "doc.on.clipboard")
                 }
-                .disabled(!controller.canWriteNow)
-                .help("Import a correction from text on the clipboard — the "
+                .disabled(!controller.eqControlsEnabled)
+                .help(controller.eqControlsHelp
+                      ?? "Import a correction from text on the clipboard — the "
                       + "filter list as published sites print it. Nothing on "
                       + "the clipboard that looks like one, nothing happens.")
                 Button {
@@ -144,11 +147,11 @@ struct ImportView: View {
             targetRow
             slider("Bass", value: $bassBoost, in: CorrectionOptions.bassRange,
                    step: CorrectionOptions.bassStep,
-                   display: String(format: "%+.1f dB", bassBoost),
+                   display: DisplayFormat.decibels(bassBoost),
                    help: "Low-shelf lift on top of the target. 0 dB is the target as published.")
             slider("Tilt", value: $tilt, in: CorrectionOptions.tiltRange,
                    step: CorrectionOptions.tiltStep,
-                   display: String(format: "%+.2f", tilt) + " dB/oct",
+                   display: DisplayFormat.signed(tilt, decimals: 2) + " dB/oct",
                    help: "Overall slope. Negative is darker, positive brighter. 0 is the target as published.")
 
             HStack(spacing: 6) {
@@ -256,6 +259,7 @@ struct ImportView: View {
             Slider(value: value, in: range, step: step)
                 .controlSize(.small)
                 .accessibilityLabel(label)
+                .accessibilityValue(display)
             Text(display)
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -274,7 +278,7 @@ struct ImportView: View {
         case .failed(let msg):
             HStack {
                 Text(verbatim: "Couldn't load \(optimizer.displayName): \(msg)")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(Color.cautionText)
                 Button("Retry") { optimizer.prepare() }
                     .buttonStyle(.link).font(.caption)
             }
@@ -294,7 +298,7 @@ struct ImportView: View {
         case .failed(let msg):
             HStack {
                 Text(verbatim: "Couldn't load \(autoEq.displayName): \(msg)")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption).foregroundStyle(Color.cautionText)
                 Button("Retry") { autoEq.loadIfNeeded() }
                     .buttonStyle(.link).font(.caption)
             }
@@ -354,7 +358,9 @@ struct ImportView: View {
             .padding(.vertical, 3)
         }
         .buttonStyle(.plain)
-        .disabled(applyGate.isBusy && !applyGate.isApplying(candidate.id))
+        .disabled(controller.byEarSessionActive
+                  || (applyGate.isBusy && !applyGate.isApplying(candidate.id)))
+        .help(controller.eqControlsHelp ?? "")
     }
 
     private func apply(_ candidate: CorrectionCandidate) {
@@ -396,7 +402,7 @@ struct ImportView: View {
                  + "listeners prefer more or less bass than the target — so it is "
                  + "not a measure of how this will sound to you.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .help(String(format: "Deviation from the target after this device's filters, "

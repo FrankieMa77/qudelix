@@ -154,6 +154,17 @@ final class ToneTester: ObservableObject {
         phase = .idle
     }
 
+    func abandon(_ c: QudelixController) {
+        guard phase == .running, !c.byEarSessionActive else { return }
+        let reason = interruption(c) ?? .disconnected
+        task?.cancel(); task = nil
+        interrupted = nil
+        listening = false
+        engine.stop()
+        note = "Tone test stopped \u{2014} \(reason.reason)."
+        endSession(c)
+    }
+
     func startEngine() {
         guard !engine.isRunning else { return }
         engine.attach(player)

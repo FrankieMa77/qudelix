@@ -3,20 +3,25 @@ import SwiftUI
 struct LevelView: View {
     @EnvironmentObject var stageState: StageState
     @EnvironmentObject var automation: EqAutomation
+    @State private var confirmingHistoryDelete = false
+
+    static let historyDeleteTitle = "Delete all listening history?"
+    static let historyDeleteMessage = "Every recorded day is removed from this Mac, "
+        + "and it can\u{2019}t be brought back."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let notice = stageState.settingsNotice {
                 Text(verbatim: notice)
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if let failure = stageState.engineFailure {
                 Text(verbatim: failure.message)
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -37,12 +42,12 @@ struct LevelView: View {
                      + "the Mac's output level only — it never touches the "
                      + "audio path.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if stageState.stage.enabled {
                 Text("Metering rides the Soundstage engine while it runs.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -80,7 +85,7 @@ struct LevelView: View {
                              value: limiterText,
                              note: "holding \u{2212}1 dBTP",
                              lit: stageState.limiterGainReductionDb > 0.1,
-                             litStyle: AnyShapeStyle(.orange))
+                             litStyle: AnyShapeStyle(Color.cautionText))
                         .help("How far the limiter is pulling the Soundstage\u{2019}s "
                               + "output down this second to hold \u{2212}1 dBTP.")
                 }
@@ -99,7 +104,7 @@ struct LevelView: View {
                              value: bassGuardText,
                              note: "before the 5K\u{2019}s boost",
                              lit: stageState.bassGuardGainReductionDb > 0.1,
-                             litStyle: AnyShapeStyle(.orange))
+                             litStyle: AnyShapeStyle(Color.cautionText))
                         .help("How much of the bass the 5K is about to add this "
                               + "app is holding back right now, so the loudest "
                               + "passages don\u{2019}t reach the driver with the whole "
@@ -122,7 +127,7 @@ struct LevelView: View {
                 .gridColumnAlignment(.trailing)
             Text(note)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .gridColumnAlignment(.leading)
         }
     }
@@ -162,18 +167,18 @@ struct LevelView: View {
             }
             Text(earDisclaimer)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 Text("Reads loud or quiet? Nudge it")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 Stepper(value: Binding(
                     get: { stageState.earCalibrationDb },
                     set: { stageState.setEarCalibration($0, editedFor: uid) }),
                         in: EarLevel.calibrationRange, step: 1) {
-                    Text(String(format: "%+.0f dB",
-                                stageState.earCalibrationDb - EarLevel.defaultCalibrationDb))
+                    Text(DisplayFormat.decibels(
+                                stageState.earCalibrationDb - EarLevel.defaultCalibrationDb, decimals: 0))
                         .font(.system(size: 10).monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -230,7 +235,7 @@ struct LevelView: View {
                     .font(.system(size: 11, weight: .medium))
                 Spacer()
                 if !stageState.exposureDays.isEmpty {
-                    Button("Delete") { stageState.clearExposureHistory() }
+                    Button("Delete") { confirmingHistoryDelete = true }
                         .buttonStyle(.link)
                         .font(.system(size: 10))
                         .help("Deletes every day recorded so far, from disk too.")
@@ -271,7 +276,7 @@ struct LevelView: View {
                 } label: {
                     Text("Previous \(history.count) day\(history.count == 1 ? "" : "s")")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -279,8 +284,18 @@ struct LevelView: View {
                  + "pressure — the estimate above is the closest this app "
                  + "gets to that.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .confirmationDialog(Text(Self.historyDeleteTitle),
+                            isPresented: $confirmingHistoryDelete,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                stageState.clearExposureHistory()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(Self.historyDeleteMessage)
         }
     }
 
@@ -322,7 +337,7 @@ struct LevelView: View {
                     }
                     Text(verbatim: AutomationReadout.baselineText(automation.baseline))
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
                 .help("Long-term tonal balance of what's playing, relative to pink noise "
                       + "(equal energy per octave), averaged over about 30 s. Auto-trim "
@@ -372,7 +387,7 @@ struct LevelView: View {
     private var verdictColor: AnyShapeStyle {
         switch stageState.qualityVerdict {
         case .losslessLike, .hiRes: return AnyShapeStyle(.green)
-        case .lossy: return AnyShapeStyle(.orange)
+        case .lossy: return AnyShapeStyle(Color.cautionText)
         case .lossyHigh: return AnyShapeStyle(Color.cautionText)
         default: return AnyShapeStyle(.secondary)
         }
@@ -422,7 +437,7 @@ struct LevelView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Today")
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             HStack(spacing: 14) {
                 stat("Listened", Self.duration(day.audibleSeconds))
                 stat("Loud", Self.duration(day.loudSeconds),
@@ -439,7 +454,7 @@ struct LevelView: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             Text(value)
                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .foregroundStyle(highlight ? .orange : .primary)

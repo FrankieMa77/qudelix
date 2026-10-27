@@ -307,6 +307,10 @@ final class StatusIconModel: ObservableObject {
         return "\(batt)%"
     }
 
+    static func presetLine(label: String?, following: Bool) -> String {
+        "Preset: " + (label ?? "custom") + (following ? " \u{00B7} Auto-fit" : "")
+    }
+
     static func tooltip(_ controller: QudelixController) -> String {
         guard case .connected(let rawName) = controller.connection else {
             return "Qudelix — no device connected"
@@ -330,11 +334,8 @@ final class StatusIconModel: ObservableObject {
             }
             lines.append(line)
         }
-        if let idx = controller.activePreset {
-            lines.append("Preset: " + controller.presetLabel(idx))
-        } else {
-            lines.append("Preset: custom")
-        }
+        lines.append(presetLine(label: controller.activePreset.map(controller.presetLabel),
+                                following: controller.baseProvider?() != nil))
         switch controller.link {
         case .usb: lines.append("Connected over USB")
         case .bluetooth: lines.append("Connected over Bluetooth")

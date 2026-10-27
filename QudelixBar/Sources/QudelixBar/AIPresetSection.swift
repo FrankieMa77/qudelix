@@ -138,7 +138,7 @@ struct AIPresetSection: View {
             keyControls
             Text(Self.billingCaption)
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -216,7 +216,7 @@ struct AIPresetSection: View {
                 Text("Name your headphones in the Library above — the design is "
                      + "made for a specific model.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 4)
@@ -230,17 +230,17 @@ struct AIPresetSection: View {
                 Text("Research didn't come back — designed from general knowledge "
                      + "instead.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if refreshResearch {
                 Text("Will research this model again on the next generate.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             } else if let info = studio.dossierInfo {
                 Text(verbatim: "Researched \(Self.shortDate(info.researchedAt)) · "
                      + "\(info.confidence) confidence")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Button(Self.researchAgainLabel) { refreshResearch = true }
@@ -250,7 +250,7 @@ struct AIPresetSection: View {
             } else {
                 Text("Will research this model on first generate.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -291,7 +291,7 @@ struct AIPresetSection: View {
 
             Text("\(bandCount) bands")
                 .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .help("The bank the device is in now. Switch it on the EQ pane.")
         }
     }
@@ -342,7 +342,7 @@ struct AIPresetSection: View {
                     ProgressView().controlSize(.small)
                     Text(verbatim: phaseCaption)
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Button("Cancel") { studio.cancel() }
                         .buttonStyle(.borderless)
@@ -352,24 +352,24 @@ struct AIPresetSection: View {
                 if !named {
                     Text("Name your headphones")
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 } else if !keyPresent, studio.needsKey(for: kind) {
                     Text("Save a key to start")
                         .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
             if !keyPresent, !studio.needsKey(for: kind) {
                 Text("Correction needs no key: it is taken from the published "
                      + "measurement when this model has one.")
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error = studio.errorText {
                 Text(verbatim: error)
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -384,7 +384,7 @@ struct AIPresetSection: View {
             if let context = studio.draftContext {
                 Text(verbatim: context.caption)
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -394,20 +394,20 @@ struct AIPresetSection: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text(verbatim: String(format: "Pre-gain %+.1f dB, worked out here from "
-                                  + "the bands above.", draft.preGain))
+            Text(verbatim: "Pre-gain " + DisplayFormat.decibels(draft.preGain)
+                                  + ", worked out here from the bands above.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             if let note = draft.quantisationNote {
                 Text(verbatim: note)
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if controller.activePreset == nil {
                 Text(Self.unsavedCurveWarning)
                     .font(.system(size: 9))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 6) {
@@ -416,7 +416,7 @@ struct AIPresetSection: View {
                 }
                 .controlSize(.small)
                 .font(.system(size: 10))
-                .disabled(!controller.canEditEqNow || studio.applying)
+                .disabled(!controller.eqControlsEnabled || studio.applying)
                 if studio.applying { ProgressView().controlSize(.mini) }
                 Button("Save to library") { saveToLibrary(draft) }
                     .controlSize(.small)
@@ -434,7 +434,7 @@ struct AIPresetSection: View {
                 .controlSize(.small)
                 .font(.system(size: 10))
                 .frame(width: 92)
-                .disabled(!controller.canEditEqNow || studio.applying)
+                .disabled(!controller.eqControlsEnabled || studio.applying)
                 Spacer(minLength: 4)
                 Button {
                     slotChoice = nil
@@ -453,7 +453,7 @@ struct AIPresetSection: View {
             if let message = studio.applyError {
                 Text(verbatim: message)
                     .font(.system(size: 9))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(studio.grounded
@@ -461,26 +461,31 @@ struct AIPresetSection: View {
                  : "No measurement found for this model — designed from general "
                     + "knowledge.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
     }
 
+    static func overwriteCopy(slot: Int, name: String?) -> String {
+        guard let name else {
+            return "Slot \(slot + 1) is empty. Writing puts this preset there."
+        }
+        return PresetsView.overwriteMessage(slot: slot, name: name)
+    }
+
     private func overwriteRow(_ draft: AIDraft, slot: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: "Slot \(slot + 1), \u{201C}\(controller.presetLabel(slot))"
-                 + "\u{201D}, holds a preset on the device. Writing replaces it, and "
-                 + "the device keeps no copy.")
+            Text(verbatim: Self.overwriteCopy(slot: slot, name: controller.presetNames[slot]))
                 .font(.system(size: 9))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.cautionText)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 Button("Overwrite slot \(slot + 1)") { writeToSlot(draft, slot: slot) }
                     .controlSize(.mini)
                     .font(.system(size: 10))
-                    .disabled(!controller.canEditEqNow)
+                    .disabled(!controller.eqControlsEnabled)
                 Button("Cancel") { slotChoice = nil }
                     .controlSize(.mini)
                     .font(.system(size: 10))

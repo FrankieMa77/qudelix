@@ -320,8 +320,21 @@ struct EQCurveView: View {
     }
 
     var body: some View {
+        interactive
+            .onChange(of: readOnly) { _, _ in resetDrag() }
+            .onChange(of: onBandChanged == nil) { _, _ in resetDrag() }
+            .onDisappear { resetDrag() }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("EQ curve")
+            .accessibilityValue(Self.accessibilitySummary(bands: bands, preGain: preGain,
+                                                          enabled: enabled, selected: selectedBand))
+            .accessibilityHint(readOnly ? AutomationReadout.readOnlyHelp
+                               : "Use the band table below to edit each band.")
+    }
+
+    private var interactive: some View {
         let plot = self.plot()
-        Canvas { ctx, size in
+        return Canvas { ctx, size in
             let range = plot.range
             let values = plot.applied
             let midY = size.height / 2
@@ -329,8 +342,7 @@ struct EQCurveView: View {
                 midY - CGFloat(max(-range, min(range, db)) / range) * (size.height / 2 - 6)
             }
 
-            let step = range > 12 ? 6.0 : (range > 9 ? 6.0 : 3.0)
-            for db in stride(from: -range + step, through: range - step, by: step) {
+            for db in Self.gridLevels(range: range) {
                 var line = Path()
                 line.move(to: CGPoint(x: 0, y: y(db)))
                 line.addLine(to: CGPoint(x: size.width, y: y(db)))
@@ -506,10 +518,56 @@ struct EQCurveView: View {
         }
     }
 
+    nonisolated static func gridLevels(range: Double) -> [Double] {
+        let step = range > 9 ? 6.0 : 3.0
+        var levels = Array(stride(from: -range + step, through: range - step, by: step))
+        if !levels.contains(0) {
+            levels.append(0)
+            levels.sort()
+        }
+        return levels
+    }
+
+    nonisolated static func accessibilitySummary(bands: [QxEqBandValue], preGain: Double,
+                                                 enabled: Bool, selected: Int?) -> String {
+        guard enabled else { return "Equalizer is off" }
+        var parts: [String] = []
+        let boosts = bands.enumerated().filter {
+            $0.element.filter != .bypass && $0.element.filter.hasGain && $0.element.gain > 0
+        }
+        if let top = boosts.max(by: { $0.element.gain < $1.element.gain }) {
+            parts.append("Peak boost " + DisplayFormat.accessibleDecibels(top.element.gain)
+                         + " at " + String(top.element.freq) + " hertz")
+        } else {
+            parts.append("No band boost")
+        }
+        if abs(preGain) >= 0.05 {
+            parts.append("pre-gain " + DisplayFormat.accessibleDecibels(preGain))
+        }
+        if let selected, bands.indices.contains(selected),
+           bands[selected].filter != .bypass {
+            let band = bands[selected]
+            var line = "band \(selected + 1) selected, " + String(band.freq) + " hertz"
+            if band.filter.hasGain { line += ", " + DisplayFormat.accessibleDecibels(band.gain) }
+            parts.append(line)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private func resetDrag() {
+        let wasDragging = dragging != nil
+        dragging = nil
+        dragOrigin = nil
+        dragAnchor = nil
+        dragRange = nil
+        dragModifiers = []
+        if wasDragging { onDragBand?(nil) }
+    }
+
     private func axisText(range: Double) -> String {
         let axis = "±\(Int(range)) dB"
         guard abs(preGain) >= 0.05 else { return axis }
-        return axis + String(format: "   pre-gain %+.1f dB", preGain)
+        return axis + "   pre-gain " + DisplayFormat.decibels(preGain)
     }
 
     private var readoutBand: Int? {
@@ -523,7 +581,7 @@ struct EQCurveView: View {
     private func readoutText(_ i: Int) -> String {
         let band = bands[i]
         let amount = band.filter.hasGain
-            ? String(format: "%+.1f dB", band.gain)
+            ? DisplayFormat.decibels(band.gain)
             : band.filter.shortLabel
         return "\(i + 1)   " + amount + String(format: "   Q %.2f", band.q)
     }

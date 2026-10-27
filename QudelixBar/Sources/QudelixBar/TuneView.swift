@@ -15,7 +15,23 @@ struct TuneView: View {
         case check = "Blind"
         case trim = "Trim"
         var id: String { rawValue }
+
+        static func opening(tones: ToneTester.Phase, tuner: ABTuner.Phase,
+                            blind: BlindTuner.Phase, blindMode: BlindTuner.Mode,
+                            stored: Method) -> Method {
+            if tones != .idle { return .tones }
+            if tuner != .idle { return .compare }
+            if blind != .idle {
+                switch blindMode {
+                case .trim: return .trim
+                case .bypass: return .check
+                case .shape: return .shape
+                }
+            }
+            return stored
+        }
     }
+    @AppStorage("tune.method") private var storedMethod = Method.compare.rawValue
     @State private var method: Method = .compare
     @State private var saveGate = SlotSaveGate()
 
@@ -115,13 +131,16 @@ struct TuneView: View {
             stageState.engine.processor.setMuted(phase == .running)
         }
         .onAppear {
-            if tones.phase != .idle {
-                method = .tones
-            } else if tuner.phase != .idle {
-                method = .compare
-            } else if blind.phase != .idle || blind.mode == .trim {
-                method = blind.mode == .trim ? .trim : (blind.mode == .bypass ? .check : .shape)
-            }
+            method = Method.opening(
+                tones: tones.phase, tuner: tuner.phase, blind: blind.phase,
+                blindMode: blind.mode, stored: Method(rawValue: storedMethod) ?? .compare)
+        }
+        .onChange(of: method) { _, new in storedMethod = new.rawValue }
+        .onChange(of: controller.byEarSessionActive) { _, active in
+            guard !active else { return }
+            tuner.abandon(controller)
+            blind.abandon(controller)
+            tones.abandon(controller)
         }
         .onDisappear {
             stageState.engine.processor.setMuted(false)
@@ -168,7 +187,7 @@ struct TuneView: View {
             if let note = tones.note {
                 Text(note)
                     .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -177,7 +196,7 @@ struct TuneView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .accessibilityHidden(true)
                         .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.cautionText)
                     Text(blocker.message)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -188,7 +207,7 @@ struct TuneView: View {
                      + "but they are relative to it. EQ is switched off while "
                      + "measuring, then restored.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -226,7 +245,7 @@ struct TuneView: View {
 
             Text("Press the moment you hear anything, however faint. Silence is normal.")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
@@ -252,13 +271,13 @@ struct TuneView: View {
                      + "needs, so read this as a rough shape rather than a "
                      + "measurement.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Text(catchSummary)
                 .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
@@ -299,7 +318,7 @@ struct TuneView: View {
             Text("A quieter room and a slightly higher volume before starting are "
                  + "usually what's missing.")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -321,7 +340,7 @@ struct TuneView: View {
                  + "near the end of a long test. Press only when you're sure, and "
                  + "let the silences pass.")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             readingsTable
@@ -346,7 +365,7 @@ struct TuneView: View {
                  + "for some frequencies and not others. Reseat the headphones, "
                  + "keep the volume steady, and run it again.")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             readingsTable
@@ -383,17 +402,17 @@ struct TuneView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 34, alignment: .trailing)
                     if s.measured {
-                        Text(String(format: "%+.0f dB", s.deviation))
+                        Text(DisplayFormat.decibels(s.deviation, decimals: 0))
                             .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .frame(width: 52, alignment: .trailing)
-                        Text(String(format: "EQ %+.1f", s.gain))
+                        Text("EQ " + DisplayFormat.signed(s.gain))
                             .font(.system(size: 11).monospacedDigit())
                             .frame(width: 66, alignment: .trailing)
                     } else {
                         Text("no reading")
                             .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .frame(width: 126, alignment: .trailing)
                     }
                     Spacer()
@@ -417,7 +436,7 @@ struct TuneView: View {
             if let note = tuner.note {
                 Text(note)
                     .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -426,7 +445,7 @@ struct TuneView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .accessibilityHidden(true)
                         .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Color.cautionText)
                     Text(blocker.message)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -435,7 +454,7 @@ struct TuneView: View {
             } else {
                 Text("Twenty comparisons. Your current EQ comes back if you stop.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -452,7 +471,7 @@ struct TuneView: View {
                     .font(.system(size: 12, weight: .medium))
                 Text(tuner.currentDetail)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Text("\(min(tuner.trialsDone + 1, tuner.trialsTotal)) / \(tuner.trialsTotal)")
@@ -481,7 +500,7 @@ struct TuneView: View {
 
             Text("Switch as often as you like, then choose.")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
                 Button("Prefer A") { tuner.choose(preferA: true, controller) }
@@ -507,7 +526,7 @@ struct TuneView: View {
 
             Text(consistencySummary)
                 .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: 5) {
@@ -527,7 +546,7 @@ struct TuneView: View {
                 Text("Some of these answers are noise rather than preference, so "
                      + "treat the result as weak.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.cautionText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -578,7 +597,7 @@ struct TuneView: View {
             }
             .frame(width: barWidth, height: 8)
 
-            Text(inaudible ? "—" : String(format: "%+.1f", v))
+            Text(inaudible ? "—" : DisplayFormat.signed(v))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(inaudible ? .tertiary : .secondary)
                 .frame(width: 40, alignment: .trailing)
@@ -591,7 +610,7 @@ struct TuneView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .accessibilityHidden(true)
                 .font(.system(size: 10))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.cautionText)
             Text(text)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -604,7 +623,7 @@ struct TuneView: View {
         if let note = blind.note {
             Text(note)
                 .font(.system(size: 11))
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.cautionText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -636,7 +655,7 @@ struct TuneView: View {
                 Text("Twelve comparisons, three of them repeats of one setting. Your "
                      + "current EQ comes back if you stop.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -653,7 +672,7 @@ struct TuneView: View {
                     .font(.system(size: 12, weight: .medium))
                 Text(blind.currentDetail)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Text("\(min(blind.trialsDone + 1, blind.trialsTotal)) / \(blind.trialsTotal)")
@@ -682,7 +701,7 @@ struct TuneView: View {
 
             Text("Switch as often as you like, then choose.")
                 .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
                 Button("Prefer A") { blind.choose(preferA: true, controller) }
@@ -713,7 +732,7 @@ struct TuneView: View {
     private var shapeConsistencyLine: some View {
         Text(shapeConsistencySummary)
             .font(.system(size: 9).monospacedDigit())
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -864,7 +883,7 @@ struct TuneView: View {
                 Text("Nothing is written either way. Your bands and pre-gain come back "
                      + "exactly as they are now, whichever way the answers fall.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -892,7 +911,7 @@ struct TuneView: View {
             Text("Your EQ is exactly as you left it — this check never writes "
                  + "anything.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
@@ -932,7 +951,7 @@ struct TuneView: View {
                      + "pre-gain come back exactly as they are now, whichever way the "
                      + "answers fall.")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -961,7 +980,7 @@ struct TuneView: View {
             Text("Your EQ is exactly as you left it \u{2014} this check never keeps "
                  + "anything. Auto-trim carries on as before.")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {

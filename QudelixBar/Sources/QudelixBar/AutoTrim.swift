@@ -116,7 +116,7 @@ enum ReferenceSource: String, Codable, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .auto: return "Auto"
-        case .catalog: return "Fit"
+        case .catalog: return "AutoEq"
         case .listening: return "Listening"
         }
     }

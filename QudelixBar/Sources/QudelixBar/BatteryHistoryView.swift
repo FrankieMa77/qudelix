@@ -65,7 +65,7 @@ struct BatteryHistoryBody: View {
 
                 Text(verbatim: footnote(now: now))
                     .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

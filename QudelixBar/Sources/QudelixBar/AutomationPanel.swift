@@ -6,6 +6,7 @@ struct AutomationPanel: View {
     @EnvironmentObject var stageState: StageState
     @EnvironmentObject var presetLibrary: PresetLibrary
     @EnvironmentObject var suggestions: HeadphoneSuggestions
+    @State private var hiddenFitNote: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -16,6 +17,16 @@ struct AutomationPanel: View {
             trimText
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: automation.currentReference) { _, _ in hiddenFitNote = suggestions.fitNote }
+        .onChange(of: automation.referenceSource) { _, _ in hiddenFitNote = suggestions.fitNote }
+        .onChange(of: suggestions.fitNote) { _, note in
+            if note == nil { hiddenFitNote = nil }
+        }
+    }
+
+    private var visibleFitNote: String? {
+        guard let note = suggestions.fitNote, note != hiddenFitNote else { return nil }
+        return note
     }
 
     private var referenceRow: some View {
@@ -36,9 +47,7 @@ struct AutomationPanel: View {
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .fixedSize()
-                    .help("Write the followed gains and pre-gain into your EQ and stop "
-                          + "following. From the listening reference this also turns "
-                          + "Auto-trim off \u{2014} the bands now carry the trim.")
+                    .help(Self.keepHelp)
             } else if automation.paused {
                 Button("Resume") { automation.reenable() }
                     .buttonStyle(.bordered)
@@ -60,6 +69,10 @@ struct AutomationPanel: View {
         }
         .font(.system(size: 9))
     }
+
+    static let keepHelp = "Write the followed gains and pre-gain into your EQ and stop "
+        + "following. It also turns Auto-trim off if it is on, since the bands now "
+        + "carry the trim."
 
     private var sourceMenu: some View {
         Menu {
@@ -87,8 +100,8 @@ struct AutomationPanel: View {
 
     static func title(_ source: ReferenceSource) -> String {
         switch source {
-        case .auto: return "Auto \u{2014} the catalog fit when there is one, else listening"
-        case .catalog: return "Fit \u{2014} the measurement-based correction"
+        case .auto: return "Auto \u{2014} the AutoEq fit when there is one, else listening"
+        case .catalog: return "AutoEq \u{2014} the measurement-based correction"
         case .listening: return "Listening \u{2014} your EQ plus what Auto-trim measures"
         }
     }
@@ -98,7 +111,7 @@ struct AutomationPanel: View {
         if suggestions.fitting {
             Text("fitting\u{2026}")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize()
         } else {
             Button(automation.currentReference == nil ? "Fit" : "Re-fit") { fit() }
@@ -136,12 +149,20 @@ struct AutomationPanel: View {
             Text(verbatim: lines.last ?? "").lineLimit(1).truncationMode(.middle)
         }
         .font(.system(size: 9))
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(.secondary)
         .padding(.leading, 2)
     }
 
     @ViewBuilder
     private var followNote: some View {
+        if let fitNote = visibleFitNote {
+            Text(verbatim: fitNote)
+                .font(.system(size: 9))
+                .foregroundStyle(Color.cautionText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
+        }
         let note = AutomationReadout.followNote(
             following: automation.following, paused: automation.paused,
             waitingReason: automation.wantsFollow ? automation.waitingReason : nil,
@@ -150,14 +171,7 @@ struct AutomationPanel: View {
         if let note {
             Text(verbatim: note)
                 .font(.system(size: 9))
-                .foregroundStyle(automation.paused ? AnyShapeStyle(.orange) : AnyShapeStyle(.tertiary))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 2)
-        } else if let fitNote = suggestions.fitNote {
-            Text(verbatim: fitNote)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(automation.paused ? AnyShapeStyle(Color.cautionText) : AnyShapeStyle(.secondary))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
@@ -196,6 +210,7 @@ struct AutomationPanel: View {
                 .frame(maxWidth: 90)
                 .disabled(!automation.autoTrimOn || automation.autoTrimMode == .audiophile)
                 .accessibilityLabel("Auto-trim strength")
+                .accessibilityValue("\(Int((automation.autoTrimStrength * 100).rounded())) percent")
             Spacer(minLength: 0)
         }
         .font(.system(size: 9))
@@ -213,7 +228,7 @@ struct AutomationPanel: View {
             Text(verbatim: lines.last ?? "").lineLimit(1).truncationMode(.tail)
         }
         .font(.system(size: 9).monospacedDigit())
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(.secondary)
         .padding(.leading, 2)
     }
 }
