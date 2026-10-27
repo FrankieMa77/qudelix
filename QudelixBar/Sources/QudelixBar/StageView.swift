@@ -115,8 +115,7 @@ struct StageView: View {
                     slider("Center", value: Binding(
                         get: { stageState.stage.centerValue },
                         set: { v in mutate(uid) { $0.center = (v * 2).rounded() / 2 } }),
-                        in: -6...3, display: String(format: "%+.1f dB",
-                                                    stageState.stage.centerValue),
+                        in: -6...3, display: DisplayFormat.decibels(stageState.stage.centerValue),
                         help: "Level of the centre image. Cramped stages are "
                             + "usually centre-heavy — pull it back a little and "
                             + "the sides get room to breathe.")

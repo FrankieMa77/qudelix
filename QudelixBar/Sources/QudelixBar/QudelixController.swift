@@ -126,7 +126,7 @@ final class QudelixController: ObservableObject {
         onSessionBegin?()
     }
 
-    func endEqSession() {
+    func endEqSession(observe: Bool = true) {
         let wasActive = byEarSessionActive
         byEarSessionActive = false
         sessionBase = nil
@@ -135,14 +135,17 @@ final class QudelixController: ObservableObject {
                 saveWasPending = false
                 armSaveAll()
             }
-            if presetRead { eqObserved() }
+            if observe, presetRead { eqObserved() }
         }
+        if lastImportSummary == Self.sessionRefusalText { lastImportSummary = nil }
         onSessionEnd?()
     }
 
+    private static let sessionRefusalText = "A tuning session is running \u{2014} finish or stop it first."
+
     private func refuseDuringSession() -> Bool {
         guard byEarSessionActive else { return false }
-        lastImportSummary = "A tuning session is running \u{2014} finish or stop it first."
+        lastImportSummary = Self.sessionRefusalText
         return true
     }
 
@@ -672,7 +675,7 @@ final class QudelixController: ObservableObject {
 
     private func resetDeviceState() {
         saveWasPending = false
-        endEqSession()
+        endEqSession(observe: false)
         onBaseEvent?(.reset)
         snapshotWork?.cancel()
         saveAllWork?.cancel()
@@ -1140,7 +1143,7 @@ final class QudelixController: ObservableObject {
         pendingGroup = nil
         lastGroupSwitch = Date()
         saveWasPending = false
-        endEqSession()
+        endEqSession(observe: false)
         DebugLog.shared.log("EQ group → \(group) (\(group.bandCount) bands)")
         undoStack.removeAll()
         redoStack.removeAll()
@@ -1553,7 +1556,7 @@ final class QudelixController: ObservableObject {
         let applied = fitted.bands.count
         let dropped = fitted.droppedBands
         lastImportSummary = (["Applied \(applied) band(s), pre-gain "
-            + String(format: "%+.1f dB", preamp)
+            + DisplayFormat.decibels(preamp)
             + (dropped > 0 ? " · \(dropped) band(s) dropped"
                 + (file.bands.count > bandCount && eqGroup != .b20
                    ? " (fit in 20-band mode)" : "") : "")]

@@ -145,7 +145,7 @@ final class ToneTester: ObservableObject {
     func reportHeard() { heard = true }
 
     private func restoreDevice(_ c: QudelixController) {
-        guard c.eqGroup == sessionGroup else { return }
+        guard c.byEarSessionActive, c.eqGroup == sessionGroup else { return }
         c.setEqEnabled(restoreEqEnabled, persistToFlash: false, duringSession: true)
     }
 

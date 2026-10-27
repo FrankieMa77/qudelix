@@ -217,6 +217,22 @@ enum SafeFile {
         }
     }
 
+    private static let heldLock = NSLock()
+    private static var held = Set<String>()
+
+    static func isHeld(_ url: URL) -> Bool {
+        heldLock.lock()
+        defer { heldLock.unlock() }
+        return held.contains(url.standardizedFileURL.path)
+    }
+
+    private static func hold(_ url: URL) {
+        heldLock.lock()
+        held.insert(url.standardizedFileURL.path)
+        heldLock.unlock()
+    }
+
+    @discardableResult
     static func setAsideIfUnreadable(_ url: URL) -> Bool {
         var st = stat()
         let present = url.withUnsafeFileSystemRepresentation { path -> Bool in
@@ -230,7 +246,11 @@ enum SafeFile {
                 || (try? fm.destinationOfSymbolicLink(atPath: candidate.path)) != nil
         }
         let all = ParkedCopy.candidates(beside: url)
-        guard let target = all.first(where: { !taken($0) }) else { return false }
+        guard let target = all.first(where: { !taken($0) }) else {
+            hold(url)
+            DebugLog.shared.log("\(url.lastPathComponent) could not be read and every parking name is taken; it is left untouched")
+            return false
+        }
         let moved = url.withUnsafeFileSystemRepresentation { from -> Bool in
             guard let from else { return false }
             return target.withUnsafeFileSystemRepresentation { to -> Bool in
@@ -238,6 +258,7 @@ enum SafeFile {
                 return rename(from, to) == 0
             }
         }
+        if !moved { hold(url) }
         DebugLog.shared.log(moved
             ? "\(url.lastPathComponent) could not be read; it was moved aside as \(target.lastPathComponent)"
             : "\(url.lastPathComponent) could not be read and could not be moved aside")
@@ -276,6 +297,7 @@ enum SafeFile {
 
     @discardableResult
     static func writeAtomic(_ data: Data, to url: URL) -> Bool {
+        guard !isHeld(url) else { return false }
         let temp = url.deletingLastPathComponent()
             .appendingPathComponent("." + url.lastPathComponent
                                     + "." + String(UUID().uuidString.prefix(8)))

@@ -111,10 +111,10 @@ struct ParametricEQFile {
                 + "no Q or bandwidth — Q \(String(format: "%.2f", defaultShelfQ)) assumed")
         }
         if abs(out.preamp) > EQHeadroom.range.upperBound + 0.05 {
-            out.notes.append(String(
-                format: "pre-gain %+.1f dB is beyond this device's ±%.0f dB and will be "
-                    + "clamped — a strong boost may clip at full volume",
-                out.preamp, EQHeadroom.range.upperBound))
+            out.notes.append(
+                "pre-gain \(DisplayFormat.decibels(out.preamp)) is beyond this device's "
+                    + "±\(String(format: "%.0f", EQHeadroom.range.upperBound)) dB and will be "
+                    + "clamped — a strong boost may clip at full volume")
         }
         let clamped = parsed.filter { $0.filter.hasGain && abs($0.gain) > 12.05 }.count
         if clamped > 0 {
@@ -162,8 +162,7 @@ struct ParametricEQFile {
         let needed = EQHeadroom.suggestedPreGain(for: out.bands)
         if needed < preamp - 0.05 {
             out.preamp = needed
-            out.notes.append(String(format: "pre-gain lowered to %+.1f dB for the bands that fit",
-                                    needed))
+            out.notes.append("pre-gain lowered to \(DisplayFormat.decibels(needed)) for the bands that fit")
         }
         return out
     }

@@ -76,6 +76,7 @@ struct DeviceSettingsView: View {
                    in: controller.trimRange)
                 .controlSize(.small)
                 .accessibilityLabel(name)
+                .accessibilityValue(DisplayFormat.accessibleDecibels(value))
             Text(value == 0 ? "0 dB" : String(format: "%.1f dB", value))
                 .font(.system(size: 10).monospacedDigit())
                 .foregroundStyle(value == 0 ? .tertiary : .secondary)
@@ -99,6 +100,7 @@ struct DeviceSettingsView: View {
                    in: controller.volumeLimitRange)
                 .controlSize(.small)
                 .accessibilityLabel("Volume limit")
+                .accessibilityValue(DisplayFormat.accessibleDecibels(controller.volumeLimitDb))
                 .disabled(!controller.canWriteNow)
             Text("The ceiling the volume slider can reach. Lower it and the "
                  + "whole range moves with it.")

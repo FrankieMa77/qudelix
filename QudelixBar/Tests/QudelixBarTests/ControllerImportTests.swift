@@ -75,7 +75,7 @@ final class ControllerImportTests: XCTestCase {
 
         c.apply(file, named: "Quiet")
         XCTAssertEqual(c.preGain, -12, accuracy: 0.05)
-        XCTAssertTrue(c.lastImportSummary?.contains("pre-gain -12.0 dB") ?? false,
+        XCTAssertTrue(c.lastImportSummary?.contains("pre-gain \(DisplayFormat.decibels(-12))") ?? false,
                       c.lastImportSummary ?? "")
     }
 

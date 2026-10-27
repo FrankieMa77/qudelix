@@ -788,7 +788,7 @@ final class BlindTuner: ObservableObject {
     }
 
     private func restoreBaseline(_ c: QudelixController) {
-        guard c.eqGroup == sessionGroup else { return }
+        guard c.byEarSessionActive, c.eqGroup == sessionGroup else { return }
         push(baseline, preGain: baselinePreGain, c)
     }
 

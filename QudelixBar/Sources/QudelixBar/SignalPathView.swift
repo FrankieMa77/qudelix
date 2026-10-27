@@ -191,7 +191,7 @@ enum SignalPath {
             ? "\(active) of \(i.bandCount) bands (\(i.mutedBandCount) muted)"
             : "\(i.bandCount)-band"
         let state = "on — \(bands), \(preset), pre-gain "
-            + String(format: "%+.1f dB", i.preGain)
+            + DisplayFormat.decibels(i.preGain)
         return Row(id: "eq", name: name, state: state, indicator: .altering)
     }
 
