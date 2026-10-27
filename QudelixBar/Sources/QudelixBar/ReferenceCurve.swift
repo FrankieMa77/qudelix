@@ -14,9 +14,9 @@ struct ReferenceCurve: Codable, Equatable {
 
     static let maxTextLength = 128
     static let maxBands = 32
-    static let gainRange: ClosedRange<Double> = -12...12
-    static let freqRange = 20...20000
-    static let qRange: ClosedRange<Double> = 0.05...100
+    static let gainRange = QxPacket.BandLimit.gain
+    static let freqRange = QxPacket.BandLimit.freq
+    static let qRange = QxPacket.BandLimit.q
 
     init(file: ParametricEQFile, source: String, headphone: String, rig: String = "",
          options: CorrectionOptions = CorrectionOptions(), fittedAt: Date = Date()) {
