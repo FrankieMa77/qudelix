@@ -47,6 +47,7 @@ enum UIPreview {
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
+                    .environmentObject(automationMock(pane, controller))
                     .environmentObject(guardMock(pane))
                     .frame(width: 400)
                     .background(VisualEffectBackground())
@@ -78,7 +79,8 @@ enum UIPreview {
                 }
                 if name == "light" {
                     switch pane {
-                    case "eq", "b20":
+                    case "eq", "b20", "eq-reference", "eq-follow", "eq-follow-paused",
+                         "eq-trim":
                         reportPaneFit(pane, VStack(spacing: 14) {
                             BandInspector(selected: .constant(0))
                             EqEditorView(editingBand: .constant(nil))
@@ -93,7 +95,7 @@ enum UIPreview {
                         reportPaneFit(pane, TuneView(), controller, stage, blind)
                     case "stage":
                         reportPaneFit(pane, StageView(), controller, stage, blind)
-                    case "level":
+                    case "level", "level-balance":
                         reportPaneFit(pane, LevelView(), controller, stage, blind)
                     default: break
                     }
@@ -213,6 +215,7 @@ enum UIPreview {
             .environmentObject(ABTuner())
             .environmentObject(ToneTester())
             .environmentObject(blind)
+            .environmentObject(automationMock(pane, controller))
             .frame(width: 372)
         let host = NSHostingView(rootView: AnyView(root))
         host.layoutSubtreeIfNeeded()
@@ -239,6 +242,7 @@ enum UIPreview {
                     .environmentObject(ABTuner())
                     .environmentObject(ToneTester())
                     .environmentObject(blind)
+                    .environmentObject(automationMock(pane, controller))
                     .environmentObject(guardMock(pane))
                     .environment(\.colorScheme, scheme)
                     .background(scheme == .dark ? Color(white: 0.13) : Color(white: 0.96))
@@ -273,12 +277,91 @@ enum UIPreview {
           BlindTuner.previewBypass(eq: 2, flat: 2, same: 1)),
          ("stage", make(.stage), stageMock(running: true), BlindTuner()),
          ("level", make(.level), levelMock(), BlindTuner()),
+         ("level-balance", make(.level), levelBalanceMock(), BlindTuner()),
+         ("eq-reference", make(.equalizer), stageMock(), BlindTuner()),
+         ("eq-follow", followedEq(), stageMock(), BlindTuner()),
+         ("eq-follow-paused", make(.equalizer), stageMock(), BlindTuner()),
+         ("eq-trim", make(.equalizer), stageMock(), BlindTuner()),
          ("disconnected", disconnected(), stageMock(running: true), BlindTuner()),
          ("unsupported", unsupported(), stageMock(), BlindTuner()),
          ("b20", twentyBand(), stageMock(), BlindTuner()),
          ("lowbatt", lowBattery(), stageMock(), BlindTuner()),
          ("micguard", micHijacked(), stageMock(), BlindTuner()),
          ("suggest", make(.presets), stageMock(), BlindTuner())]
+    }
+
+    @MainActor
+    private static func previewReference() -> ReferenceCurve {
+        var file = ParametricEQFile()
+        file.preamp = -5.2
+        file.bands = [
+            .init(filter: .lowShelf, freq: 105, gain: 5.2, q: 0.70),
+            .init(filter: .peak, freq: 8800, gain: 3.6, q: 1.42),
+            .init(filter: .peak, freq: 118, gain: -2.4, q: 0.50),
+            .init(filter: .peak, freq: 37, gain: 1.1, q: 3.96),
+            .init(filter: .peak, freq: 3169, gain: -2.6, q: 3.89),
+            .init(filter: .highShelf, freq: 10000, gain: -3.4, q: 0.70),
+            .init(filter: .peak, freq: 1227, gain: -0.8, q: 2.53),
+            .init(filter: .peak, freq: 2055, gain: 2.0, q: 3.23),
+            .init(filter: .peak, freq: 587, gain: 0.9, q: 1.19),
+            .init(filter: .peak, freq: 5332, gain: -1.8, q: 5.75),
+        ]
+        return ReferenceCurve(file: file, source: "oratory1990", headphone: "Alder AR-5")
+    }
+
+    @MainActor
+    private static func followedEq() -> QudelixController {
+        let c = make(.equalizer)
+        c.bands = c.bands.map { band in
+            var shifted = band
+            if band.filter.hasGain { shifted.gain = (band.gain * 0.8 * 10).rounded() / 10 }
+            return shifted
+        }
+        c.preGain = -5.4
+        return c
+    }
+
+    @MainActor
+    private static func automationMock(_ pane: String,
+                                       _ controller: QudelixController) -> EqAutomation {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qudelixbar-preview-\(UUID().uuidString).json")
+        let automation = EqAutomation(controller: controller, url: url)
+        let learning = BalanceBaseline(bassDb: 0.4, tiltDbPerOctave: -2.2, presenceDb: 0.3,
+                                       readings: 240)
+        let learned = BalanceBaseline(bassDb: 0.4, tiltDbPerOctave: -2.2, presenceDb: 0.3,
+                                      readings: 900)
+        let trim = TrimGains(bassDb: 1.2, tiltDbPerOctave: -0.3, presenceDb: 0.8, airDb: 0.5)
+        let group = controller.eqGroup.rawValue
+        switch pane {
+        case "eq-reference":
+            automation.previewSet(references: [group: previewReference()])
+        case "eq-follow":
+            let user = make(.equalizer)
+            automation.previewSet(autoFit: true, references: [group: previewReference()],
+                                  baseline: learned, following: true, deviationDb: 0.8,
+                                  base: (user.bands, user.preGain))
+        case "eq-follow-paused":
+            automation.previewSet(autoFit: true, references: [group: previewReference()],
+                                  baseline: learned, paused: true)
+        case "eq-trim":
+            automation.previewSet(autoTrimOn: true, source: .listening, trim: trim,
+                                  baseline: learning)
+        case "level-balance":
+            automation.previewSet(autoTrimOn: true, source: .listening, trim: trim,
+                                  baseline: learning)
+        default:
+            break
+        }
+        return automation
+    }
+
+    @MainActor
+    private static func levelBalanceMock() -> StageState {
+        let s = levelMock()
+        s.previewSetBalance(BalanceFeatures(bassDb: 1.4, tiltDbPerOctave: -2.6,
+                                            presenceDb: -0.7))
+        return s
     }
 
     @MainActor

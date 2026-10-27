@@ -240,6 +240,12 @@ struct EQCurveView: View {
 
     var requested: ParametricEQFile?
 
+    var reference: EQLine?
+
+    var trimLine: EQLine?
+
+    var readOnly = false
+
     var mutedBands: [Int: QxFilter] = [:]
 
     var enabled: Bool = true
@@ -276,6 +282,8 @@ struct EQCurveView: View {
         var applied: [Double]
         var requested: [Double]?
         var divergence: EQDivergence.Reading?
+        var reference: [Double]?
+        var trim: [Double]?
         var range: Double
     }
 
@@ -289,10 +297,17 @@ struct EQCurveView: View {
 
         var peak = applied.map(abs).max() ?? 0
         if gap != nil, let asked { peak = max(peak, asked.map(abs).max() ?? 0) }
+        let ref = reference?.response()
+        let trimmed = trimLine?.response()
+        for extra in [ref, trimmed] {
+            if let extra { peak = max(peak, extra.map(abs).max() ?? 0) }
+        }
 
         return Plot(applied: applied,
                     requested: gap == nil ? nil : asked,
                     divergence: gap,
+                    reference: ref,
+                    trim: trimmed,
                     range: min(18, max(9, (peak / 3).rounded(.up) * 3 + 3)))
     }
 
@@ -395,6 +410,26 @@ struct EQCurveView: View {
                 }
             }
 
+            if let ref = plot.reference, ref.count == values.count {
+                var line = Path()
+                for (i, db) in ref.enumerated() {
+                    let p = CGPoint(x: x(i), y: y(db))
+                    i == 0 ? line.move(to: p) : line.addLine(to: p)
+                }
+                ctx.stroke(line, with: .color(Color.green.opacity(enabled ? 0.9 : 0.5)),
+                           style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
+            }
+
+            if let trimmed = plot.trim, trimmed.count == values.count {
+                var line = Path()
+                for (i, db) in trimmed.enumerated() {
+                    let p = CGPoint(x: x(i), y: y(db))
+                    i == 0 ? line.move(to: p) : line.addLine(to: p)
+                }
+                ctx.stroke(line, with: .color(Color.orange.opacity(enabled ? 0.95 : 0.5)),
+                           style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [1, 3]))
+            }
+
             ctx.stroke(curve, with: .color(tint), lineWidth: 1.8)
 
             if let h = hovering, dragging == nil, bands.indices.contains(h),
@@ -445,7 +480,8 @@ struct EQCurveView: View {
         .gesture(onBandChanged == nil ? nil : dragGesture(range: plot.range))
         .gesture(onSelectBand == nil ? nil : selectGesture(range: plot.range))
         .gesture(onZeroBand == nil ? nil : zeroGesture(range: plot.range))
-        .help(onBandChanged == nil ? "" : "Click a point to select it, double-click to "
+        .help(readOnly ? AutomationReadout.readOnlyHelp
+              : onBandChanged == nil ? "" : "Click a point to select it, double-click to "
               + "zero it, drag to shape the curve: up and down for gain, sideways for "
               + "frequency. Hold Option and drag up or down for Q. Hold Shift for fine "
               + "adjustment.")

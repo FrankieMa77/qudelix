@@ -665,4 +665,33 @@ final class EqAutomation: ObservableObject {
         baseline = trimController.baseline
         AutofitFile.save(snapshot(), to: url)
     }
+
+    #if DEBUG
+    func previewSet(autoFit: Bool = false, autoTrimOn: Bool = false,
+                    mode: TrimMode = .clarity, source: ReferenceSource = .auto,
+                    references: [UInt8: ReferenceCurve] = [:], trim: TrimGains = .zero,
+                    baseline: BalanceBaseline = BalanceBaseline(),
+                    following: Bool = false, paused: Bool = false,
+                    waitingReason: String? = nil, deviationDb: Double? = nil,
+                    base: (bands: [QxEqBandValue], preGain: Double)? = nil) {
+        self.autoFit = autoFit
+        self.autoTrimOn = autoTrimOn
+        autoTrimMode = mode
+        referenceSource = source
+        self.references = references
+        self.trim = trim
+        self.baseline = baseline
+        trimController.baseline = baseline
+        self.following = following
+        self.paused = paused
+        self.waitingReason = waitingReason
+        self.deviationDb = deviationDb
+        syncTrimController()
+        if let base {
+            baseBands = base.bands
+            basePreGain = base.preGain
+            controller.baseProvider = { base }
+        }
+    }
+    #endif
 }

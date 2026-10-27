@@ -875,6 +875,11 @@ final class StageState: ObservableObject {
         qualityVerdictLive = verdict
     }
 
+    func previewSetBalance(_ reading: BalanceFeatures?) {
+        balance = reading
+        balanceLive = reading
+    }
+
     func previewSetImpulse(_ response: ImpulseResponse?,
                            status: StageProcessor.ImpulseStatus) {
         impulseInfo = response.map(ImpulseInfo.init)

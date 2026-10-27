@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LevelView: View {
     @EnvironmentObject var stageState: StageState
+    @EnvironmentObject var automation: EqAutomation
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -307,6 +308,27 @@ struct LevelView: View {
                   + "Evidence, not proof: a lossless file made from a lossy "
                   + "source keeps the cutoff, and quiet material can't be "
                   + "judged.")
+
+            if stageState.detectQuality, stageState.engine.isRunning {
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text("Balance")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Text(verbatim: AutomationReadout.balanceText(stageState.balance))
+                            .font(.system(size: 10).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    Text(verbatim: AutomationReadout.baselineText(automation.baseline))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+                .help("Long-term tonal balance of what's playing, relative to pink noise "
+                      + "(equal energy per octave), averaged over about 30 s. Auto-trim "
+                      + "steers toward your usual balance, learned over about 30 minutes "
+                      + "of listening.")
+            }
 
             if stageState.detectQuality {
                 Toggle(isOn: Binding(

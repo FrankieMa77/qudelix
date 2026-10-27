@@ -35,10 +35,15 @@ final class SettingsNoticeViewTests: XCTestCase {
     }
 
     private func levelPane(_ stage: StageState) -> some View {
-        LevelView()
+        let controller = QudelixController()
+        return LevelView()
             .environmentObject(stage)
-            .environmentObject(QudelixController())
+            .environmentObject(controller)
             .environmentObject(AppAssignments())
+            .environmentObject(EqAutomation(
+                controller: controller,
+                url: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("settings-notice-\(UUID().uuidString).json")))
     }
 
     func testTheFixtureRaisesANoticeOnlyWhenTheFileIsDamaged() {

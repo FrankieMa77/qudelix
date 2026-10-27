@@ -15,6 +15,7 @@ struct PopoverView: View {
     @EnvironmentObject private var profileRules: ProfileRules
     @EnvironmentObject private var micGuard: A2dpGuard
     @EnvironmentObject private var suggestions: HeadphoneSuggestions
+    @EnvironmentObject private var automation: EqAutomation
 
     enum Pane: String, CaseIterable, Identifiable {
         case equalizer = "EQ"
@@ -111,18 +112,7 @@ struct PopoverView: View {
                 .onAppear { if pane.needsDevice { pane = .stage } }
             } else if connected {
                 VStack(spacing: 14) {
-                    EQCurveView(bands: controller.bands,
-                                preGain: controller.preGain,
-                                highlighted: editingBand,
-                                requested: controller.requestedCorrection,
-                                mutedBands: controller.mutedBands,
-                                enabled: controller.eqEnabled,
-                                selectedBand: selectedBand,
-                                onSelectBand: { selectedBand = $0 },
-                                onZeroBand: { controller.zeroBand($0) },
-                                onBandChanged: { controller.updateBand($0, $1) },
-                                onDragBand: { editingBand = $0 })
-                        .frame(height: 104)
+                    curve
 
                     if pane == .equalizer {
                         BandInspector(selected: $selectedBand)
@@ -192,6 +182,29 @@ struct PopoverView: View {
         if showDeviceSettings { DrawerPanel(content: DeviceSettingsView()) }
         if showDiagnostics { DrawerPanel(content: DiagnosticsView()) }
         if showBattery { DrawerPanel(content: BatteryHistoryView()) }
+    }
+
+    private var curve: some View {
+        let lines = AutomationReadout.lines(AutomationReadout.inputs(automation, controller))
+        let readOnly = automation.following
+        let zero: ((Int) -> Void)? = readOnly ? nil : { controller.zeroBand($0) }
+        let change: ((Int, QxEqBandValue) -> Void)? = readOnly
+            ? nil : { controller.updateBand($0, $1) }
+        return EQCurveView(bands: controller.bands,
+                           preGain: controller.preGain,
+                           highlighted: editingBand,
+                           requested: lines.reference == nil ? controller.requestedCorrection : nil,
+                           reference: lines.reference,
+                           trimLine: lines.trim,
+                           readOnly: readOnly,
+                           mutedBands: controller.mutedBands,
+                           enabled: controller.eqEnabled,
+                           selectedBand: selectedBand,
+                           onSelectBand: { selectedBand = $0 },
+                           onZeroBand: zero,
+                           onBandChanged: change,
+                           onDragBand: { editingBand = $0 })
+            .frame(height: 104)
     }
 
     private var paneTabs: some View {
@@ -892,8 +905,15 @@ private struct UsbAudioRateRow: View {
 
 struct EqEditorView: View {
     @EnvironmentObject var controller: QudelixController
+    @EnvironmentObject var automation: EqAutomation
     @Binding var editingBand: Int?
     @State private var confirmingSave: Int?
+    @State private var automationOpen = false
+
+    var automationForced: Bool {
+        automation.autoFit || automation.autoTrimOn || automation.following
+            || automation.currentReference != nil
+    }
 
     var body: some View {
         VStack(spacing: 9) {
@@ -915,6 +935,7 @@ struct EqEditorView: View {
                                       set: { controller.setPreGain($0) }),
                        in: EQHeadroom.range, step: 0.5)
                     .frame(width: 92)
+                    .disabled(automation.following)
                     .accessibilityLabel("Pre-gain in decibels")
                 Text(String(format: "%+.1f", controller.preGain))
                     .font(.system(size: 10).monospacedDigit())
@@ -922,6 +943,10 @@ struct EqEditorView: View {
             }
 
             headroomRow
+
+            if automationForced || automationOpen {
+                AutomationPanel()
+            }
 
             Divider()
 
@@ -934,9 +959,11 @@ struct EqEditorView: View {
 
             HStack {
                 Button("Flatten") { controller.flatten() }
+                    .disabled(automation.following)
                     .help("Take every band's gain to zero, keeping the "
                           + "frequencies, filter types and Q they have now.")
                 Button("Reset") { controller.resetBandLayout() }
+                    .disabled(automation.following)
                     .help("Put the bands back to the factory layout for this mode: "
                           + "peak filters on the default frequencies, 0 dB, Q 1.")
                 Picker("", selection: Binding(
@@ -949,6 +976,7 @@ struct EqEditorView: View {
                 .labelsHidden()
                 .controlSize(.mini)
                 .frame(width: 76)
+                .disabled(automation.following)
                 .accessibilityLabel("Number of EQ bands")
                 .help("EQ bands. The two modes keep separate presets, so "
                       + "switching changes the active curve.")
@@ -957,7 +985,8 @@ struct EqEditorView: View {
                     guard let active = controller.activePreset else { return }
                     controller.savePreset(active)
                 }
-                .disabled(controller.activePreset == nil || !controller.canWriteNow)
+                .disabled(controller.activePreset == nil || !controller.canWriteNow
+                          || automation.following)
                 .help(updateHelp)
                 Menu("Save to slot…") {
                     ForEach(0..<QudelixController.presetCount, id: \.self) { i in
@@ -969,6 +998,7 @@ struct EqEditorView: View {
                     }
                 }
                 .fixedSize()
+                .disabled(automation.following)
             }
             .controlSize(.small)
             .font(.system(size: 11))
@@ -1001,7 +1031,7 @@ struct EqEditorView: View {
                 .accessibilityLabel(controller.undoLabel.map { "Undo \($0)" } ?? "Undo")
         }
         .controlSize(.mini)
-        .disabled(!controller.canUndo || !controller.canEditEqNow)
+        .disabled(!controller.canUndo || !controller.canEditEqNow || automation.following)
         .keyboardShortcut("z", modifiers: .command)
         .help(controller.undoLabel.map { "Undo \($0)" } ?? "Nothing to undo")
     }
@@ -1014,7 +1044,7 @@ struct EqEditorView: View {
                 .accessibilityLabel(controller.redoLabel.map { "Redo \($0)" } ?? "Redo")
         }
         .controlSize(.mini)
-        .disabled(!controller.canRedo || !controller.canEditEqNow)
+        .disabled(!controller.canRedo || !controller.canEditEqNow || automation.following)
         .keyboardShortcut("z", modifiers: [.command, .shift])
         .help(controller.redoLabel.map { "Redo \($0)" } ?? "Nothing to redo")
     }
@@ -1025,9 +1055,25 @@ extension EqEditorView {
     var headroomRow: some View {
         let advice = controller.eqHeadroom
         HStack(spacing: 6) {
-            Text(headroomText(advice))
+            if automation.following {
+                Text(AutomationReadout.readOnlyHelp)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(headroomText(advice))
+            }
             Spacer()
-            if let suggestion = advice.suggestion {
+            if !automationForced {
+                Button(automationOpen ? "Hide auto" : "Auto\u{2026}") {
+                    automationOpen.toggle()
+                }
+                .buttonStyle(.link)
+                .controlSize(.mini)
+                .font(.system(size: 10))
+                .help("Auto-fit makes the 5K follow a measured correction, and Auto-trim "
+                      + "nudges the balance toward the one you usually listen to \u{2014} "
+                      + "both by moving gains on the 5K, never in your saved presets.")
+            }
+            if !automation.following, let suggestion = advice.suggestion {
                 Button(String(format: "Set %.1f dB", suggestion)) {
                     controller.applySuggestedPreGain()
                 }
@@ -1068,13 +1114,14 @@ extension EqEditorView {
                 BandRow(index: i, editingBand: $editingBand)
             }
         }
-        ScrollView { grid.padding(.trailing, 4) }
+        ScrollView { grid.padding(.trailing, 4).disabled(automation.following) }
             .scrollIndicators(.visible)
     }
 }
 
 struct BandInspector: View {
     @EnvironmentObject var controller: QudelixController
+    @EnvironmentObject var automation: EqAutomation
     @Binding var selected: Int?
 
     static let height: CGFloat = 48
@@ -1089,7 +1136,7 @@ struct BandInspector: View {
                 .frame(maxWidth: .infinity)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
                 .opacity(controller.eqEnabled ? 1 : 0.45)
-                .disabled(!controller.eqEnabled)
+                .disabled(!controller.eqEnabled || automation.following)
         }
     }
 

@@ -31,6 +31,8 @@ final class HeadphoneSuggestions: ObservableObject {
     @Published private(set) var banner: Suggestion?
     @Published private(set) var busy = false
     @Published private(set) var lastError: String?
+    @Published private(set) var fitting = false
+    @Published private(set) var fitNote: String?
 
     static let maxAlternatives = 3
     static let minNeedleLength = 4
@@ -49,6 +51,7 @@ final class HeadphoneSuggestions: ObservableObject {
     private var lastKey: String?
     private(set) var resolveTask: Task<Void, Never>?
     private(set) var acceptTask: Task<Void, Never>?
+    private(set) var quickFitTask: Task<Void, Never>?
     private var resolving = false
     private var sawStoredName = false
     private var uiHasBeenShown = false
@@ -270,6 +273,60 @@ final class HeadphoneSuggestions: ObservableObject {
                 self.banner = nil
             } catch {
                 self.lastError = SafeText.scrubbed(AutoEqService.describe(error))
+            }
+        }
+    }
+
+    func quickFit(name: String, controller: QudelixController,
+                  openImport: @escaping @MainActor (String, String) -> Void) {
+        guard !fitting else { return }
+        guard controller.canWriteNow, let shape = limits?() else {
+            fitNote = "Connect the 5K to fit a correction."
+            return
+        }
+        fitting = true
+        fitNote = nil
+        quickFitTask = Task { [weak self, weak controller] in
+            guard let self else { return }
+            defer { self.fitting = false }
+            self.catalogue.loadCatalogue()
+            let loaded = await self.waitFor({ self.catalogue.catalogueReady },
+                                            failed: { self.catalogue.catalogueFailed })
+            guard !Task.isCancelled else { return }
+            guard loaded else {
+                self.fitNote = "Couldn't load the AutoEq list \u{2014} check the connection."
+                return
+            }
+            switch QuickFitPlan.decide(name: name, entries: self.catalogue.catalogueEntries) {
+            case .choose(let query, let note):
+                openImport(query, note)
+            case .fit(let entry):
+                self.optimizer.prepare()
+                _ = await self.waitFor({ self.optimizer.state == .ready },
+                                       failed: {
+                                           if case .failed = self.optimizer.state { return true }
+                                           return false
+                                       })
+                guard !Task.isCancelled else { return }
+                do {
+                    let result = try await self.optimizer.correction(
+                        for: self.candidate(for: entry), shapedFor: shape,
+                        options: CorrectionOptions())
+                    guard let controller, controller.apply(
+                        result.file, named: entry.title,
+                        undoLabel: "correction for \(entry.title)") else {
+                        self.fitNote = "Not applied \u{2014} the 5K isn't taking EQ writes right now."
+                        return
+                    }
+                    controller.landReference(ReferenceCurve(
+                        file: result.file, source: "AutoEq optimizer", headphone: entry.title))
+                    var parts = [result.provenance]
+                    if let applied = controller.lastImportSummary { parts.append(applied) }
+                    parts.append(contentsOf: result.warnings)
+                    controller.lastImportSummary = parts.joined(separator: " \u{00B7} ")
+                } catch {
+                    self.fitNote = SafeText.scrubbed(AutoEqService.describe(error))
+                }
             }
         }
     }

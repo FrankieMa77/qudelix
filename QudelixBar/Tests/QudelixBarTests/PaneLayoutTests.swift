@@ -20,7 +20,7 @@ enum PaneProbe {
 }
 
 final class PaneLayoutTests: XCTestCase {
-    static let levelPaneCeiling: CGFloat = 589
+    static let levelPaneCeiling: CGFloat = 596
 
     @MainActor
     private func levelPane() -> NSHostingView<AnyView> {
@@ -47,6 +47,10 @@ final class PaneLayoutTests: XCTestCase {
             .environmentObject(stage)
             .environmentObject(controller)
             .environmentObject(AppAssignments())
+            .environmentObject(EqAutomation(
+                controller: controller,
+                url: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("pane-layout-\(UUID().uuidString).json")))
             .frame(width: 372)
         let host = NSHostingView(rootView: AnyView(root))
         host.layoutSubtreeIfNeeded()
