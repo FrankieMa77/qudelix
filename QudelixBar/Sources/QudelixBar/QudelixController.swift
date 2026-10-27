@@ -106,18 +106,45 @@ final class QudelixController: ObservableObject {
 
     @Published private(set) var byEarSessionActive = false
 
+    private var sessionBase: (bands: [QxEqBandValue], preGain: Double,
+                              enabled: Bool, muted: [Int: QxFilter])?
+    private var saveWasPending = false
+
     func setByEarSessionActive(_ active: Bool) {
-        if active { beginEqSession() }
-        byEarSessionActive = active
-        if !active { endEqSession() }
+        if active { beginEqSession() } else { endEqSession() }
     }
 
     func beginEqSession() {
+        guard !byEarSessionActive else { return }
+        if let work = saveAllWork, !work.isCancelled { saveWasPending = true }
+        saveAllWork?.cancel()
+        saveAllWork = nil
+        let live = baseProvider?()
+        sessionBase = (live?.bands ?? bands, live?.preGain ?? preGain, eqEnabled, mutedBands)
+        byEarSessionActive = true
         flushPendingEqSends()
         onSessionBegin?()
     }
 
-    func endEqSession() { onSessionEnd?() }
+    func endEqSession() {
+        let wasActive = byEarSessionActive
+        byEarSessionActive = false
+        sessionBase = nil
+        if wasActive {
+            if saveWasPending {
+                saveWasPending = false
+                armSaveAll()
+            }
+            if presetRead { eqObserved() }
+        }
+        onSessionEnd?()
+    }
+
+    private func refuseDuringSession() -> Bool {
+        guard byEarSessionActive else { return false }
+        lastImportSummary = "A tuning session is running \u{2014} finish or stop it first."
+        return true
+    }
 
     enum EqBaseEvent: Equatable { case slotLoad, fit, group, restore, undoRedo, reset }
 
@@ -285,7 +312,7 @@ final class QudelixController: ObservableObject {
     func redoEqEdit() { step(from: &redoStack, to: &undoStack) }
 
     private func step(from source: inout [EqEdit], to destination: inout [EqEdit]) {
-        guard canWriteEq, var entry = source.popLast() else { return }
+        guard canWriteEq, !byEarSessionActive, var entry = source.popLast() else { return }
         var here = currentEqEdit
         here.label = entry.label
         destination.append(here)
@@ -360,6 +387,14 @@ final class QudelixController: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: snap)
 
         guard persistToFlash else { return }
+        guard !byEarSessionActive else {
+            saveWasPending = true
+            return
+        }
+        armSaveAll()
+    }
+
+    private func armSaveAll() {
         saveAllWork?.cancel()
         let persist = DispatchWorkItem { [weak self] in
             guard let self, self.canWrite else { return }
@@ -468,9 +503,12 @@ final class QudelixController: ObservableObject {
     private func snapshotNow() {
         guard presetRead, case .connected = connection else { return }
         let live = baseProvider?()
-        let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: live?.bands ?? bands,
-                              preGain: live?.preGain ?? preGain, enabled: eqEnabled,
-                              name: eqSourceName, mutedBands: mutedBands,
+        let held = sessionBase
+        let snap = EqSnapshot(groupRaw: eqGroup.rawValue,
+                              bands: held?.bands ?? live?.bands ?? bands,
+                              preGain: held?.preGain ?? live?.preGain ?? preGain,
+                              enabled: held?.enabled ?? eqEnabled,
+                              name: eqSourceName, mutedBands: held?.muted ?? mutedBands,
                               deviceIdentity: deviceIdentity,
                               activePreset: slotReportSeen ? activePreset
                                                            : eqSnapshot?.activePreset)
@@ -633,6 +671,8 @@ final class QudelixController: ObservableObject {
     #endif
 
     private func resetDeviceState() {
+        saveWasPending = false
+        endEqSession()
         onBaseEvent?(.reset)
         snapshotWork?.cancel()
         saveAllWork?.cancel()
@@ -733,9 +773,12 @@ final class QudelixController: ObservableObject {
         handshakeAttempt = 0
         handshakeGeneration += 1
         resetDeviceState()
+        let generation = handshakeGeneration
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
-            self?.sendHandshake()
+            guard let self, generation == self.handshakeGeneration,
+                  case .connected = self.connection else { return }
+            self.sendHandshake()
         }
     }
 
@@ -868,6 +911,13 @@ final class QudelixController: ObservableObject {
     }
 
     private func evaluateCompatibility() {
+        if let format = state.initFormat, format != 3 {
+            setCompatibility(.unsupported(
+                title: "This firmware reports an unknown data format",
+                detail: "The 5K answered in a format this app does not understand, "
+                      + "so nothing will be written. Update with the official app, then reconnect."))
+            return
+        }
         guard state.deviceId != 0, let major = state.fwMajor else { return }
 
         if state.deviceId != QxDeviceModel.qudelix5K {
@@ -1089,6 +1139,8 @@ final class QudelixController: ObservableObject {
         }
         pendingGroup = nil
         lastGroupSwitch = Date()
+        saveWasPending = false
+        endEqSession()
         DebugLog.shared.log("EQ group → \(group) (\(group.bandCount) bands)")
         undoStack.removeAll()
         redoStack.removeAll()
@@ -1219,8 +1271,9 @@ final class QudelixController: ObservableObject {
 
     private var eqEnableEditUntil = Date.distantPast
 
-    func setEqEnabled(_ on: Bool, persistToFlash: Bool = true) {
+    func setEqEnabled(_ on: Bool, persistToFlash: Bool = true, duringSession: Bool = false) {
         guard canWriteEq else { return }
+        if !duringSession, refuseDuringSession() { return }
         eqEnabled = on
         eqEnableEditUntil = Date().addingTimeInterval(1.5)
         transportSend(.setEqEnable, [eqGroup.rawValue, on ? 1 : 0])
@@ -1233,7 +1286,7 @@ final class QudelixController: ObservableObject {
     var eqModeRetryDelays: [TimeInterval] = [1, 2, 2]
 
     func setEqMode(twentyBand: Bool) {
-        guard canWrite else { return }
+        guard canWrite, !refuseDuringSession() else { return }
         let desired: QxEqGroup = twentyBand ? .b20 : .user
         guard desired != (pendingEqMode ?? eqGroup) else { return }
         guard Date().timeIntervalSince(lastEqModeSend) > 0.3 else { return }
@@ -1266,7 +1319,8 @@ final class QudelixController: ObservableObject {
 
     @discardableResult
     func loadPreset(_ index: Int) -> Bool {
-        guard canWriteEq, (0..<Self.presetCount).contains(index) else { return false }
+        guard canWriteEq, !refuseDuringSession(),
+              (0..<Self.presetCount).contains(index) else { return false }
         flushPendingEqSends()
         checkpoint("load \(presetLabel(index))", discrete: true)
         eqSourceName = presetLabel(index)
@@ -1287,7 +1341,7 @@ final class QudelixController: ObservableObject {
     }
 
     func flatten() {
-        guard canWriteEq else { return }
+        guard canWriteEq, !refuseDuringSession() else { return }
         checkpoint("flatten", discrete: true)
         suppressUndo = true
         defer { suppressUndo = false }
@@ -1303,7 +1357,7 @@ final class QudelixController: ObservableObject {
     }
 
     func resetBandLayout() {
-        guard canWriteEq else { return }
+        guard canWriteEq, !refuseDuringSession() else { return }
         checkpoint("reset band layout", discrete: true)
         suppressUndo = true
         defer { suppressUndo = false }
@@ -1317,7 +1371,7 @@ final class QudelixController: ObservableObject {
     }
 
     func zeroBand(_ index: Int) {
-        guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
+        guard canWriteEq, !refuseDuringSession(), bands.indices.contains(index), index < bandCount else { return }
         var b = bands[index]
         if b.filter != .bypass, !b.filter.hasGain { b.filter = .peak }
         b.gain = 0
@@ -1337,7 +1391,8 @@ final class QudelixController: ObservableObject {
     }
 
     func savePreset(_ index: Int) {
-        guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
+        guard canWriteEq, !refuseDuringSession(),
+              (0..<Self.presetCount).contains(index) else { return }
         let saved = commitToFlash { transportSend(.saveEqPreset, [UInt8(index)]) }
         guard saved else { return }
         if let name = Self.nameOnSave(source: eqSourceName,
@@ -1405,7 +1460,7 @@ final class QudelixController: ObservableObject {
     private(set) var headroomComputations = 0
 
     func applySuggestedPreGain() {
-        guard let db = eqHeadroom.suggestion else { return }
+        guard !refuseDuringSession(), let db = eqHeadroom.suggestion else { return }
         setPreGain(db)
     }
 
@@ -1433,7 +1488,7 @@ final class QudelixController: ObservableObject {
     }
 
     func setBandMuted(_ index: Int, _ muted: Bool) {
-        guard canWriteEq, bands.indices.contains(index), index < bandCount else { return }
+        guard canWriteEq, !refuseDuringSession(), bands.indices.contains(index), index < bandCount else { return }
         checkpoint(muted ? "mute band \(index + 1)" : "unmute band \(index + 1)",
                    discrete: true)
         suppressUndo = true
@@ -1457,9 +1512,13 @@ final class QudelixController: ObservableObject {
     @discardableResult
     func apply(_ file: ParametricEQFile, named name: String? = nil,
                undoLabel: String = "import") -> Bool {
-        guard canWriteEq else {
-            if case .connected = connection {
-                lastImportSummary = "Not applied — this device isn't supported."
+        guard canWriteEq, !byEarSessionActive else {
+            if byEarSessionActive {
+                _ = refuseDuringSession()
+            } else if case .connected = connection {
+                lastImportSummary = compatibility.canWrite
+                    ? "The 5K is switching EQ mode \u{2014} try again in a moment."
+                    : "Not applied — this device isn't supported."
             } else {
                 lastImportSummary = "Connect the 5K first — nothing was applied."
             }

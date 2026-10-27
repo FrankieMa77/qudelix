@@ -88,30 +88,40 @@ final class BLETransport: NSObject {
     }
 
     private var pending: [String: (QxCmd, [UInt8])] = [:]
+    private var pendingOrder: [String] = []
     private var flushScheduled = false
     private static let coalesceWindow = 0.03
 
     func sendCoalesced(_ cmd: QxCmd, _ data: [UInt8], key: String) {
+        if pending[key] == nil { pendingOrder.append(key) }
         pending[key] = (cmd, data)
         guard !flushScheduled else { return }
         flushScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.coalesceWindow) { [weak self] in
             guard let self else { return }
             self.flushScheduled = false
-            let batch = self.pending
-            self.pending = [:]
-            for (_, item) in batch { self.send(item.0, item.1) }
+            self.drainPending()
         }
     }
 
     func flushPending() {
-        guard !pending.isEmpty else { return }
-        let batch = pending
-        pending = [:]
-        for (_, item) in batch { send(item.0, item.1) }
+        drainPending()
     }
 
-    func clearPending() { pending = [:] }
+    private func drainPending() {
+        let order = pendingOrder
+        let batch = pending
+        pending = [:]
+        pendingOrder = []
+        for key in order {
+            if let item = batch[key] { send(item.0, item.1) }
+        }
+    }
+
+    func clearPending() {
+        pending = [:]
+        pendingOrder = []
+    }
 
     private static let pinnedKey = "BLEPinnedPeripheral"
 

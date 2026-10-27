@@ -395,6 +395,7 @@ final class BlindTuner: ObservableObject {
         let live = Array(c.bands.prefix(c.bandCount))
         switch mode {
         case .shape:
+            guard c.eqEnabled else { return .eqOff }
             guard live.contains(where: { $0.filter.rendersGain }) else { return .noGainBand }
         case .trim:
             guard c.eqEnabled else { return .eqOff }
@@ -633,11 +634,12 @@ final class BlindTuner: ObservableObject {
                                     compatible: c.compatibility == .ok,
                                     voiceCall: voice,
                                     eqModeChanged: c.eqGroup != sessionGroup)
+            ?? (c.byEarSessionActive ? nil : .disconnected)
     }
 
     private func stillValid(_ c: QudelixController) -> Bool {
         guard let interruption = interruption(c) else { return true }
-        if interruption != .eqModeChanged { restoreBaseline(c) }
+        if interruption != .eqModeChanged, c.byEarSessionActive { restoreBaseline(c) }
         endSession(c)
         note = (mode == .shape ? "Shaping" : "Blind check")
             + " stopped — \(interruption.reason)."
@@ -847,7 +849,7 @@ final class BlindTuner: ObservableObject {
               !resultBands.isEmpty, stillValid(c) else { return }
         write(resultBands, c)
         c.setPreGain(ABTuner.safePreGain(for: resultBands, notAbove: baselinePreGain),
-                     recordUndo: false)
+                     recordUndo: false, force: true)
         endSession(c)
     }
 

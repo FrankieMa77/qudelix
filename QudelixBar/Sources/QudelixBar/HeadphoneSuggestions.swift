@@ -315,7 +315,9 @@ final class HeadphoneSuggestions: ObservableObject {
                     guard let controller, controller.apply(
                         result.file, named: entry.title,
                         undoLabel: "correction for \(entry.title)") else {
-                        self.fitNote = "Not applied \u{2014} the 5K isn't taking EQ writes right now."
+                        self.fitNote = (controller?.byEarSessionActive ?? false)
+                            ? "Not applied \u{2014} a tuning session is running."
+                            : "Not applied \u{2014} the 5K isn't taking EQ writes right now."
                         return
                     }
                     controller.landReference(ReferenceCurve(

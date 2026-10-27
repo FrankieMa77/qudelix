@@ -121,10 +121,10 @@ final class ToneTester: ObservableObject {
         c.beginEqSession()
         restoreEqEnabled = c.eqEnabled
         sessionGroup = c.eqGroup
-        c.setEqEnabled(false, persistToFlash: false)
+        c.setEqEnabled(false, persistToFlash: false, duringSession: true)
         startEngine()
         guard engine.isRunning else {
-            c.setEqEnabled(restoreEqEnabled, persistToFlash: false)
+            c.setEqEnabled(restoreEqEnabled, persistToFlash: false, duringSession: true)
             c.endEqSession()
             note = "Couldn't start the tone player, so nothing was measured. Try again."
             return
@@ -146,7 +146,7 @@ final class ToneTester: ObservableObject {
 
     private func restoreDevice(_ c: QudelixController) {
         guard c.eqGroup == sessionGroup else { return }
-        c.setEqEnabled(restoreEqEnabled, persistToFlash: false)
+        c.setEqEnabled(restoreEqEnabled, persistToFlash: false, duringSession: true)
     }
 
     private func endSession(_ c: QudelixController) {
@@ -193,6 +193,7 @@ final class ToneTester: ObservableObject {
             eqModeChanged: c.eqGroup != sessionGroup,
             playerRunning: engine.isRunning,
             outputIsDevice: output?.localizedCaseInsensitiveContains("qudelix") ?? false)
+            ?? (c.byEarSessionActive ? nil : .disconnected)
     }
 
     private func runAll(_ c: QudelixController) async {

@@ -83,6 +83,7 @@ final class ABTuner: ObservableObject {
         case unsupported
         case voiceCall
         case noGainBand
+        case eqOff
 
         var message: String {
             switch self {
@@ -91,6 +92,9 @@ final class ABTuner: ObservableObject {
             case .voiceCall:
                 return "The link is in hands-free (voice) mode at 16 kHz. "
                     + "Audio quality is too low to judge — close whatever is using the microphone."
+            case .eqOff:
+                return "The EQ is switched off, so both sides would be the same sound. "
+                    + "Switch it on first."
             case .noGainBand:
                 return "Every band is switched off or a pass filter, so both options "
                     + "would be the same sound. Add a peak or shelf band first."
@@ -103,6 +107,7 @@ final class ABTuner: ObservableObject {
         guard c.compatibility == .ok else { return .unsupported }
         if let src = c.inputSource, src.hasPrefix("HFP") { return .voiceCall }
         if c.sampleRate == "16 kHz" { return .voiceCall }
+        guard c.eqEnabled else { return .eqOff }
         guard c.bands.prefix(c.bandCount).contains(where: { $0.filter.rendersGain }) else {
             return .noGainBand
         }
@@ -127,11 +132,12 @@ final class ABTuner: ObservableObject {
                                  compatible: c.compatibility == .ok,
                                  voiceCall: voice,
                                  eqModeChanged: c.eqGroup != sessionGroup)
+            ?? (c.byEarSessionActive ? nil : .disconnected)
     }
 
     private func stillValid(_ c: QudelixController) -> Bool {
         guard let interruption = interruption(c) else { return true }
-        if interruption != .eqModeChanged { restoreBaseline(c) }
+        if interruption != .eqModeChanged, c.byEarSessionActive { restoreBaseline(c) }
         endSession(c)
         note = "Comparison stopped — \(interruption.reason)."
         return false
@@ -311,7 +317,7 @@ final class ABTuner: ObservableObject {
     func keepResult(_ c: QudelixController) {
         guard phase == .finished, !resultBands.isEmpty, stillValid(c) else { return }
         c.setPreGain(Self.safePreGain(for: resultBands, notAbove: baselinePreGain),
-                     recordUndo: false)
+                     recordUndo: false, force: true)
         endSession(c)
     }
 

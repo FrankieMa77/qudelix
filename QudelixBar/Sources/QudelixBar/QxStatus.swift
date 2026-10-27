@@ -2,6 +2,7 @@ import Foundation
 
 struct QxDeviceState {
     var deviceId: Int = 0
+    var initFormat: Int?
     var fwVersion: String?
     var fwMajor: Int?
     var fwMinor: Int?
@@ -60,8 +61,9 @@ enum QxStatusParser {
     static func parseInitData(_ d: [UInt8], into state: inout QxDeviceState) -> Bool {
         guard d.count >= 11 else { return false }
         let devId = Int(d[0]) << 8 | Int(d[1])
-        guard d[2] == 3 else { return false }
         state.deviceId = devId
+        state.initFormat = Int(d[2])
+        guard d[2] == 3 else { return true }
 
         var r = QxBitReader(Array(d[3..<11]))
         let major = r.read(6), minor = r.read(6), rev = r.read(4)
