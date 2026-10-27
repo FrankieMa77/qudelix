@@ -44,6 +44,10 @@ right.
 - **Live response curve** showing the combined filter shape, and — after an
   import the device could not take exactly — the requested shape behind it, so
   you can see where the two part company
+- **Auto-fit and Auto-trim** — a green reference line behind your bands (the
+  last AutoEq fit, or your own EQ plus Auto-trim), the 5K's gains following it
+  on their own, and a trim that learns your usual tonal balance and nudges each
+  track toward it — your saved presets untouched until you press Keep (see below)
 - **Curve editing** — drag a band's dot to shape it, click one to open an
   inspector for its filter type, gain and Q under the graph, double-click to
   clear it; undo and redo throughout
@@ -132,7 +136,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.4.6.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.5.0.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -140,7 +144,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.4.6.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.5.0.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -170,7 +174,7 @@ silently doing the wrong thing:
 ## Tune
 
 EQ is personal, and reading a frequency-response graph tells you very little about
-what you will enjoy. The **Tune** tab offers four ways to settle it by ear. Every
+what you will enjoy. The **Tune** tab offers five ways to settle it by ear. Every
 pair you hear is matched for loudness on its magnitude response across the
 range where music lives, so the louder option never wins by being louder.
 
@@ -210,7 +214,7 @@ the ranges shrink until it can, and the intro says what fraction is being
 explored. Three axes landing within what anyone can reliably hear is reported
 as a real answer: leave it alone.
 
-### Blind check
+### Blind
 
 Does the EQ you already have survive not knowing which side is which? Five
 trials, sides randomised, your curve against a flat one — a flat *curve*,
@@ -219,6 +223,14 @@ it and turns the whole thing into a test of which side is louder. Four of five
 is the line for saying which way you leant; anything less is reported as the
 difference not surviving blinding, with all three counts shown. It writes
 nothing whatever the answer.
+
+### Trim
+
+The same five blind trials, asked of [Auto-trim](#auto-trim) instead of your
+EQ: your curve with the trim it is applying right now against your curve
+without it, loudness-matched. The trim is frozen for the session and Auto-trim
+waits, and your bands and pre-gain come back exactly as they were. Available
+while Auto-trim is on and has something to say.
 
 ### Tones
 
@@ -410,6 +422,64 @@ It is evidence, not proof, and the wording says which:
 switches that keep a system audio tap open. Untick it and the detector stops;
 what that leaves running is set out below.
 
+## Auto-fit and Auto-trim
+
+Two ways to let the EQ move on its own, both off until you switch them on.
+Open them from the **Auto…** link beside the pre-gain hint in the EQ pane.
+Both work by changing the 5K's band gains a little at a time — the Mac only
+listens, nothing is inserted into the audio path — and neither touches what
+the 5K has saved: your slots and the EQ it boots with stay exactly as you left
+them until you press **Keep**.
+
+### The reference line
+
+A green dashed line behind your bands shows what the EQ is being held to:
+
+- **Fit** — the last AutoEq correction you applied for this EQ layout (from
+  the Import pane, the headphone suggestion, or the **Fit** link on the line,
+  which fits the pair named in the Headphones field in one click and opens the
+  Import pane when the name is ambiguous or not measured).
+- **Listening** — your own EQ plus whatever Auto-trim is doing.
+- **Auto** — Fit when there is one, otherwise Listening.
+
+### Auto-fit
+
+Tick **Auto-fit** and the 5K's bands follow the line. Your preset keeps its
+filters, frequencies and Qs; only gains move, so a 10-band preset can follow a
+20-band fit and vice versa, as closely as its layout allows (the line under
+the graph says how far off it is). If a layout cannot follow — gains running
+away instead of settling — Auto-fit pauses itself, puts your own EQ back, and
+says so; **Resume** tries again. While it follows, the band editor is
+read-only: **Keep** makes the followed gains your own EQ, or untick Auto-fit to
+go back to yours.
+
+### Auto-trim
+
+Auto-trim listens to what is playing (the same listen-only tap as the stream
+quality detector) and measures its balance against pink noise: bass, tilt and
+presence. Over hours it learns your usual balance — the Level pane shows the
+live reading and how far the learning has got — and then nudges each track
+halfway back toward it, within ±3 dB of bass and presence, ±1 dB/octave of
+tilt and up to +2 dB of air on lossless material, never faster than 0.1 dB a
+second and level-matched so it doesn't just sound louder. The mode sets which
+axes it may touch: Clarity, Resolution, Presentation, or Audiophile, which
+measures and says what it would do but moves nothing.
+
+It holds still during calls, while the output is muted and while any Tune
+session runs, and eases back to nothing when the Mac plays to something other
+than the 5K or stream quality detection is switched off.
+
+**Hear auto-trim** (Tune › Trim) is a blind check: five rounds of your EQ with
+the current trim versus without it, loudness-matched, sides hidden. If you
+can't tell them apart, the trim isn't earning its keep.
+
+### What leaves the Mac and what stays
+
+Nothing new leaves the Mac. Settings and the learned balance live in
+`~/Library/Application Support/QudelixBar/autofit.json`. Quitting while a line
+is being followed puts your own EQ back on the 5K first, so another app (the
+official Chrome app, a phone) sees your curve, not the followed one.
+
 ## Per-app EQ
 
 The 5K applies one curve to everything it is sent. Under **Presets → Per-app
@@ -590,10 +660,37 @@ than there.
   identical identity to every other unit of their model.
 - Only firmware 3.x is supported; see the table above for what happens on
   anything else.
+- Auto-fit and Auto-trim follow the 10- and 20-band EQ, not the speaker EQ. A
+  switch between them made on the 5K itself, while a line is being followed,
+  leaves the followed gains in the other layout until the 5K restarts; the
+  saved presets are not affected.
 - No auto-update mechanism. The About panel will tell you when a newer release
   exists, but downloading and installing it is manual.
 
 ## Changelog
+
+### 1.5.0 — 2026-10-27
+
+The EQ can now move on its own, and you can hear whether it should.
+
+- **Reference line.** A green dashed line behind the bands shows what the EQ is
+  held to: the last AutoEq correction you applied, or your own EQ plus
+  Auto-trim. The **Fit** link on it fits the pair in the Headphones field in
+  one click, or opens the Import pane when the name is ambiguous.
+- **Auto-fit.** The 5K's band gains follow the line, only gains move, so any
+  preset can follow any fit as closely as its layout allows. A layout that
+  cannot follow pauses itself and puts your EQ back. **Keep** makes the result
+  your own.
+- **Auto-trim.** Measures the bass, tilt and presence of what is playing,
+  learns your usual balance over the hours, and nudges each track halfway back
+  toward it within a few dB, slowly and loudness-matched. Four modes, from
+  Clarity to Audiophile (measures, moves nothing).
+- **Balance readout** in the Level pane, with how far the learning has got.
+- **Hear auto-trim.** A blind, loudness-matched check in Tune › Trim.
+- Nothing the automation does is saved to the 5K: its preset slots and the EQ
+  it starts with stay yours, and quitting puts your own EQ back first.
+- The Tune pane's "Blind check" tab is now called "Blind", to make room for
+  "Trim".
 
 ### 1.4.6 — 2026-10-02
 
