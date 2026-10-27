@@ -280,7 +280,8 @@ enum ReferenceFollower {
         let neutral = EQHeadroom.clamp(quantized(
             referencePreGain.isFinite ? referencePreGain : basePreGain))
         let preGain = capToHeadroom
-            ? min(neutral, EQHeadroom.suggestedPreGain(for: bands))
+            ? min(neutral, EQHeadroom.suggestedPreGain(for: bands)
+                  + max(0, basePreGain - EQHeadroom.suggestedPreGain(for: base)))
             : neutral
         let deviation = EQFit.maxDeviation(bands: bands, from: goal.bands, offsetDb: goal.offsetDb)
         return Result(bands: bands, preGain: preGain, deviationDb: deviation)

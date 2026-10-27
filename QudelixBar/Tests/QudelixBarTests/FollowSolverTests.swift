@@ -234,4 +234,13 @@ final class FollowSolverTests: XCTestCase {
         XCTAssertEqual(x?[0] ?? 99, 1.0 / 11, accuracy: 1e-12)
         XCTAssertEqual(x?[1] ?? 99, 7.0 / 11, accuracy: 1e-12)
     }
+
+    func testZeroTrimKeepsABasePreGainAboveTheSuggestion() {
+        let base = FollowFixtures.tenBandBase()
+        let chosen = Follower.quantized(EQHeadroom.suggestedPreGain(for: base) + 3)
+        let result = Follower.solve(base: base, basePreGain: chosen, reference: base,
+                                    referencePreGain: chosen, trim: nil, iterations: 24)
+        XCTAssertEqual(result.preGain, chosen, accuracy: 0.1)
+        XCTAssertGreaterThan(result.preGain, EQHeadroom.suggestedPreGain(for: result.bands) + 2.5)
+    }
 }
