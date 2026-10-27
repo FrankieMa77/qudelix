@@ -140,7 +140,9 @@ enum AudioOutputs {
 
     @discardableResult
     static func setNominalRate(_ id: AudioDeviceID, _ rate: Double) -> Bool {
-        guard isPlausibleRate(rate) else { return false }
+        guard isPlausibleRate(rate),
+              rateChangeAllowed(bluetooth: isBluetoothTransport(id), rate: rate)
+        else { return false }
         var rate = rate
         var addr = address(kAudioDevicePropertyNominalSampleRate)
         return AudioObjectSetPropertyData(id, &addr, 0, nil,
@@ -368,6 +370,10 @@ enum AudioOutputs {
     }
 
     static let callModeCeilingHz: Double = 16000
+
+    nonisolated static func rateChangeAllowed(bluetooth: Bool, rate: Double) -> Bool {
+        !(bluetooth && rate <= callModeCeilingHz)
+    }
 
     static func defaultInputID() -> AudioDeviceID? {
         var id = AudioDeviceID(0)

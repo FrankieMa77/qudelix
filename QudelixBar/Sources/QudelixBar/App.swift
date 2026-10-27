@@ -189,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         w.stageState.start()
 
         w.a2dpGuard.callActive = { [weak stageState = w.stageState] in
-            stageState?.callActiveLive ?? false
+            stageState?.callActiveFresh() ?? false
         }
         w.a2dpGuard.onModeChange = { [weak stageState = w.stageState] mode in
             stageState?.setA2dpGuardMode(mode)

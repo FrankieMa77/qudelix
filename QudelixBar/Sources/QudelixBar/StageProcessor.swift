@@ -48,6 +48,20 @@ struct BiquadSection {
         return BiquadSection(b0: b0, b1: b1, b2: b2, a1: a1, a2: a2)
     }
 
+    static func cookbookPeak(freq: Double, gainDb: Double, q: Double,
+                             sampleRate: Double) -> BiquadSection {
+        let f0 = max(10, min(freq, sampleRate / 2 - 1))
+        let Q = max(0.05, q)
+        let a = pow(10, gainDb / 40)
+        let w0 = 2 * Double.pi * f0 / sampleRate
+        let cosW0 = cos(w0)
+        let alpha = sin(w0) / (2 * Q)
+        let b0 = 1 + alpha * a, b1 = -2 * cosW0, b2 = 1 - alpha * a
+        let a0 = 1 + alpha / a, a1 = -2 * cosW0, a2 = 1 - alpha / a
+        return BiquadSection(b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+                             a1: a1 / a0, a2: a2 / a0)
+    }
+
     static func highShelf(freq: Double, gainDb: Double, q: Double,
                           sampleRate: Double) -> BiquadSection {
         let f0 = max(10, min(freq, sampleRate / 2 - 1))
@@ -546,7 +560,7 @@ final class StageProcessor {
     static let maxAssignedApps = 8
     static let maxAppSections = 20
     static let maxTapStreams = 9
-    static let mixBusFrames = 8192
+    static let mixBusFrames = 65536
     static let appChainGraveyardDepth = 4
 
     private var appCurves: [AppCurve] = []
@@ -598,7 +612,7 @@ final class StageProcessor {
             return nil
         case .peak:
             guard abs(gain) > 0.001 else { return nil }
-            return .peak(freq: freq, gainDb: gain, q: q, sampleRate: sampleRate)
+            return .cookbookPeak(freq: freq, gainDb: gain, q: q, sampleRate: sampleRate)
         case .lowShelf:
             guard abs(gain) > 0.001 else { return nil }
             return .lowShelf(freq: freq, gainDb: gain, q: q, sampleRate: sampleRate)

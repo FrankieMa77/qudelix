@@ -384,11 +384,12 @@ final class StageState: ObservableObject {
     private func applyAssignmentChange() {
         guard started else { return }
         let plan = desiredTapPlan()
-        let sameTaps = StageEngine.sameTaps(engine.activeAppPlan, plan)
+        let reachable = StageEngine.reachablePlan(plan, failed: engine.failedTapBundleIDs)
+        let sameTaps = StageEngine.sameTaps(engine.activeAppPlan, reachable)
         engine.appTapPlan = plan
         engine.followProcessList = wantsPerAppEQ
         if engine.isRunning, engine.mode == .insert, sameTaps {
-            engine.processor.applyAppChains(plan.map(\.chain))
+            engine.processor.applyAppChains(reachable.map(\.chain))
             return
         }
         if engine.isRunning, !sameTaps { engine.stop() }
@@ -612,6 +613,12 @@ final class StageState: ObservableObject {
         let stillReleased = releasedByHand && witnesses.deviceSaysCall
         let active = witnesses.outputOnCall || (witnesses.deviceSaysCall && !stillReleased)
         return (active, stillReleased)
+    }
+
+    func callActiveFresh() -> Bool {
+        guard started else { return false }
+        refreshCallState()
+        return callActiveLive
     }
 
     func checkCallNow() {

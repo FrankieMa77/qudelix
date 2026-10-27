@@ -53,6 +53,13 @@ final class StageEngine: ObservableObject {
         }
     }
 
+    private(set) var failedTapBundleIDs: Set<String> = []
+
+    nonisolated static func reachablePlan(_ plan: [AppTapEntry],
+                                          failed: Set<String>) -> [AppTapEntry] {
+        failed.isEmpty ? plan : plan.filter { !failed.contains($0.bundleID) }
+    }
+
     private var tapIDs: [AudioObjectID] = []
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
@@ -254,7 +261,10 @@ final class StageEngine: ObservableObject {
                 appDesc.muteBehavior = .mutedWhenTapped
                 var id = AudioObjectID(kAudioObjectUnknown)
                 guard AudioHardwareCreateProcessTap(appDesc, &id) == noErr,
-                      id != kAudioObjectUnknown else { continue }
+                      id != kAudioObjectUnknown else {
+                    failedTapBundleIDs.insert(entry.bundleID)
+                    continue
+                }
                 tapIDs.append(id)
                 subTaps.append([kAudioSubTapUIDKey: appDesc.uuid.uuidString,
                                 kAudioSubTapDriftCompensationKey: 1])
@@ -391,6 +401,7 @@ final class StageEngine: ObservableObject {
         pendingProcessListChange?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.pendingProcessListChange = nil
+            self?.failedTapBundleIDs.removeAll()
             self?.onProcessListChange?()
         }
         pendingProcessListChange = work
