@@ -85,7 +85,7 @@ final class SignalPathTests: XCTestCase {
                                   bandCount: 20, activePresetName: "HD 650", preGain: -6.1))
         XCTAssertTrue(row.state.contains("20-band"))
         XCTAssertTrue(row.state.contains("HD 650"))
-        XCTAssertTrue(row.state.contains("-6.1"))
+        XCTAssertTrue(row.state.contains(DisplayFormat.signed(-6.1)), row.state)
         XCTAssertEqual(row.indicator, .altering)
     }
 

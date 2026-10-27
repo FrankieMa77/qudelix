@@ -145,7 +145,7 @@ final class ImportTextTests: XCTestCase {
     func testACleanFileGetsNoExtraNoise() {
         let c = connected()
         c.importText(realCorrection)
-        XCTAssertEqual(c.lastImportSummary, "Applied 3 band(s), pre-gain -6.1 dB")
+        XCTAssertEqual(c.lastImportSummary, "Applied 3 band(s), pre-gain \(DisplayFormat.decibels(-6.1))")
     }
 
     func testNothingIsAppliedWhileDisconnected() {
