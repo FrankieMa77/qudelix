@@ -136,7 +136,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.5.0.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.5.1.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -144,7 +144,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.5.0.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.5.1.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -435,12 +435,12 @@ them until you press **Keep**.
 
 A green dashed line behind your bands shows what the EQ is being held to:
 
-- **Fit** — the last AutoEq correction you applied for this EQ layout (from
+- **AutoEq** — the last AutoEq correction you applied for this EQ layout (from
   the Import pane, the headphone suggestion, or the **Fit** link on the line,
   which fits the pair named in the Headphones field in one click and opens the
   Import pane when the name is ambiguous or not measured).
 - **Listening** — your own EQ plus whatever Auto-trim is doing.
-- **Auto** — Fit when there is one, otherwise Listening.
+- **Auto** — AutoEq when there is one, otherwise Listening.
 
 ### Auto-fit
 
@@ -668,6 +668,42 @@ than there.
   exists, but downloading and installing it is manual.
 
 ## Changelog
+
+### 1.5.1 — 2026-10-27
+
+A full review of 1.5.0, and the fixes it turned up.
+
+- **Tune sessions can no longer leave their test curve behind.** If the 5K
+  dropped, the app quit or the EQ layout changed in the middle of Compare,
+  Shape, Blind, Trim or Tones, the temporary curve (or the switched-off EQ)
+  could be saved as "your last EQ" and put back on the next connect, and an
+  edit made just before a session could be saved to the 5K mid-session. The
+  session's starting point is what gets remembered now, a pending save waits
+  for the session to end, and **Keep** always saves.
+- **While a Tune session runs, the rest of the app leaves the EQ alone** —
+  loading a slot, importing, applying a library or AI preset, a dropped file
+  and the EQ controls wait until it ends, instead of being silently undone.
+- **Compare and Shape refuse to start with the EQ switched off**, where every
+  trial would have sounded the same.
+- **Upgrading quits the app properly.** The installer used to kill it, which
+  skipped putting your own EQ back after Auto-fit and saving pending changes.
+- **Per-app EQ:** an app whose audio could not be tapped no longer makes the
+  engine restart every minute (with a dropout each time); per-app curves now
+  sound exactly like the curve drawn; very long audio buffers keep their tail.
+- **Bluetooth writes keep their order**, so a lowered pre-gain lands before
+  the bands that needed it.
+- **Settings files that can't be read are set aside, not overwritten**, and
+  leftovers from an interrupted save are cleaned up.
+- **Drops on the menu-bar icon** read the same file encodings and sizes as the
+  Import pane.
+- **The reference source "Fit" is now called "AutoEq"**, so it no longer
+  shares a name with the Fit button beside it.
+- Accessibility: every slider reads its value in dB or percent, and the EQ
+  graph describes itself to VoiceOver. Status and hint text is more legible;
+  "−0.0" no longer appears; the 0 dB line is always drawn.
+- Smaller things: drawers close when the 5K disconnects; deleting listening
+  history asks first; a refused rename keeps what you typed; Tune remembers the
+  method you last used; the Stage pane says a control turns Soundstage on.
 
 ### 1.5.0 — 2026-10-27
 

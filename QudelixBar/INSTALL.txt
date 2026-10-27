@@ -1,4 +1,4 @@
-Qudelix for macOS 1.5.0
+Qudelix for macOS 1.5.1
 =======================
 An unofficial menu bar app for configuring the Qudelix 5K over USB or
 Bluetooth.
@@ -53,13 +53,13 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, so the
 "Open Anyway" click above is pure trust. Every release publishes a SHA-256 for
 the DMG. Check the file you downloaded against it:
 
-   shasum -a 256 /path/to/Qudelix-1.5.0.dmg
+   shasum -a 256 /path/to/Qudelix-1.5.1.dmg
 
 Compare that string to the one in the release notes; they must match exactly.
-If a Qudelix-1.5.0.dmg.sha256 file came with the download, this does the same
+If a Qudelix-1.5.1.dmg.sha256 file came with the download, this does the same
 comparison for you and prints "OK":
 
-   cd ~/Downloads && shasum -a 256 -c Qudelix-1.5.0.dmg.sha256
+   cd ~/Downloads && shasum -a 256 -c Qudelix-1.5.1.dmg.sha256
 
 Reading this from inside the mounted DMG? Then the hash is deliberately not
 here — it lives on the release page, because a checksum shipped inside the file
