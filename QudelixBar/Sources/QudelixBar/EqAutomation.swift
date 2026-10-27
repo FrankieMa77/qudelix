@@ -309,6 +309,7 @@ final class EqAutomation: ObservableObject {
 
     func keep() {
         guard following, !paused, let base else { return }
+        guard controller.canEditEqNow else { return }
         let followed = (bands: controller.bands, preGain: controller.preGain)
         let original = (bands: base, preGain: baseGain)
         let trimWasOn = autoTrimOn
@@ -343,20 +344,34 @@ final class EqAutomation: ObservableObject {
         publishState()
     }
 
-    private func writeBaseBack() {
-        guard let base else { return }
-        if hasWritten, controller.canWriteNow, !controller.eqSettling {
+    @discardableResult
+    private func writeBaseBack(blocking: Bool = false) -> Bool {
+        guard let base else { return true }
+        if hasWritten {
+            guard controller.canWriteNow, !controller.eqSettling else { return false }
             controller.writeFollowed(bands: base, preGain: baseGain)
-            controller.flushPendingEqSends()
+            if blocking {
+                controller.flushEqSendsBlocking()
+            } else {
+                controller.flushPendingEqSends()
+            }
+            guard QudelixController.sameQuantized(controller.bands, base),
+                  ReferenceFollower.quantized(controller.preGain)
+                    == EQHeadroom.clamp(ReferenceFollower.quantized(baseGain)) else { return false }
         }
         hasWritten = false
         lastWritten = nil
         recent.removeAll()
+        return true
+    }
+
+    func restoreBaseForQuit() {
+        guard base != nil, hasWritten else { return }
+        writeBaseBack(blocking: true)
     }
 
     private func disengage() {
-        writeBaseBack()
-        clearFollowState()
+        if writeBaseBack() { clearFollowState() }
     }
 
     private func clearFollowState() {
@@ -372,9 +387,9 @@ final class EqAutomation: ObservableObject {
         engagePending = true
         awaitingReadback = false
         health = ReferenceFollower.FollowHealth()
-        deviationDb = nil
-        followedBands = []
-        baseBands = []
+        if deviationDb != nil { deviationDb = nil }
+        if !followedBands.isEmpty { followedBands = [] }
+        if !baseBands.isEmpty { baseBands = [] }
     }
 
     private func rebase(_ bands: [QxEqBandValue], _ preGain: Double) {
@@ -422,16 +437,18 @@ final class EqAutomation: ObservableObject {
 
     private func isEcho(_ bands: [QxEqBandValue], _ preGain: Double) -> Bool {
         let now = Date()
-        var candidates: [Written] = []
-        if let lastWritten { candidates.append(lastWritten) }
+        var candidates: [(bands: [QxEqBandValue], preGain: Double)] = []
+        if let lastWritten { candidates.append((lastWritten.bands, lastWritten.preGain)) }
         candidates += recent.filter { now.timeIntervalSince($0.at) <= Self.echoWindow }
-        return candidates.contains { written in
-            ReferenceFollower.sameLayout(bands, written.bands)
-                && zip(bands, written.bands).allSatisfy {
-                    abs($0.gain - $1.gain) <= Self.echoToleranceDb
-                }
-                && abs(preGain - written.preGain) <= Self.echoToleranceDb
+            .map { ($0.bands, $0.preGain) }
+        if let base { candidates.append((base, baseGain)) }
+        let sameLayout = candidates.filter { ReferenceFollower.sameLayout(bands, $0.bands) }
+        guard !sameLayout.isEmpty else { return false }
+        let tolerance = Self.echoToleranceDb
+        let bandsEcho = bands.indices.allSatisfy { i in
+            sameLayout.contains { abs(bands[i].gain - $0.bands[i].gain) <= tolerance }
         }
+        return bandsEcho && sameLayout.contains { abs(preGain - $0.preGain) <= tolerance }
     }
 
     private func handleReadback(_ bands: [QxEqBandValue], _ preGain: Double) {
@@ -502,25 +519,31 @@ final class EqAutomation: ObservableObject {
 
     private func followTick() {
         guard wantsFollow else {
-            waitingReason = nil
+            setWaiting(nil)
             if base != nil { disengage() }
-            paused = false
+            if paused { paused = false }
             return
         }
         if paused {
-            waitingReason = nil
+            setWaiting(nil)
+            if hasWritten { writeBaseBack() }
             return
         }
         if let reason = blockReason() {
-            waitingReason = reason
+            setWaiting(reason)
+            if suspended, hasWritten { writeBaseBack() }
             return
         }
-        waitingReason = nil
+        setWaiting(nil)
         guard !awaitingReadback else { return }
         if base == nil { rebase(controller.bands, controller.preGain) }
         observeController()
         guard base != nil, !awaitingReadback else { return }
         followStep()
+    }
+
+    private func setWaiting(_ reason: String?) {
+        if waitingReason != reason { waitingReason = reason }
     }
 
     private func observeController() {
@@ -585,7 +608,7 @@ final class EqAutomation: ObservableObject {
         lastKey = key
         lastResult = result
         engagePending = false
-        deviationDb = result.deviationDb
+        if deviationDb != result.deviationDb { deviationDb = result.deviationDb }
         write(result)
     }
 

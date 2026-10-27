@@ -41,4 +41,12 @@ final class QuitFlushTests: XCTestCase {
         XCTAssertEqual(PresetLibraryFile.load(from: libraryURL)?.headphoneName, "HD 650S")
         XCTAssertEqual(library.committedHeadphoneName, "HD 650S")
     }
+
+    func testTheHidDrainReturnsWithinItsBound() {
+        let hid = HIDTransport()
+        hid.sendCoalesced(.setEqPreGain, [0], key: "k")
+        let started = Date()
+        XCTAssertTrue(hid.flushPendingAndWait(timeout: 1))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+    }
 }

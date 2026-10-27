@@ -176,6 +176,17 @@ final class QudelixController: ObservableObject {
         }
     }
 
+    func flushEqSendsBlocking(timeout: TimeInterval = 0.75) {
+        #if DEBUG
+        trace("flushBlocking")
+        #endif
+        switch link {
+        case .usb: hid.flushPendingAndWait(timeout: timeout)
+        case .bluetooth: ble.flushPending()
+        case .none: break
+        }
+    }
+
     #if DEBUG
     private(set) var sendTrace: [String] = []
     private static let sendTraceDepth = 64
@@ -416,13 +427,15 @@ final class QudelixController: ObservableObject {
         return changed.count
     }
 
+    @discardableResult
     func keepFollowed(base: (bands: [QxEqBandValue], preGain: Double),
                       followed: (bands: [QxEqBandValue], preGain: Double),
-                      undoLabel: String) {
-        guard canWriteEq else { return }
+                      undoLabel: String) -> Bool {
+        guard canWriteEq else { return false }
         writeFollowed(bands: base.bands, preGain: base.preGain)
         checkpoint(undoLabel, discrete: true)
         writeFollowed(bands: followed.bands, preGain: followed.preGain, persistToFlash: true)
+        return true
     }
 
     #if DEBUG
@@ -1537,7 +1550,7 @@ final class QudelixController: ObservableObject {
     }
 
     func exportText() -> String {
-        Self.exportText(bands: bands, preGain: preGain, mutedBands: mutedBands)
+        Self.exportText(bands: userBands, preGain: userPreGain, mutedBands: mutedBands)
     }
 
     @discardableResult

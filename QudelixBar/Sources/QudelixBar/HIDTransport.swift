@@ -156,6 +156,16 @@ final class HIDTransport {
         queue.async { [self] in drainNow() }
     }
 
+    @discardableResult
+    func flushPendingAndWait(timeout: TimeInterval) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        queue.async { [self] in
+            drainNow()
+            done.signal()
+        }
+        return done.wait(timeout: .now() + timeout) == .success
+    }
+
     private func drainIfNeeded() {
         guard !draining else { return }
         draining = true

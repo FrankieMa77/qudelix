@@ -125,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if w.blindTuner.phase != .idle {
             w.blindTuner.cancel(w.controller)
         }
+        w.automation.restoreBaseForQuit()
         w.controller.flushEqSnapshot()
         w.automation.persistNow()
         Self.flushPendingWrites(batteryLog: w.controller.batteryLog,

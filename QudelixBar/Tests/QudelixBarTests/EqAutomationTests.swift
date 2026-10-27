@@ -585,4 +585,109 @@ final class EqAutomationTests: XCTestCase {
         XCTAssertFalse(first.contains("w=0"))
         XCTAssertTrue(a.diagnostics().hasSuffix("w=0"))
     }
+
+    func testQuittingWhileFollowingPutsTheBaseBackAndDrainsWithoutSaving() async {
+        let (_, c, a) = await engaged()
+        XCTAssertNotEqual(c.bands, flat)
+        c.clearSendTrace()
+        a.restoreBaseForQuit()
+        XCTAssertEqual(c.bands, flat)
+        XCTAssertEqual(c.preGain, 0)
+        XCTAssertEqual(c.userBands, c.bands)
+        XCTAssertGreaterThan(c.writeCount(), 0)
+        XCTAssertEqual(c.sendTrace.last, "flushBlocking")
+        XCTAssertFalse(c.sendTrace.contains("saveAll"))
+        XCTAssertFalse(c.debugFlashSavePending)
+    }
+
+    func testQuittingWhileNotFollowingSendsNothing() async {
+        let (_, c, a) = await make()
+        c.clearSendTrace()
+        a.restoreBaseForQuit()
+        XCTAssertTrue(c.sendTrace.isEmpty)
+    }
+
+    func testTurningBothOffWritesTheBaseBack() async {
+        let (_, c, a) = await engaged()
+        XCTAssertNotEqual(c.bands, flat)
+        a.setAutoFit(false)
+        a.setAutoTrim(on: false)
+        XCTAssertEqual(c.bands, flat)
+        XCTAssertFalse(a.following)
+        XCTAssertEqual(c.userBands, c.bands)
+    }
+
+    func testABaseWriteThatCouldNotGoOutKeepsTheBaseProviderAndRetries() async {
+        let (_, c, a) = await engaged()
+        let followed = c.bands
+        c.compatibility = .checking
+        a.setAutoFit(false)
+        XCTAssertEqual(c.bands, followed)
+        XCTAssertEqual(c.userBands, flat)
+        ticks(a, 2)
+        XCTAssertEqual(c.userBands, flat)
+        c.compatibility = .ok
+        ticks(a, 1)
+        XCTAssertEqual(c.bands, flat)
+        XCTAssertEqual(c.userBands, c.bands)
+    }
+
+    func testKeepThatCannotWriteChangesNothing() async {
+        let (_, c, a) = await engaged()
+        let followed = c.bands
+        c.compatibility = .checking
+        a.keep()
+        XCTAssertTrue(a.autoFit)
+        XCTAssertTrue(a.following)
+        XCTAssertFalse(c.canUndo)
+        XCTAssertEqual(c.userBands, flat)
+        XCTAssertEqual(c.bands, followed)
+    }
+
+    func testExportWritesTheUsersCurveWhileFollowing() async {
+        let (_, c, a) = await engaged()
+        XCTAssertNotEqual(c.bands, flat)
+        let expected = QudelixController.exportText(bands: flat, preGain: 0,
+                                                    mutedBands: c.mutedBands)
+        XCTAssertEqual(c.exportText(), expected)
+        XCTAssertTrue(a.following)
+    }
+
+    func testIdleTicksPublishNothing() async {
+        let (_, _, a) = await make()
+        var changes = 0
+        let token = a.objectWillChange.sink { changes += 1 }
+        ticks(a, 12)
+        XCTAssertEqual(changes, 0)
+        token.cancel()
+    }
+
+    func testAMidBurstReadbackMixingOldAndNewGainsIsAnEcho() async {
+        let (rig, c, a) = await engaged()
+        let older = c.bands
+        let other = FollowFixtures.tenBandReference().map { b -> QxEqBandValue in
+            var v = b
+            v.gain = -b.gain
+            return v
+        }
+        a.recordReference(reference(other), for: .user)
+        a.tick(.init())
+        let newer = c.bands
+        let apart = older.indices.filter { abs(older[$0].gain - newer[$0].gain) > 0.6 }
+        XCTAssertGreaterThan(apart.count, 1)
+        var mixed = newer
+        mixed[apart[0]].gain = older[apart[0]].gain
+        rig.ingest(Wire.presetPackets(group: .user, bands: mixed, preGain: c.preGain))
+        XCTAssertEqual(a.baseBands, flat)
+        XCTAssertTrue(a.following)
+    }
+
+    func testAGenuineChangeOnOneBandIsStillExternal() async {
+        let (rig, c, a) = await engaged()
+        var changed = c.bands
+        let k = 4
+        changed[k].gain = min(12, max(changed[k].gain, 0) + 3)
+        rig.ingest(Wire.presetPackets(group: .user, bands: changed, preGain: c.preGain))
+        XCTAssertEqual(a.baseBands.map(\.gain), changed.map(\.gain))
+    }
 }
