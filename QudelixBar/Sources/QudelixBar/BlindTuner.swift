@@ -491,6 +491,7 @@ final class BlindTuner: ObservableObject {
         note = nil
         self.mode = mode
         self.chance = chance
+        c.beginEqSession()
         c.beginUndoStep(mode == .bypass ? "blind check" : "by-ear shaping")
         baseline = c.bands
         baselinePreGain = c.preGain

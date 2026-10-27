@@ -118,12 +118,14 @@ final class ToneTester: ObservableObject {
         interrupted = nil
         thresholds = [:]; suggestion = []; bandsDone = 0
         catchPlayed = 0; catchFalsePositives = 0
+        c.beginEqSession()
         restoreEqEnabled = c.eqEnabled
         sessionGroup = c.eqGroup
         c.setEqEnabled(false, persistToFlash: false)
         startEngine()
         guard engine.isRunning else {
             c.setEqEnabled(restoreEqEnabled, persistToFlash: false)
+            c.endEqSession()
             note = "Couldn't start the tone player, so nothing was measured. Try again."
             return
         }

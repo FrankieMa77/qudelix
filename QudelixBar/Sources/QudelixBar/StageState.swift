@@ -63,6 +63,13 @@ final class StageState: ObservableObject {
     @Published private(set) var qualityVerdict: QualityAnalyzer.Verdict?
     private(set) var qualityVerdictLive: QualityAnalyzer.Verdict?
     private let analyzer = QualityAnalyzer()
+    var automationTick: ((EqAutomation.Context) -> Void)?
+    var automationDiagnostics: (() -> String)?
+    @Published private(set) var balance: BalanceFeatures?
+    private var balanceLive: BalanceFeatures?
+    private var balanceAnchor: BalanceFeatures?
+    private var freshBalanceReading: BalanceFeatures?
+    private static let balanceAnchorCoefficient = 1 - exp(-3.0 / 30)
     private var rawVerdict: QualityAnalyzer.Verdict?
     private var rawVerdictStreak = 0
     private var verdictDeviceUID: String?
@@ -137,6 +144,7 @@ final class StageState: ObservableObject {
         mirror(sourceCorrelationLive, into: \.sourceCorrelation)
         mirror(exposureDaysLive, into: \.exposureDays)
         mirror(qualityVerdictLive, into: \.qualityVerdict)
+        mirror(balanceLive, into: \.balance)
         mirror(callActiveLive, into: \.callActive)
         mirror(callWitnessesLive, into: \.callWitnesses)
         mirror(limiterGainReductionDbLive, into: \.limiterGainReductionDb)
@@ -416,6 +424,49 @@ final class StageState: ObservableObject {
         rawVerdict = nil
         rawVerdictStreak = 0
         verdictStableSince = nil
+        clearBalance()
+    }
+
+    private func updateBalance(_ reading: BalanceFeatures?) {
+        guard let reading, reading.bassDb.isFinite, reading.tiltDbPerOctave.isFinite,
+              reading.presenceDb.isFinite else { return }
+        let k = Self.balanceAnchorCoefficient
+        let anchor = balanceAnchor.map { a in
+            BalanceFeatures(
+                bassDb: a.bassDb + k * (reading.bassDb - a.bassDb),
+                tiltDbPerOctave: a.tiltDbPerOctave + k * (reading.tiltDbPerOctave - a.tiltDbPerOctave),
+                presenceDb: a.presenceDb + k * (reading.presenceDb - a.presenceDb))
+        } ?? reading
+        balanceAnchor = anchor
+        freshBalanceReading = reading
+        func tenth(_ v: Double) -> Double { (v * 10).rounded() / 10 }
+        balanceLive = BalanceFeatures(bassDb: tenth(anchor.bassDb),
+                                      tiltDbPerOctave: tenth(anchor.tiltDbPerOctave),
+                                      presenceDb: tenth(anchor.presenceDb))
+        mirror(balanceLive, into: \.balance)
+    }
+
+    private func clearBalance() {
+        balanceAnchor = nil
+        balanceLive = nil
+        freshBalanceReading = nil
+        mirror(balanceLive, into: \.balance)
+        analyzer.reset()
+        qualityWindowsFed = 0
+    }
+
+    private func automationStep() {
+        let reading = freshBalanceReading
+        freshBalanceReading = nil
+        let running = engine.isRunning
+        let uid = running ? engine.runningDeviceUID : nil
+        let onQudelix = uid != nil && uid == qudelixOutput?.uid
+        automationTick?(EqAutomation.Context(
+            reading: reading, verdict: qualityVerdictLive,
+            detecting: detectQuality && running,
+            muted: engine.processor.isMutedNow,
+            onCall: callActiveLive || engine.callHold,
+            deviceUID: uid, onQudelixOutput: onQudelix, dt: 1))
     }
 
     func setAutoRate(_ on: Bool) {
@@ -935,6 +986,12 @@ final class StageState: ObservableObject {
             + "est=\(estimate) avg=\(average)"
     }
 
+    private var balanceDiag: String {
+        balanceLive.map {
+            String(format: "bal=%+.1f,%+.1f,%+.1f", $0.bassDb, $0.tiltDbPerOctave, $0.presenceDb)
+        } ?? "bal=-"
+    }
+
     private func meterTick() {
         callTicks += 1
         if callTicks >= (callActiveLive ? 5 : 60) {
@@ -969,6 +1026,8 @@ final class StageState: ObservableObject {
                                   assigned: assignedAppCount) + " "
                 + limiterDiag + " " + loudDiag + " " + bassDiag + " "
                 + impulseDiag + " "
+                + balanceDiag + " "
+                + (automationDiagnostics.map { $0() + " " } ?? "")
                 + "quality=\(qualityVerdictLive.map(String.init(describing:)) ?? "nil") \(analyzer.lastDebug) "
                 + earDiag)
             if engine.isRunning || content != lastDiagContent {
@@ -1004,6 +1063,7 @@ final class StageState: ObservableObject {
             clearEarLevel()
             clearVerdict()
             qualityRate = nil
+            automationStep()
             return
         }
         if let corr = engine.processor.drainSourceCorrelation() {
@@ -1020,6 +1080,7 @@ final class StageState: ObservableObject {
         refreshImpulseStatus()
         updateBassGuardTelemetry()
         qualityTick()
+        automationStep()
         updateEarLevel()
         updateLoudness()
         updateBassGuard()
@@ -1280,6 +1341,7 @@ final class StageState: ObservableObject {
         guard qualityWindowsFed >= 3 else { return }
         qualityWindowsFed = 0
 
+        if let rate { updateBalance(analyzer.balance(sampleRate: rate)) }
         guard let rate, let raw = analyzer.classify(sampleRate: rate) else { return }
 
         var effective = raw

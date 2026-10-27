@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let toneTester: ToneTester
         let blindTuner: BlindTuner
         let a2dpGuard: A2dpGuard
+        let automation: EqAutomation
     }
 
     static var makeStatusUI: (() -> Wiring)?
@@ -125,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             w.blindTuner.cancel(w.controller)
         }
         w.controller.flushEqSnapshot()
+        w.automation.persistNow()
         Self.flushPendingWrites(batteryLog: w.controller.batteryLog,
                                 presetLibrary: w.presetLibrary)
         w.stageState.saveNow()
@@ -173,6 +175,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard case .connected = controller.connection else { return nil }
             return controller.bands
         }
+        w.stageState.automationTick = { [weak automation = w.automation] context in
+            automation?.tick(context)
+        }
+        w.stageState.automationDiagnostics = { [weak automation = w.automation] in
+            automation?.diagnostics() ?? ""
+        }
+        w.automation.enableDetection = { [weak stageState = w.stageState] in
+            guard let stageState, !stageState.detectQuality else { return }
+            stageState.setDetectQuality(true)
+        }
         w.stageState.start()
 
         w.a2dpGuard.callActive = { [weak stageState = w.stageState] in
@@ -189,8 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         w.presetLibrary.currentCurve = { [weak controller = w.controller] in
             guard let controller, controller.canWriteNow, !controller.bands.isEmpty
             else { return nil }
-            return PresetLibrary.LiveCurve(bands: controller.bands,
-                                           preGain: controller.preGain,
+            return PresetLibrary.LiveCurve(bands: controller.userBands,
+                                           preGain: controller.userPreGain,
                                            group: controller.eqGroup,
                                            sourceName: controller.currentSourceName)
         }
@@ -229,6 +241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let controller, controller.canWriteNow,
                   controller.apply(result.file, named: name,
                                    undoLabel: "correction for \(name)") else { return false }
+            controller.landReference(ReferenceCurve(file: result.file, source: "AutoEq optimizer",
+                                                    headphone: name))
             var parts = [result.provenance]
             if let applied = controller.lastImportSummary { parts.append(applied) }
             parts.append(contentsOf: result.warnings)
@@ -444,6 +458,7 @@ struct QudelixBarApp: App {
     @StateObject private var abTuner: ABTuner
     @StateObject private var toneTester: ToneTester
     @StateObject private var blindTuner: BlindTuner
+    @StateObject private var automation: EqAutomation
 
     init() {
         #if DEBUG
@@ -461,6 +476,7 @@ struct QudelixBarApp: App {
         let abTuner = ABTuner()
         let toneTester = ToneTester()
         let blindTuner = BlindTuner()
+        let automation = EqAutomation(controller: controller)
 
         let content = AnyView(
             PopoverView()
@@ -474,6 +490,7 @@ struct QudelixBarApp: App {
                 .environmentObject(abTuner)
                 .environmentObject(toneTester)
                 .environmentObject(blindTuner)
+                .environmentObject(automation)
                 .environmentObject(a2dpGuard))
         AppDelegate.makeStatusUI = {
             AppDelegate.Wiring(content: content, controller: controller,
@@ -483,7 +500,8 @@ struct QudelixBarApp: App {
                                headphoneSuggestions: headphoneSuggestions,
                                aiStudio: aiStudio,
                                abTuner: abTuner, toneTester: toneTester,
-                               blindTuner: blindTuner, a2dpGuard: a2dpGuard)
+                               blindTuner: blindTuner, a2dpGuard: a2dpGuard,
+                               automation: automation)
         }
 
         _controller = StateObject(wrappedValue: controller)
@@ -497,6 +515,7 @@ struct QudelixBarApp: App {
         _abTuner = StateObject(wrappedValue: abTuner)
         _toneTester = StateObject(wrappedValue: toneTester)
         _blindTuner = StateObject(wrappedValue: blindTuner)
+        _automation = StateObject(wrappedValue: automation)
     }
 
     var body: some Scene {

@@ -368,7 +368,11 @@ struct ImportView: View {
             do {
                 let result = try await source.correction(for: candidate, shapedFor: limits,
                                                          options: options)
-                controller.apply(result.file, named: candidate.title)
+                if controller.apply(result.file, named: candidate.title) {
+                    controller.landReference(ReferenceCurve(
+                        file: result.file, source: source.displayName,
+                        headphone: candidate.title, options: options))
+                }
                 var parts = [result.provenance]
                 if let applied = controller.lastImportSummary { parts.append(applied) }
                 parts.append(contentsOf: result.warnings)

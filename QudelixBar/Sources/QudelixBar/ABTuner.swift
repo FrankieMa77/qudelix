@@ -149,6 +149,7 @@ final class ABTuner: ObservableObject {
 
         note = nil
         self.chance = chance
+        c.beginEqSession()
         c.beginUndoStep("by-ear tuning")
         baseline = c.bands
         baselinePreGain = c.preGain
