@@ -1,6 +1,12 @@
 import Accelerate
 import Foundation
 
+struct BalanceFeatures: Equatable {
+    var bassDb: Double
+    var tiltDbPerOctave: Double
+    var presenceDb: Double
+}
+
 final class QualityAnalyzer {
     enum Verdict: Equatable {
         case tooQuiet
@@ -42,6 +48,8 @@ final class QualityAnalyzer {
     private var magnitudes = [Float](repeating: 0, count: fftSize / 2)
     private var averagedDb = [Float](repeating: -160, count: fftSize / 2)
     private var windowsAveraged = 0
+    private var meanPower = [Float](repeating: 0, count: fftSize / 2)
+    private var meanPowerWindows = 0
 
     init() {
         fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
@@ -75,6 +83,12 @@ final class QualityAnalyzer {
 
         var floorVal: Float = 1e-12
         vDSP_vthr(magnitudes, 1, &floorVal, &magnitudes, 1, vDSP_Length(Self.fftSize / 2))
+        var windowPower: Float = 0
+        vDSP_sve(magnitudes, 1, &windowPower, vDSP_Length(Self.fftSize / 2))
+        if windowPower.isFinite {
+            vDSP_vadd(meanPower, 1, magnitudes, 1, &meanPower, 1, vDSP_Length(Self.fftSize / 2))
+            meanPowerWindows += 1
+        }
         var one: Float = 1
         var db = [Float](repeating: 0, count: Self.fftSize / 2)
         vDSP_vdbcon(magnitudes, 1, &one, &db, 1, vDSP_Length(Self.fftSize / 2), 0)
@@ -89,6 +103,71 @@ final class QualityAnalyzer {
     func reset() {
         windowsAveraged = 0
         for i in averagedDb.indices { averagedDb[i] = -160 }
+        clearMeanPower()
+    }
+
+    private func clearMeanPower() {
+        meanPowerWindows = 0
+        vDSP_vclr(&meanPower, 1, vDSP_Length(Self.fftSize / 2))
+    }
+
+    func balance(sampleRate: Double) -> BalanceFeatures? {
+        let windows = meanPowerWindows
+        defer { clearMeanPower() }
+        guard windows > 0, AudioOutputs.isPlausibleRate(sampleRate) else { return nil }
+
+        let binHz = sampleRate / Double(Self.fftSize)
+        let lastBin = Self.fftSize / 2 - 1
+        func bin(_ hz: Double) -> Int {
+            min(lastBin, max(0, Int(hz / binHz)))
+        }
+
+        var gatePower: Double = 0
+        for i in bin(300)...bin(8000) { gatePower += Double(meanPower[i]) }
+        let gateDb = 10 * log10(max(gatePower / Double(windows), 1e-16)) - 79
+        guard gateDb > -55 else {
+            return nil
+        }
+
+        func perOctave(_ lo: Double, _ hi: Double) -> (db: Double, centerOctave: Double)? {
+            let first = max(1, Int((lo / binHz).rounded()))
+            let last = Int((hi / binHz).rounded()) - 1
+            guard first <= last, last <= lastBin else { return nil }
+            var power: Double = 0
+            for i in first...last { power += Double(meanPower[i]) }
+            let lowEdge = (Double(first) - 0.5) * binHz
+            let highEdge = (Double(last) + 0.5) * binHz
+            let octaves = log2(highEdge / lowEdge)
+            return (10 * log10(power / octaves), log2(lowEdge * highEdge) / 2)
+        }
+
+        guard let bass = perOctave(60, 200), let presence = perOctave(2000, 5000) else {
+            return nil
+        }
+
+        var points: [(x: Double, y: Double)] = []
+        for center in [125.0, 250, 500, 1000, 2000, 4000, 8000] {
+            guard let band = perOctave(center / 2.0.squareRoot(), center * 2.0.squareRoot()) else {
+                return nil
+            }
+            points.append((x: band.centerOctave, y: band.db))
+        }
+        let meanX = points.map(\.x).reduce(0, +) / Double(points.count)
+        let meanY = points.map(\.y).reduce(0, +) / Double(points.count)
+        let sxy = points.map { ($0.x - meanX) * ($0.y - meanY) }.reduce(0, +)
+        let sxx = points.map { ($0.x - meanX) * ($0.x - meanX) }.reduce(0, +)
+
+        let slope = sxx > 0 ? sxy / sxx : Double.nan
+        func line(_ x: Double) -> Double { meanY + slope * (x - meanX) }
+
+        let features = BalanceFeatures(bassDb: bass.db - line(bass.centerOctave),
+                                       tiltDbPerOctave: slope,
+                                       presenceDb: presence.db - line(presence.centerOctave))
+        guard features.bassDb.isFinite, features.tiltDbPerOctave.isFinite,
+              features.presenceDb.isFinite else {
+            return nil
+        }
+        return features
     }
 
     private(set) var lastDebug = ""
