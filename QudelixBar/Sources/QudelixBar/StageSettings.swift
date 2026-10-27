@@ -217,6 +217,63 @@ enum SafeFile {
         }
     }
 
+    static func setAsideIfUnreadable(_ url: URL) -> Bool {
+        var st = stat()
+        let present = url.withUnsafeFileSystemRepresentation { path -> Bool in
+            guard let path, lstat(path, &st) == 0 else { return false }
+            return st.st_mode & S_IFMT != S_IFREG || st.st_size > 0
+        }
+        guard present else { return false }
+        let fm = FileManager.default
+        func taken(_ candidate: URL) -> Bool {
+            fm.fileExists(atPath: candidate.path)
+                || (try? fm.destinationOfSymbolicLink(atPath: candidate.path)) != nil
+        }
+        let all = ParkedCopy.candidates(beside: url)
+        guard let target = all.first(where: { !taken($0) }) else { return false }
+        let moved = url.withUnsafeFileSystemRepresentation { from -> Bool in
+            guard let from else { return false }
+            return target.withUnsafeFileSystemRepresentation { to -> Bool in
+                guard let to else { return false }
+                return rename(from, to) == 0
+            }
+        }
+        DebugLog.shared.log(moved
+            ? "\(url.lastPathComponent) could not be read; it was moved aside as \(target.lastPathComponent)"
+            : "\(url.lastPathComponent) could not be read and could not be moved aside")
+        return moved
+    }
+
+    @discardableResult
+    static func sweepStaleTemps(in directory: URL, olderThan age: TimeInterval = 3600,
+                                now: Date = Date()) -> Int {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: directory.path) else { return 0 }
+        var removed = 0
+        for name in names where isTempName(name) {
+            let file = directory.appendingPathComponent(name)
+            var st = stat()
+            let info = file.withUnsafeFileSystemRepresentation { path -> Bool in
+                guard let path, lstat(path, &st) == 0 else { return false }
+                return st.st_mode & S_IFMT == S_IFREG
+            }
+            guard info, now.timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) > age else { continue }
+            let gone = file.withUnsafeFileSystemRepresentation { path -> Bool in
+                guard let path else { return false }
+                return unlink(path) == 0
+            }
+            if gone { removed += 1 }
+        }
+        return removed
+    }
+
+    static func isTempName(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.count > 10 else { return false }
+        let tail = name.suffix(9)
+        guard tail.first == "." else { return false }
+        return tail.dropFirst().allSatisfy { $0.isHexDigit && !$0.isLowercase }
+    }
+
     @discardableResult
     static func writeAtomic(_ data: Data, to url: URL) -> Bool {
         let temp = url.deletingLastPathComponent()
@@ -306,9 +363,7 @@ enum StageStateFile {
         if let state = try? JSONDecoder().decode(PersistedStageState.self, from: data) {
             return .loaded(state)
         }
-        let parked = url.deletingLastPathComponent()
-            .appendingPathComponent(url.lastPathComponent + ".recovered")
-        return .unreadable(parked: SafeFile.writeAtomic(data, to: parked))
+        return .unreadable(parked: ParkedCopy.park(data, beside: url) != nil)
     }
 
     private static func lstatSize(_ url: URL) -> off_t? {

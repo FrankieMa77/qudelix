@@ -61,8 +61,12 @@ struct AIKeychain {
         let status = store.add(attributes)
         if status == errSecSuccess { return true }
         guard status == errSecDuplicateItem else { return false }
-        return store.update(Self.query(provider: provider),
-                            with: [kSecValueData as String: data]) == errSecSuccess
+        if store.update(Self.query(provider: provider),
+                        with: [kSecValueData as String: data]) == errSecSuccess {
+            return true
+        }
+        guard store.delete(Self.query(provider: provider)) == errSecSuccess else { return false }
+        return store.add(attributes) == errSecSuccess
     }
 
     func load(provider: String) -> Reading {

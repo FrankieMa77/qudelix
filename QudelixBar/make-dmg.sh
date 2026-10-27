@@ -68,6 +68,12 @@ on run
 		return
 	end try
 	display dialog "Install Qudelix into the Applications folder?" & return & return & "A copy already there will be replaced." buttons {"Cancel", "Install"} default button "Install" cancel button "Cancel"
+	try
+		if application id "com.qudelixbar.app" is running then
+			tell application id "com.qudelixbar.app" to quit
+		end if
+	end try
+	do shell script "for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x QudelixBar >/dev/null || exit 0; sleep 0.5; done; exit 0"
 	set cmd to "pkill -x QudelixBar; sleep 1; rm -rf /Applications/Qudelix.app && cp -R " & quoted form of src & " /Applications/ && (xattr -dr com.apple.quarantine /Applications/Qudelix.app 2>/dev/null; true)"
 	try
 		do shell script cmd

@@ -112,6 +112,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var profileRulesLink: ProfileRulesLink?
     private var started = false
     private var lastDeviceOnCall: Bool?
+    private var terminationSource: DispatchSourceSignal?
+
+    static func installTerminationHandler(into holder: inout DispatchSourceSignal?,
+                                          terminate: @escaping @MainActor () -> Void) {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { MainActor.assumeIsolated { terminate() } }
+        source.resume()
+        holder = source
+    }
+
+    static func sweepStateTemps() {
+        let directory = StageStateFile.directory
+        SafeFile.sweepStaleTemps(in: directory)
+        SafeFile.sweepStaleTemps(in: directory.appendingPathComponent("impulses", isDirectory: true))
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         guard let w = wiring else { return }
@@ -144,6 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard !started, let wiring = Self.makeStatusUI?() else { return }
         started = true
         self.wiring = wiring
+        Self.installTerminationHandler(into: &terminationSource) { NSApp.terminate(nil) }
+        Self.sweepStateTemps()
         buildStatusUI(wiring)
         startServices(wiring)
     }
@@ -375,8 +393,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
-    private static let maxDroppedBytes = 64 * 1024
-
     private func importDropped(_ url: URL) {
         guard let controller = wiring?.controller else { return }
         let name = SafeText.scrubbed(url.lastPathComponent, limit: 64)
@@ -384,13 +400,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             controller.requestPane(.importing)
             showPopover()
         }
-        guard let data = SafeFile.read(url, cap: Self.maxDroppedBytes) else {
+        guard let data = SafeFile.read(url, cap: QudelixController.maxImportBytes) else {
             controller.lastImportSummary = "Couldn't read \(name) — an EQ preset is a "
                 + "plain text file, and not a large one."
             return
         }
-        guard let text = String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1) else {
+        guard let text = ParametricEQFile.decodeText(data) else {
             controller.lastImportSummary = "Could not read \(name) as text."
             return
         }

@@ -24,6 +24,10 @@ That "Open Anyway" trip is asked once, for the installer only. Because the
 installer clears the download flag on the copy it makes, Qudelix itself never
 shows that dialog.
 
+Because every build is signed ad-hoc, macOS treats each new version as a new
+app: after an update it may ask again for Keychain access (your AI key),
+Bluetooth, or audio-capture permission. Allow them again; nothing is lost.
+
 
 ALTERNATIVE - one line in Terminal
 ----------------------------------

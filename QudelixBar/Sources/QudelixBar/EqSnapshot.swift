@@ -94,7 +94,10 @@ enum EqSnapshotFile {
     private static let maxBytes = 100_000
 
     static func load(from fileURL: URL = url) -> EqSnapshotStore {
-        guard let data = SafeFile.read(fileURL, cap: maxBytes) else { return EqSnapshotStore() }
+        guard let data = SafeFile.read(fileURL, cap: maxBytes) else {
+            SafeFile.setAsideIfUnreadable(fileURL)
+            return EqSnapshotStore()
+        }
         guard let store = try? JSONDecoder().decode(EqSnapshotStore.self, from: data) else {
             let parked = freeParkedURL(for: fileURL)
             SafeFile.writeAtomic(data, to: parked)

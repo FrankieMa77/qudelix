@@ -40,13 +40,14 @@ enum AutofitFile {
     static let maxBytes = 500_000
 
     static func load(from url: URL = url) -> PersistedAutofit? {
-        guard let data = SafeFile.read(url, cap: maxBytes) else { return nil }
+        guard let data = SafeFile.read(url, cap: maxBytes) else {
+            SafeFile.setAsideIfUnreadable(url)
+            return nil
+        }
         if let state = try? JSONDecoder().decode(PersistedAutofit.self, from: data) {
             return state
         }
-        let parked = url.deletingLastPathComponent()
-            .appendingPathComponent(url.lastPathComponent + ".recovered")
-        SafeFile.writeAtomic(data, to: parked)
+        ParkedCopy.park(data, beside: url)
         DebugLog.shared.log("autofit settings could not be read; a copy was parked")
         return nil
     }

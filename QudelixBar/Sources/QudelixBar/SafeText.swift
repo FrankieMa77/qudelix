@@ -2,10 +2,12 @@ import Foundation
 
 enum SafeText {
     static let defaultLimit = 160
+    static let maxCombiningRun = 3
 
     static func scrubbed(_ raw: String, limit: Int = defaultLimit) -> String {
         var out = String.UnicodeScalarView()
         var kept = 0
+        var marks = 0
         for scalar in raw.unicodeScalars {
             switch scalar.value {
             case 0..<0x20, 0x7F...0x9F, 0x2028, 0x2029,
@@ -15,6 +17,15 @@ enum SafeText {
                 continue
             default:
                 break
+            }
+            switch scalar.properties.generalCategory {
+            case .format, .control:
+                continue
+            case .nonspacingMark, .enclosingMark:
+                marks += 1
+                if marks > maxCombiningRun { continue }
+            default:
+                marks = 0
             }
             if kept == limit { return String(out) + "…" }
             out.append(scalar)

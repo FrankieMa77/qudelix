@@ -63,7 +63,10 @@ enum ProfileRulesFile {
     private static let presetSlotCount = 20
 
     static func load(from fileURL: URL = url) -> [ProfileRule] {
-        guard let data = SafeFile.read(fileURL, cap: maxBytes) else { return [] }
+        guard let data = SafeFile.read(fileURL, cap: maxBytes) else {
+            SafeFile.setAsideIfUnreadable(fileURL)
+            return []
+        }
         guard let rows = try? JSONDecoder().decode([FailableDecodable<ProfileRule>].self,
                                                    from: data) else {
             park(data, from: fileURL)

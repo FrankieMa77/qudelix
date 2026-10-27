@@ -327,7 +327,10 @@ enum BatteryHistoryFile {
     }
 
     static func load(from fileURL: URL = url, now: Date = Date()) -> BatteryHistory {
-        guard let data = SafeFile.read(fileURL, cap: maxBytes) else { return BatteryHistory() }
+        guard let data = SafeFile.read(fileURL, cap: maxBytes) else {
+            SafeFile.setAsideIfUnreadable(fileURL)
+            return BatteryHistory()
+        }
         guard let stored = try? decoder.decode(StoredHistory.self, from: data) else {
             park(data, beside: fileURL)
             return BatteryHistory()
