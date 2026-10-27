@@ -113,13 +113,23 @@ enum AutomationReadout {
     static let readOnlyHelp = "The 5K's gains are moving on their own \u{2014} Keep them, "
         + "or turn Auto-fit and Auto-trim off, to edit."
 
+    static func advisoryValues(_ g: TrimGains) -> String {
+        "would trim bass \(signed(g.bassDb)) \u{00B7} tilt \(signed(g.tiltDbPerOctave)) \u{00B7} "
+            + "presence \(signed(g.presenceDb))"
+    }
+
     static func trimLines(on: Bool, detecting: Bool, mode: TrimMode, trim: TrimGains,
-                          baseline: BalanceBaseline) -> [String] {
+                          baseline: BalanceBaseline, advisory: TrimGains = .zero) -> [String] {
         guard on else {
             return ["moves the 5K's gains a little at a time toward your usual balance"]
         }
         guard detecting else { return ["needs Detect stream quality (Level pane)"] }
         if mode == .audiophile {
+            let rounded = advisory.rounded()
+            if rounded.bassDb != 0 || rounded.tiltDbPerOctave != 0 || rounded.presenceDb != 0 {
+                return ["audiophile \u{2014} " + advisoryValues(rounded) + ", nothing moves",
+                        advisoryValues(rounded)]
+            }
             return ["audiophile \u{2014} measures only, nothing moves"]
         }
         let values = trimValues(trim)

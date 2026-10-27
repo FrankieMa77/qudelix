@@ -99,6 +99,7 @@ final class EqAutomation: ObservableObject {
     @Published private(set) var autoFit = false
     @Published private(set) var references: [UInt8: ReferenceCurve] = [:]
     @Published private(set) var trim = TrimGains.zero
+    @Published private(set) var advisory = TrimGains.zero
     @Published private(set) var following = false
     @Published private(set) var paused = false
     @Published private(set) var suspended = false
@@ -490,6 +491,8 @@ final class EqAutomation: ObservableObject {
                                         frozen: frozen, dt: ctx.dt)
         let rounded = gains.rounded()
         if rounded != trim { trim = rounded }
+        let advised = trimController.advisory.rounded()
+        if advised != advisory { advisory = advised }
         let current = trimController.baseline
         if current.readings != before { baselineDirty = true }
         if current.isLearned != baseline.isLearned || current.readings / 10 != baseline.readings / 10 {
@@ -669,7 +672,7 @@ final class EqAutomation: ObservableObject {
     #if DEBUG
     func previewSet(autoFit: Bool = false, autoTrimOn: Bool = false,
                     mode: TrimMode = .clarity, source: ReferenceSource = .auto,
-                    references: [UInt8: ReferenceCurve] = [:], trim: TrimGains = .zero,
+                    references: [UInt8: ReferenceCurve] = [:], trim: TrimGains = .zero, advisory: TrimGains = .zero,
                     baseline: BalanceBaseline = BalanceBaseline(),
                     following: Bool = false, paused: Bool = false,
                     waitingReason: String? = nil, deviationDb: Double? = nil,
@@ -680,6 +683,7 @@ final class EqAutomation: ObservableObject {
         referenceSource = source
         self.references = references
         self.trim = trim
+        self.advisory = advisory
         self.baseline = baseline
         trimController.baseline = baseline
         self.following = following

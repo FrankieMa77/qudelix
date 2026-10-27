@@ -303,7 +303,7 @@ struct ShapeRun {
 
 @MainActor
 final class BlindTuner: ObservableObject {
-    enum Mode: String, Equatable { case shape, bypass }
+    enum Mode: String, Equatable { case shape, bypass, trim }
     enum Phase: Equatable { case idle, running, finished }
 
     static let bypassTrials = 5
@@ -348,6 +348,8 @@ final class BlindTuner: ObservableObject {
     private var preGainA: Double = 0
     private var preGainB: Double = 0
     private var eqIsA = true
+    private var trimSide: [QxEqBandValue] = []
+    private var frozenTrim = TrimGains.zero
 
     enum Blocker: Equatable {
         case notConnected
@@ -356,6 +358,8 @@ final class BlindTuner: ObservableObject {
         case noGainBand
         case eqOff
         case alreadyFlat
+        case trimOff
+        case trimInaudible
 
         var message: String {
             switch self {
@@ -372,6 +376,13 @@ final class BlindTuner: ObservableObject {
                     + "Switch it on first."
             case .alreadyFlat:
                 return "Your EQ is flat, so both sides would be the same sound."
+            case .trimOff:
+                return "Auto-trim is off, so there is no trim to listen to. "
+                    + "Switch it on in the EQ pane first."
+            case .trimInaudible:
+                return "Auto-trim has nothing to apply right now — every axis is "
+                    + "under 0.1 — so both sides would be the same sound. Try again "
+                    + "after it has moved the gains."
             }
         }
     }
@@ -385,11 +396,28 @@ final class BlindTuner: ObservableObject {
         switch mode {
         case .shape:
             guard live.contains(where: { $0.filter.rendersGain }) else { return .noGainBand }
+        case .trim:
+            guard c.eqEnabled else { return .eqOff }
+            guard live.contains(where: { $0.filter.rendersGain }) else { return .noGainBand }
         case .bypass:
             guard c.eqEnabled else { return .eqOff }
             guard live.contains(where: { $0.filter != .bypass
                     && (!$0.filter.rendersGain || $0.gain != 0) }) else { return .alreadyFlat }
         }
+        return nil
+    }
+
+    nonisolated static let audibleTrimDb = 0.1
+
+    nonisolated static func trimAudible(_ g: TrimGains) -> Bool {
+        [g.bassDb, g.tiltDbPerOctave, g.presenceDb, g.airDb]
+            .contains { $0.isFinite && abs($0) >= audibleTrimDb }
+    }
+
+    static func trimBlocker(_ c: QudelixController, automation: EqAutomation) -> Blocker? {
+        guard automation.autoTrimOn else { return .trimOff }
+        if let base = blocker(c, mode: .trim) { return base }
+        guard trimAudible(automation.trim) else { return .trimInaudible }
         return nil
     }
 
@@ -487,7 +515,7 @@ final class BlindTuner: ObservableObject {
     }
 
     func start(_ c: QudelixController, mode: Mode, chance: Chance = .real) {
-        guard phase == .idle, Self.blocker(c, mode: mode) == nil else { return }
+        guard phase == .idle, mode != .trim, Self.blocker(c, mode: mode) == nil else { return }
         note = nil
         self.mode = mode
         self.chance = chance
@@ -523,6 +551,8 @@ final class BlindTuner: ObservableObject {
             c.setByEarSessionActive(true)
             publish(r)
             presentTrial(c)
+        case .trim:
+            return
         case .bypass:
             let flat = ShapeRun.flattened(baseline)
             sessionPreGain = min(ABTuner.safePreGain(for: baseline, notAbove: baselinePreGain),
@@ -536,8 +566,56 @@ final class BlindTuner: ObservableObject {
         }
     }
 
+    func startTrim(_ c: QudelixController, trim: TrimGains, chance: Chance = .real) {
+        guard phase == .idle, Self.blocker(c, mode: .trim) == nil,
+              Self.trimAudible(trim) else { return }
+        note = nil
+        mode = .trim
+        self.chance = chance
+        c.beginEqSession()
+        c.beginUndoStep("trim check")
+        baseline = c.userBands
+        baselinePreGain = c.userPreGain
+        sessionGroup = c.eqGroup
+        onDevice = c.bands
+        devicePreGain = c.preGain
+        frozenTrim = trim.clamped().rounded()
+        let solved = ReferenceFollower.solve(
+            base: baseline, basePreGain: baselinePreGain,
+            reference: baseline, referencePreGain: baselinePreGain,
+            trim: frozenTrim, iterations: ReferenceFollower.startIterations)
+        trimSide = solved.bands
+        values = [:]; summary = ""; resultBands = []
+        sameTrials = 0; sameGuesses = 0; skippedTrials = 0; trialsDone = 0
+        preferredEQ = 0; preferredFlat = 0; noPreference = 0
+        rangeScale = 1
+        sessionPreGain = min(ABTuner.safePreGain(for: baseline, notAbove: baselinePreGain),
+                             ABTuner.safePreGain(for: trimSide, notAbove: baselinePreGain))
+        run = nil
+        weights = [:]
+        trialsTotal = Self.bypassTrials
+        phase = .running
+        DebugLog.shared.log("trim blind: start gains=" + Self.gainsText(frozenTrim))
+        c.setByEarSessionActive(true)
+        presentTrimTrial(c)
+    }
+
+    nonisolated static func gainsText(_ g: TrimGains) -> String {
+        String(format: "%+.1f,%+.1f,%+.1f,%+.1f",
+               g.bassDb, g.tiltDbPerOctave, g.presenceDb, g.airDb)
+    }
+
     func cancel(_ c: QudelixController) {
         guard phase != .idle else { return }
+        if mode == .trim {
+            if phase == .running {
+                restoreBaseline(c)
+                endSession(c)
+                DebugLog.shared.log("trim blind: cancelled")
+            }
+            phase = .idle
+            return
+        }
         restoreBaseline(c)
         endSession(c)
     }
@@ -561,8 +639,9 @@ final class BlindTuner: ObservableObject {
         guard let interruption = interruption(c) else { return true }
         if interruption != .eqModeChanged { restoreBaseline(c) }
         endSession(c)
-        note = (mode == .bypass ? "Blind check" : "Shaping")
+        note = (mode == .shape ? "Shaping" : "Blind check")
             + " stopped — \(interruption.reason)."
+        if mode == .trim { DebugLog.shared.log("trim blind: cancelled") }
         return false
     }
 
@@ -587,6 +666,18 @@ final class BlindTuner: ObservableObject {
             run = r
             publish(r)
             if r.finished { finishShape(c) } else { presentTrial(c) }
+        case .trim:
+            let trimmedWon = (answer == .preferA) == eqIsA
+            switch answer {
+            case .same: noPreference += 1
+            case .preferA, .preferB:
+                if trimmedWon { preferredEQ += 1 } else { preferredFlat += 1 }
+            }
+            DebugLog.shared.log("trim blind: answer trial \(trialsDone + 1) "
+                + (answer == .same ? "same" : (trimmedWon ? "trimmed" : "base")))
+            trialsDone += 1
+            if trialsDone >= Self.bypassTrials { finishTrim(c) }
+            else { presentTrimTrial(c) }
         case .bypass:
             switch answer {
             case .same: noPreference += 1
@@ -629,6 +720,15 @@ final class BlindTuner: ObservableObject {
         eqIsA = chance.coin()
         let flat = ShapeRun.flattened(baseline)
         present(eqIsA ? baseline : flat, eqIsA ? flat : baseline, c)
+    }
+
+    private func presentTrimTrial(_ c: QudelixController) {
+        isConsistencyCheck = false
+        currentTitle = "Auto-trim, or not"
+        currentDetail = "trial \(trialsDone + 1) of \(Self.bypassTrials)"
+        eqIsA = chance.coin()
+        DebugLog.shared.log("trim blind: trial \(trialsDone + 1)")
+        present(eqIsA ? trimSide : baseline, eqIsA ? baseline : trimSide, c)
     }
 
     private func present(_ a: [QxEqBandValue], _ b: [QxEqBandValue], _ c: QudelixController) {
@@ -694,6 +794,22 @@ final class BlindTuner: ObservableObject {
         phase = .finished
     }
 
+    private func finishTrim(_ c: QudelixController) {
+        restoreBaseline(c)
+        endSession(c)
+        phase = .finished
+        DebugLog.shared.log("trim blind: finished " + Self.outcomeText(bypassOutcome))
+    }
+
+    nonisolated static func outcomeText(_ outcome: BypassOutcome) -> String {
+        switch outcome {
+        case .preferredEQ(let k): return "trimmed \(k)"
+        case .preferredFlat(let k): return "base \(k)"
+        case .noneSurvived(let eq, let flat, let same):
+            return "none trimmed=\(eq) base=\(flat) same=\(same)"
+        }
+    }
+
     private func finishBypass(_ c: QudelixController) {
         restoreBaseline(c)
         phase = .finished
@@ -737,6 +853,10 @@ final class BlindTuner: ObservableObject {
 
     func discardResult(_ c: QudelixController) {
         guard phase == .finished else { return }
+        if mode == .trim {
+            phase = .idle
+            return
+        }
         restoreBaseline(c)
         endSession(c)
     }
@@ -763,6 +883,25 @@ final class BlindTuner: ObservableObject {
         tuner.publish(r)
         tuner.resultBands = ShapeRun.curve(baseline: baseline, weights: weights,
                                            values: r.values)
+        tuner.phase = .finished
+        return tuner
+    }
+
+    static func previewTrimIdle() -> BlindTuner {
+        let tuner = BlindTuner()
+        tuner.mode = .trim
+        return tuner
+    }
+
+    static func previewTrim(trimmed: Int, base: Int, same: Int) -> BlindTuner {
+        let tuner = BlindTuner()
+        tuner.mode = .trim
+        tuner.baseline = previewBaseline()
+        tuner.trialsTotal = bypassTrials
+        tuner.trialsDone = bypassTrials
+        tuner.preferredEQ = trimmed
+        tuner.preferredFlat = base
+        tuner.noPreference = same
         tuner.phase = .finished
         return tuner
     }

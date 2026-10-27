@@ -6,12 +6,14 @@ struct TuneView: View {
     @EnvironmentObject var tuner: ABTuner
     @EnvironmentObject var tones: ToneTester
     @EnvironmentObject var blind: BlindTuner
+    @EnvironmentObject var automation: EqAutomation
 
     enum Method: String, CaseIterable, Identifiable {
         case compare = "Compare"
         case shape = "Shape"
         case tones = "Tones"
-        case check = "Blind check"
+        case check = "Blind"
+        case trim = "Trim"
         var id: String { rawValue }
     }
     @State private var method: Method = .compare
@@ -101,6 +103,12 @@ struct TuneView: View {
                 case .running:  blindSession
                 case .finished: checkResult
                 }
+            case .trim:
+                switch blind.phase {
+                case .idle:     trimIntro
+                case .running:  blindSession
+                case .finished: trimResult
+                }
             }
         }
         .onChange(of: tones.phase) { _, phase in
@@ -111,8 +119,8 @@ struct TuneView: View {
                 method = .tones
             } else if tuner.phase != .idle {
                 method = .compare
-            } else if blind.phase != .idle {
-                method = blind.mode == .bypass ? .check : .shape
+            } else if blind.phase != .idle || blind.mode == .trim {
+                method = blind.mode == .trim ? .trim : (blind.mode == .bypass ? .check : .shape)
             }
         }
         .onDisappear {
@@ -892,6 +900,101 @@ struct TuneView: View {
                 Button("Close") { blind.discardResult(controller) }
                     .controlSize(.small)
             }
+        }
+    }
+
+    private var trimIntro: some View {
+        let blocker = BlindTuner.trimBlocker(controller, automation: automation)
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("Hear what Auto-trim does")
+                .font(.system(size: 12, weight: .medium))
+
+            Text("Five times: your EQ with Auto-trim's current trim on top, or your EQ "
+                 + "as it is. Which side is which is hidden and the two are "
+                 + "loudness-matched, so the only thing left to prefer is the trim itself.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if blocker == nil {
+                Text(verbatim: "Trim now: " + AutomationReadout.trimValues(automation.trim))
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            blindNote
+
+            if let blocker {
+                warning(blocker.message)
+            } else {
+                Text("The trim is frozen when you start and Auto-trim waits. Your bands and "
+                     + "pre-gain come back exactly as they are now, whichever way the "
+                     + "answers fall.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button("Start") { blind.startTrim(controller, trim: automation.trim) }
+                .controlSize(.small)
+                .disabled(blocker != nil)
+        }
+    }
+
+    private var trimResult: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(trimHeadline)
+                .font(.system(size: 12, weight: .medium))
+
+            Text("\(blind.preferredEQ) for the trim \u{00B7} \(blind.preferredFlat) for your EQ "
+                 + "\u{00B7} \(blind.noPreference) sounded the same")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(trimReading)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Your EQ is exactly as you left it \u{2014} this check never keeps "
+                 + "anything. Auto-trim carries on as before.")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Close") { blind.discardResult(controller) }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private var trimHeadline: String {
+        switch blind.bypassOutcome {
+        case .preferredEQ(let k):
+            return "You preferred the trim in \(k) of \(BlindTuner.bypassTrials)"
+        case .preferredFlat(let k):
+            return "You preferred your EQ as it is in \(k) of \(BlindTuner.bypassTrials)"
+        case .noneSurvived:
+            return "No clear preference in \(BlindTuner.bypassTrials)"
+        }
+    }
+
+    private var trimReading: String {
+        switch blind.bypassOutcome {
+        case .preferredEQ:
+            return "The trim sounded better blind \u{2014} Auto-trim is doing what you'd "
+                + "want. Five trials say which way you leant, not by how much."
+        case .preferredFlat:
+            return "Your EQ as it is won. Consider the Clarity or Audiophile mode, "
+                + "a lower strength, or turning Auto-trim off."
+        case .noneSurvived:
+            return "The trim didn't survive blinding: on this music, at this volume, "
+                + "it is doing less than it seems to when you can see the switch. "
+                + "Five trials can only tell a strong preference from none."
         }
     }
 

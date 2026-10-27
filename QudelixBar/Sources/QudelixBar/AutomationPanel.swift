@@ -205,7 +205,7 @@ struct AutomationPanel: View {
         let lines = AutomationReadout.trimLines(
             on: automation.autoTrimOn, detecting: stageState.detectQuality,
             mode: automation.autoTrimMode, trim: automation.trim,
-            baseline: automation.baseline)
+            baseline: automation.baseline, advisory: automation.advisory)
         return ViewThatFits(in: .horizontal) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 Text(verbatim: line).lineLimit(1)

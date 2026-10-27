@@ -91,7 +91,7 @@ enum UIPreview {
                     case "import":
                         reportPaneFit(pane, ImportView(), controller, stage, blind)
                     case "tune", "shape", "shape-quiet", "shape-refused",
-                         "check", "check-none":
+                         "check", "check-none", "tune-trim", "tune-trim-result":
                         reportPaneFit(pane, TuneView(), controller, stage, blind)
                     case "stage":
                         reportPaneFit(pane, StageView(), controller, stage, blind)
@@ -275,6 +275,9 @@ enum UIPreview {
           BlindTuner.previewBypass(eq: 4, flat: 1, same: 0)),
          ("check-none", make(.tune), stageMock(),
           BlindTuner.previewBypass(eq: 2, flat: 2, same: 1)),
+         ("tune-trim", make(.tune), stageMock(), BlindTuner.previewTrimIdle()),
+         ("tune-trim-result", make(.tune), stageMock(),
+          BlindTuner.previewTrim(trimmed: 4, base: 1, same: 0)),
          ("stage", make(.stage), stageMock(running: true), BlindTuner()),
          ("level", make(.level), levelMock(), BlindTuner()),
          ("level-balance", make(.level), levelBalanceMock(), BlindTuner()),
@@ -347,6 +350,9 @@ enum UIPreview {
         case "eq-trim":
             automation.previewSet(autoTrimOn: true, source: .listening, trim: trim,
                                   baseline: learning)
+        case "tune-trim", "tune-trim-result":
+            automation.previewSet(autoTrimOn: true, source: .listening, trim: trim,
+                                  baseline: learned)
         case "level-balance":
             automation.previewSet(autoTrimOn: true, source: .listening, trim: trim,
                                   baseline: learning)
