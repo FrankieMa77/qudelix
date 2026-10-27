@@ -106,7 +106,36 @@ final class QudelixController: ObservableObject {
 
     @Published private(set) var byEarSessionActive = false
 
-    func setByEarSessionActive(_ active: Bool) { byEarSessionActive = active }
+    func setByEarSessionActive(_ active: Bool) {
+        if active { beginEqSession() }
+        byEarSessionActive = active
+        if !active { endEqSession() }
+    }
+
+    func beginEqSession() {
+        flushPendingEqSends()
+        onSessionBegin?()
+    }
+
+    func endEqSession() { onSessionEnd?() }
+
+    enum EqBaseEvent: Equatable { case slotLoad, fit, group, restore, undoRedo, reset }
+
+    var baseProvider: (() -> (bands: [QxEqBandValue], preGain: Double)?)?
+    var onReadback: (([QxEqBandValue], Double) -> Void)?
+    var onBaseEvent: ((EqBaseEvent) -> Void)?
+    var onFlashCommitted: (() -> Void)?
+    var onSessionBegin: (() -> Void)?
+    var onSessionEnd: (() -> Void)?
+    var onReferenceLanded: ((ReferenceCurve, QxEqGroup) -> Void)?
+
+    var userBands: [QxEqBandValue] { baseProvider?()?.bands ?? bands }
+    var userPreGain: Double { baseProvider?()?.preGain ?? preGain }
+    var eqReadBack: Bool { presetRead }
+    var eqRestoreDecided: Bool { restoreDecidedGroups.contains(eqGroup.rawValue) }
+    var eqSettling: Bool { pendingGroup != nil || pendingEqMode != nil }
+
+    func landReference(_ curve: ReferenceCurve) { onReferenceLanded?(curve, eqGroup) }
 
     private let hid = HIDTransport()
     private let ble = BLETransport()
@@ -214,7 +243,7 @@ final class QudelixController: ObservableObject {
     var redoLabel: String? { redoStack.last?.label }
 
     private var currentEqEdit: EqEdit {
-        EqEdit(bands: bands, preGain: preGain, mutedBands: mutedBands,
+        EqEdit(bands: userBands, preGain: userPreGain, mutedBands: mutedBands,
                enabled: eqEnabled, activePreset: activePreset,
                sourceName: eqSourceName, requested: requestedCorrection,
                sourceCurve: sourceCurve, sourcePreGain: sourcePreGain, label: "")
@@ -269,6 +298,7 @@ final class QudelixController: ObservableObject {
         }
         mutedBands = entry.mutedBands
         entry.label = ""
+        onBaseEvent?(.undoRedo)
     }
 
     private func reclaimMutedBands() {
@@ -324,11 +354,84 @@ final class QudelixController: ObservableObject {
             guard let self, self.canWrite else { return }
             DebugLog.shared.log("asking the device to persist settings")
             self.saveAllWork = nil
-            self.transportSend(.saveAll)
+            self.commitToFlash { self.transportSend(.saveAll) }
         }
         saveAllWork = persist
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: persist)
     }
+
+    @discardableResult
+    private func commitToFlash(_ send: () -> Void) -> Bool {
+        flushPendingEqSends()
+        guard let base = baseProvider?() else {
+            send()
+            return true
+        }
+        writeFollowed(bands: base.bands, preGain: base.preGain)
+        let restored = Self.sameQuantized(bands, base.bands)
+            && abs(ReferenceFollower.quantized(preGain) - ReferenceFollower.quantized(base.preGain)) < 0.05
+        guard restored else {
+            DebugLog.shared.log("flash save skipped: could not put the base EQ back first")
+            return false
+        }
+        flushPendingEqSends()
+        send()
+        onFlashCommitted?()
+        return true
+    }
+
+    nonisolated static func sameQuantized(_ a: [QxEqBandValue], _ b: [QxEqBandValue]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy { x, y in
+            var x = x, y = y
+            x.gain = ReferenceFollower.quantized(x.gain)
+            y.gain = ReferenceFollower.quantized(y.gain)
+            return x == y
+        }
+    }
+
+    @discardableResult
+    func writeFollowed(bands target: [QxEqBandValue], preGain: Double,
+                       persistToFlash: Bool = false, recordUndo: Bool = false) -> Int {
+        guard canWriteEq, target.count == bands.count else { return 0 }
+        let wantPre = EQHeadroom.clamp(ReferenceFollower.quantized(preGain))
+        var changed: [(Int, QxEqBandValue)] = []
+        for i in target.indices where i < bandCount {
+            var want = target[i]
+            want.gain = min(max(ReferenceFollower.quantized(want.gain), -12), 12)
+            var have = bands[i]
+            have.gain = ReferenceFollower.quantized(have.gain)
+            if want != have { changed.append((i, want)) }
+        }
+        let preFirst = wantPre < self.preGain
+        if preFirst {
+            setPreGain(wantPre, persistToFlash: persistToFlash, recordUndo: recordUndo)
+        }
+        for (i, want) in changed {
+            updateBand(i, want, persistToFlash: persistToFlash, recordUndo: recordUndo)
+        }
+        if !preFirst {
+            setPreGain(wantPre, persistToFlash: persistToFlash, recordUndo: recordUndo)
+        }
+        return changed.count
+    }
+
+    func keepFollowed(base: (bands: [QxEqBandValue], preGain: Double),
+                      followed: (bands: [QxEqBandValue], preGain: Double),
+                      undoLabel: String) {
+        guard canWriteEq else { return }
+        writeFollowed(bands: base.bands, preGain: base.preGain)
+        checkpoint(undoLabel, discrete: true)
+        writeFollowed(bands: followed.bands, preGain: followed.preGain, persistToFlash: true)
+    }
+
+    #if DEBUG
+    func debugFireFlashSave() {
+        saveAllWork?.cancel()
+        saveAllWork = nil
+        commitToFlash { transportSend(.saveAll) }
+    }
+    #endif
 
     private func eqObserved() {
         snapshotWork?.cancel()
@@ -351,8 +454,9 @@ final class QudelixController: ObservableObject {
 
     private func snapshotNow() {
         guard presetRead, case .connected = connection else { return }
-        let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: bands,
-                              preGain: preGain, enabled: eqEnabled,
+        let live = baseProvider?()
+        let snap = EqSnapshot(groupRaw: eqGroup.rawValue, bands: live?.bands ?? bands,
+                              preGain: live?.preGain ?? preGain, enabled: eqEnabled,
                               name: eqSourceName, mutedBands: mutedBands,
                               deviceIdentity: deviceIdentity,
                               activePreset: slotReportSeen ? activePreset
@@ -403,6 +507,7 @@ final class QudelixController: ObservableObject {
         if eqEnabled != snap.enabled { setEqEnabled(snap.enabled, persistToFlash: false) }
         lastImportSummary = "Restored your last EQ"
             + (snap.name.map { ": \($0)" } ?? "")
+        onBaseEvent?(.restore)
         return true
     }
 
@@ -515,6 +620,7 @@ final class QudelixController: ObservableObject {
     #endif
 
     private func resetDeviceState() {
+        onBaseEvent?(.reset)
         snapshotWork?.cancel()
         saveAllWork?.cancel()
         undoStack.removeAll()
@@ -911,6 +1017,7 @@ final class QudelixController: ObservableObject {
         if surviving != mutedBands { mutedBands = surviving }
         reclaimMutedBands()
         presetRead = true
+        onReadback?(readBackBands, readBackPreGain)
         restoreIfNeeded()
         eqObserved()
     }
@@ -993,6 +1100,7 @@ final class QudelixController: ObservableObject {
         crossfeedLevel = nil
         mutedBands = [:]
         presetRead = false
+        onBaseEvent?(.group)
         transportSend(.reqEqPreset, [group.requestMask])
         transportSend(.reqDevConfig, [0xC0])
     }
@@ -1118,6 +1226,11 @@ final class QudelixController: ObservableObject {
         guard Date().timeIntervalSince(lastEqModeSend) > 0.3 else { return }
         lastEqModeSend = Date()
         flushPendingEqSends()
+        if let base = baseProvider?() {
+            writeFollowed(bands: base.bands, preGain: base.preGain)
+            flushPendingEqSends()
+            onFlashCommitted?()
+        }
         eqModeSerial += 1
         let serial = eqModeSerial
         let delays = eqModeRetryDelays
@@ -1152,6 +1265,7 @@ final class QudelixController: ObservableObject {
         assembler.reset()
         transportSend(.loadEqPreset, [UInt8(index)])
         transportSend(.reqEqPreset, [eqGroup.requestMask])
+        onBaseEvent?(.slotLoad)
         return true
     }
 
@@ -1211,8 +1325,8 @@ final class QudelixController: ObservableObject {
 
     func savePreset(_ index: Int) {
         guard canWriteEq, (0..<Self.presetCount).contains(index) else { return }
-        flushPendingEqSends()
-        transportSend(.saveEqPreset, [UInt8(index)])
+        let saved = commitToFlash { transportSend(.saveEqPreset, [UInt8(index)]) }
+        guard saved else { return }
         if let name = Self.nameOnSave(source: eqSourceName,
                                       existing: presetNames[index],
                                       unchangedSinceSource: curveMatchesSource) {
@@ -1375,6 +1489,7 @@ final class QudelixController: ObservableObject {
         DebugLog.shared.log("import: \(lastImportSummary ?? "")")
         sourceCurve = bands
         sourcePreGain = preGain
+        onBaseEvent?(.fit)
         return true
     }
 
