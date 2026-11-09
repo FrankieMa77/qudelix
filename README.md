@@ -142,7 +142,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.6.0.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.6.1.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -150,7 +150,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.6.0.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.6.1.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -181,6 +181,9 @@ Auto-fit — those need the Mac's audio engine.
 - **Other distributions:** download `qudelix-<version>-linux-x86_64.tar.gz`
   (and `qudelix-app-<version>-linux-x86_64.tar.gz` for the app), unpack it and
   run `sudo ./install.sh`.
+- **Arch Linux:** community packages on the AUR,
+  [qudelix-cli-bin](https://aur.archlinux.org/packages/qudelix-cli-bin) and
+  [qudelix-app-bin](https://aur.archlinux.org/packages/qudelix-app-bin).
 
 Then unplug and replug the 5K so the included udev rule lets your user reach it
 without `sudo`. USB is the supported link and the recommended one; Bluetooth is
@@ -703,6 +706,17 @@ than there.
   exists, but downloading and installing it is manual.
 
 ## Changelog
+
+### 1.6.1 — 2026-11-09
+
+- **`sudo qudelix` can no longer run alongside the app.** The 5K is now held
+  across users, root included, so a second program that opens it is told it is
+  busy instead of talking to the device at the same time.
+- **The busy message says what holds the 5K** (the Qudelix app, with its pid,
+  or another `qudelix` command), how to free it, and that `qudelix` does not
+  need `sudo`.
+- `qudelix status` shows the EQ as "20-band" or "10-band".
+- Arch Linux: the AUR packages are listed under [Linux](#linux).
 
 ### 1.6.0 — 2026-11-09
 

@@ -24,7 +24,10 @@ carries the udev rule:
 sudo apt install ./qudelix_<version>_amd64.deb ./qudelix-app_<version>_amd64.deb
 ```
 
-On other distributions unpack the tarball and run its installer:
+On Arch Linux install `qudelix-cli-bin` and `qudelix-app-bin` from the AUR
+([qudelix-cli-bin](https://aur.archlinux.org/packages/qudelix-cli-bin),
+[qudelix-app-bin](https://aur.archlinux.org/packages/qudelix-app-bin)). On other distributions
+unpack the tarball and run its installer:
 
 ```
 tar xzf qudelix-app-<version>-linux-x86_64.tar.gz
@@ -45,8 +48,9 @@ the app menu starts it hidden in the tray when you sign in.
 
 While the app is connected to the 5K it holds the device, so `qudelix` reports it as busy
 (exit code 4) until the 5K is unplugged or you quit the app. Closing the window does not release
-it while the app stays in the top bar. An app that is running but not connected does not block
-`qudelix`. USB is the supported link; the Bluetooth link is untested.
+it while the app stays in the top bar: quit it from the top-bar menu or the app menu. The hold
+applies to every user on the machine, root included. An app that is running but not connected
+does not block `qudelix`. USB is the supported link; the Bluetooth link is untested.
 
 ## Install (command line)
 
@@ -55,6 +59,9 @@ Debian and Ubuntu (amd64):
 ```
 sudo apt install ./qudelix_<version>_amd64.deb
 ```
+
+Arch Linux: install `qudelix-cli-bin` from the AUR
+([qudelix-cli-bin](https://aur.archlinux.org/packages/qudelix-cli-bin)).
 
 Other distributions: unpack the tarball and run its installer.
 
@@ -82,8 +89,8 @@ The `.deb` installs `/usr/lib/udev/rules.d/70-qudelix.rules` and the tarball ins
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0a12", ATTRS{product}=="*Qudelix*", TAG+="uaccess", MODE="0660", GROUP="plugdev"
 ```
 
-The rule matches the vendor id and the product name, not a product id, so it does not depend on
-the model revision. On a desktop session managed by logind or elogind, which covers Ubuntu,
+The rule matches the vendor id and the product name, not a product id, so it works whatever USB
+product id the 5K reports in its current USB mode. On a desktop session managed by logind or elogind, which covers Ubuntu,
 Debian, Arch and Artix with elogind, `uaccess` gives the logged-in user access without any group
 change. Without a seat manager the `plugdev` group is used instead. Debian and Ubuntu ship that
 group. If the device is present but not readable, add your user to it, log out and back in, then
@@ -96,6 +103,12 @@ sudo usermod -aG plugdev "$USER"
 Arch and Artix have no `plugdev` group, so udev logs an error for the `GROUP` entry and ignores
 it; `uaccess` still applies under logind or elogind. Without one, create the group first
 (`sudo groupadd plugdev`) or change `GROUP` in the rule to a group you belong to.
+
+`qudelix` never needs `sudo`; the rule gives your user access, and running it as root only adds
+confusion. A "busy" message means the Qudelix app (or another `qudelix` command) holds the 5K.
+The app keeps the 5K while it sits in the top bar, even with its window closed, so quit it from
+the top-bar menu or the app menu and run the command again. The message names the program and its
+pid when it can find it.
 
 `qudelix probe` needs no device access. It reports the hidraw nodes it can see, their
 permissions and what the machine offers for each link.
@@ -158,8 +171,10 @@ exit codes: 0 ok · 1 the device answered and then failed · 2 usage error
             4 another qudelix or the Qudelix app is using the device
 ```
 
-Only one `qudelix` talks to the device at a time. Every command that opens the device takes a
-lock file (`qudelix.lock` in the state directory); a second one exits at once with code 4.
+Only one program talks to the device at a time. Every command that opens the device takes a
+lock file (`qudelix.lock` in the state directory) and then a lock on the device node itself, which
+is shared by every user, root included, and by the app; a second program exits at once with
+code 4.
 
 Every command that rewrites the live EQ (`import`, `preset push`, `preset load`,
 `library apply`, `library fetch`, `ai suggest --apply`, `history restore`) first records the
