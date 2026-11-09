@@ -1,5 +1,6 @@
 #if os(Linux)
 import XCTest
+import Glibc
 @testable import QudelixBar
 
 final class HidrawDevicesTests: XCTestCase {
@@ -186,6 +187,67 @@ final class HidrawDevicesTests: XCTestCase {
         XCTAssertEqual(HidrawDevices.strippingReportID([0x05, 0x02, 0x02], reportID: -1),
                        [0x05, 0x02, 0x02])
         XCTAssertEqual(HidrawDevices.strippingReportID([], reportID: 0), [])
+    }
+
+    private func makeFifo(_ node: String) throws -> String {
+        let path = "\(roots.dev)/\(node)"
+        XCTAssertEqual(mkfifo(path, 0o600), 0)
+        return path
+    }
+
+    func testASecondDescriptorOnTheSameFileIsRefusedTheLock() throws {
+        let path = try makeFifo("lock-probe")
+        let first = open(path, O_RDWR | O_CLOEXEC)
+        let second = open(path, O_RDWR | O_CLOEXEC)
+        defer { close(first); close(second) }
+        XCTAssertEqual(flock(first, LOCK_EX | LOCK_NB), 0)
+        XCTAssertEqual(flock(second, LOCK_EX | LOCK_NB), -1)
+        XCTAssertEqual(errno, EWOULDBLOCK)
+        close(first)
+        XCTAssertEqual(flock(second, LOCK_EX | LOCK_NB), 0)
+    }
+
+    func testAHeldDeviceReportsBusyAndAttachesOnceReleased() throws {
+        let path = try makeFifo("hidraw1")
+        let holder = open(path, O_RDWR | O_CLOEXEC)
+        defer { close(holder) }
+        XCTAssertEqual(flock(holder, LOCK_EX | LOCK_NB), 0)
+        let guardLock = NSLock()
+        var busy: [String] = []
+        var connected: [String] = []
+        let transport = HidrawTransport(sysRoot: roots.sys, devRoot: roots.dev, pollInterval: 0.05)
+        transport.onLinkBusy = { text in guardLock.lock(); busy.append(text); guardLock.unlock() }
+        transport.onConnected = { name in guardLock.lock(); connected.append(name); guardLock.unlock() }
+        transport.start()
+        let busyDeadline = Date().addingTimeInterval(3)
+        while Date() < busyDeadline {
+            guardLock.lock(); let seen = !busy.isEmpty; guardLock.unlock()
+            if seen { break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        guardLock.lock()
+        XCTAssertFalse(busy.isEmpty)
+        XCTAssertTrue(connected.isEmpty)
+        guardLock.unlock()
+        XCTAssertFalse(transport.isConnected)
+        flock(holder, LOCK_UN)
+        let attachDeadline = Date().addingTimeInterval(3)
+        while Date() < attachDeadline, !transport.isConnected { Thread.sleep(forTimeInterval: 0.02) }
+        XCTAssertTrue(transport.isConnected)
+        guardLock.lock()
+        XCTAssertEqual(connected, ["Qudelix-5K"])
+        guardLock.unlock()
+        let contender = open(path, O_RDWR | O_CLOEXEC)
+        defer { close(contender) }
+        XCTAssertEqual(flock(contender, LOCK_EX | LOCK_NB), -1)
+        transport.stop()
+        let freeDeadline = Date().addingTimeInterval(3)
+        var freed = false
+        while Date() < freeDeadline, !freed {
+            freed = flock(contender, LOCK_EX | LOCK_NB) == 0
+            if !freed { Thread.sleep(forTimeInterval: 0.02) }
+        }
+        XCTAssertTrue(freed)
     }
 
     func testTransportStartsAndStopsWithoutADevice() {

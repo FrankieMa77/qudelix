@@ -243,6 +243,25 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testADeviceHeldByAnotherUserIsBusyWithoutBackingOff() async {
+        let blocked = autoLink()
+        blocked.busyText = "held elsewhere"
+        let free = autoLink()
+        let model = makeModel(links: [blocked, free])
+        model.start()
+        await until("busy") { model.state.connection == .busy }
+        await until("lock released") { lockIsFree() }
+        XCTAssertTrue(blocked.stopped)
+        XCTAssertNil(model.state.status)
+        let before = states.count
+        clock.advance(2)
+        await until("connected") { model.state.connection.isConnected }
+        XCTAssertGreaterThan(states.count, before)
+        XCTAssertFalse(states.contains { if case .error = $0 { return true } else { return false } })
+        await model.shutdown()
+    }
+
+    @MainActor
     func testAnUnusableLockFileIsAnErrorNamingThePathNotAFreePass() async throws {
         let target = directory.appendingPathComponent("elsewhere")
         try "x".write(to: target, atomically: true, encoding: .utf8)

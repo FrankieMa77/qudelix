@@ -598,12 +598,20 @@ final class CLITests: XCTestCase {
 
         let text = QxFormat.statusLines(snapshot).joined(separator: "\n")
         for needle in ["Qudelix 5K", "3.2.7", "77%", "-18.5 dB", "off",
-                       QxStatusParser.dacFilters[5], "user (10-band)", "5 — Harman",
+                       QxStatusParser.dacFilters[5], "10-band", "5 — Harman",
                        "48 kHz"] {
             XCTAssertTrue(text.contains(needle), needle)
         }
 
+        XCTAssertFalse(text.contains("user (10-band)"))
+        snapshot.eqGroup = .b20
+        let twenty = QxFormat.statusLines(snapshot).first { $0.hasPrefix("eq group") } ?? ""
+        XCTAssertTrue(twenty.hasSuffix("20-band"), twenty)
+        XCTAssertFalse(twenty.contains("b20"))
+        snapshot.eqGroup = .user
+
         let object = QxFormat.statusObject(snapshot)
+        XCTAssertEqual(object["eq_group_label"] as? String, "user (10-band)")
         XCTAssertEqual(object["model"] as? String, "Qudelix 5K")
         XCTAssertEqual(object["battery_percent"] as? Int, 77)
         XCTAssertEqual(object["eq_type"] as? String, "PEQ")

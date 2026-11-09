@@ -11,6 +11,7 @@ package protocol QxLink: AnyObject {
     var onConnected: ((String) -> Void)? { get set }
     var onDisconnected: (() -> Void)? { get set }
     var onLinkUnusable: ((String) -> Void)? { get set }
+    var onLinkBusy: ((String) -> Void)? { get set }
     var onPacket: (([UInt8]) -> Void)? { get set }
     func start()
     func stop()

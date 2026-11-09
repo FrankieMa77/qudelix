@@ -400,6 +400,10 @@ package final class AppModel {
         guard let opened = connected, !stopped else {
             connected?.close()
             held.release()
+            if failures.contains(where: { QudelixCLI.isDeviceBusy($0) }) {
+                publish { $0.status = nil; $0.connection = .busy }
+                return
+            }
             let missing = failures.allSatisfy { QudelixCLI.isMissingTransport($0) }
             if missing { failureStreak = 0 } else { backOff() }
             publish {

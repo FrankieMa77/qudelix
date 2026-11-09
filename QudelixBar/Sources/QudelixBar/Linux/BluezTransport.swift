@@ -22,6 +22,7 @@ final class BluezTransport: QxLink {
     var onConnected: ((String) -> Void)?
     var onDisconnected: (() -> Void)?
     var onLinkUnusable: ((String) -> Void)?
+    var onLinkBusy: ((String) -> Void)?
     var onPacket: (([UInt8]) -> Void)?
 
     private let queue = DispatchQueue(label: "qudelix.bluez")

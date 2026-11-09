@@ -14,6 +14,7 @@ final class HidrawTransport: QxLink {
     var onConnected: ((String) -> Void)?
     var onDisconnected: (() -> Void)?
     var onLinkUnusable: ((String) -> Void)?
+    var onLinkBusy: ((String) -> Void)?
     var onPacket: (([UInt8]) -> Void)?
 
     private let sysRoot: String
@@ -108,11 +109,21 @@ final class HidrawTransport: QxLink {
             let code = errno
             if code == EACCES || code == EPERM {
                 note(device.node, "permission denied opening \(device.devPath) — install the udev "
-                    + "rule \(Self.udevRuleName) and replug the device, or run as root")
+                    + "rule \(Self.udevRuleName) and replug the device")
             } else {
                 note(device.node, "open \(device.devPath) failed: \(String(cString: strerror(code)))")
             }
             return
+        }
+        if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            let code = errno
+            if code == EWOULDBLOCK {
+                close(descriptor)
+                DebugLog.shared.log("hidraw \(device.devPath) is held by another process")
+                onLinkBusy?("the device is held by another process")
+                return
+            }
+            note(device.node, "cannot lock \(device.devPath): \(String(cString: strerror(code)))")
         }
         notices.removeValue(forKey: device.node)
         let name = device.name.isEmpty ? device.node : device.name

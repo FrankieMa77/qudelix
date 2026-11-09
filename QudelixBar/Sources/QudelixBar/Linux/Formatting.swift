@@ -128,7 +128,7 @@ enum QxFormat {
             ?? s.dacFilterIndex.map { "index \($0)" } ?? "unknown"))
         rows.append(("eq", onOff(s.eqEnabled)))
         if let eqType = s.eqType { rows.append(("eq type", eqType)) }
-        rows.append(("eq group", groupLabel(s.eqGroup)))
+        rows.append(("eq group", "\(s.eqGroup.bandCount)-band"))
         rows.append(("preset", s.activePresetIndex.map {
             "\($0 + 1) — \(presetLabel($0, s.activePresetName))"
         } ?? "none (live EQ)"))

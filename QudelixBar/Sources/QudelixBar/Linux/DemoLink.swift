@@ -6,6 +6,7 @@ package final class DemoLink: QxLink {
     package var onConnected: ((String) -> Void)?
     package var onDisconnected: (() -> Void)?
     package var onLinkUnusable: ((String) -> Void)?
+    package var onLinkBusy: ((String) -> Void)?
     package var onPacket: (([UInt8]) -> Void)?
 
     static let deviceName = "Qudelix 5K"

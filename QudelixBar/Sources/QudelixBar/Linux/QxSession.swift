@@ -7,6 +7,7 @@ enum QxSessionError: Error, CustomStringConvertible, Equatable {
     case timedOut(String)
     case linkClosed
     case linkUnusable(String)
+    case deviceBusy(String)
 
     var description: String {
         switch self {
@@ -20,6 +21,8 @@ enum QxSessionError: Error, CustomStringConvertible, Equatable {
             return "the device disconnected"
         case .linkUnusable(let reason):
             return reason
+        case .deviceBusy(let text):
+            return text
         }
     }
 }
@@ -53,6 +56,7 @@ final class QxSession {
     private var state = QxDeviceState()
     private var assembler = QxPresetAssembler()
     private var eqGroup: QxEqGroup = .user
+    private var busyText: String?
     private var presetNames: [Int: String] = [:]
     private var answeredNames: Set<Int> = []
     private var lastPreset: QxUserEqPreset?
@@ -98,6 +102,13 @@ final class QxSession {
             guard let self else { return }
             self.queue.async {
                 self.linkWentDown(reason, failingWith: .linkUnusable(reason))
+            }
+        }
+        link.onLinkBusy = { [weak self] text in
+            guard let self else { return }
+            self.queue.async {
+                self.busyText = text
+                self.linkWentDown(text, failingWith: .deviceBusy(text))
             }
         }
         link.onPacket = { [weak self] bytes in
@@ -604,6 +615,7 @@ final class QxSession {
     }
 
     private func linkCameUp(_ name: String) {
+        busyText = nil
         connectedName = name
         emit("connected to \(DebugLog.sanitized(name))")
         wake()
@@ -719,6 +731,10 @@ final class QxSession {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 if condition() { continuation.resume(); return }
+                if let text = self.busyText {
+                    continuation.resume(throwing: QxSessionError.deviceBusy(text))
+                    return
+                }
                 if self.closed {
                     continuation.resume(throwing: QxSessionError.linkClosed)
                     return

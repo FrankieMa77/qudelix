@@ -50,7 +50,7 @@ enum CLIExit {
 }
 
 enum CLI {
-    static let version = "1.6.0"
+    static let version = "1.6.1"
     static let maxImportBytes = 1 << 20
     static let maxSnapshotBytes = 100_000
 
@@ -325,8 +325,9 @@ enum CLI {
 }
 
 package enum QudelixCLI {
-    static let busyMessage = "another qudelix or the Qudelix app is using the device — "
-        + "close it or wait for it to finish"
+    static func reportBusy() {
+        for line in DeviceHolders.currentBusyLines() { StdIO.error("qudelix: " + line) }
+    }
 
     package static func finish(_ status: Int32) -> Int32 {
         DebugLog.shared.flush()
@@ -395,7 +396,7 @@ package enum QudelixCLI {
         case .acquired(let acquired):
             lock = acquired
         case .busy:
-            StdIO.error("qudelix: " + busyMessage)
+            reportBusy()
             return CLIExit.deviceBusy
         case .unavailable(let message):
             StdIO.error("qudelix: " + message)
@@ -417,6 +418,10 @@ package enum QudelixCLI {
             }
         }
         guard let session = connected else {
+            if failures.contains(where: { isDeviceBusy($0.error) }) {
+                reportBusy()
+                return CLIExit.deviceBusy
+            }
             let report = Probe.report(.system())
             let sawUsbNode = report.nodes.contains { $0.isQudelix }
             for failure in failures {
@@ -443,6 +448,11 @@ package enum QudelixCLI {
             StdIO.error("qudelix: " + describe(error))
             return CLIExit.deviceError
         }
+    }
+
+    static func isDeviceBusy(_ error: Error) -> Bool {
+        guard let session = error as? QxSessionError, case .deviceBusy = session else { return false }
+        return true
     }
 
     static func isMissingTransport(_ error: Error) -> Bool {

@@ -7,6 +7,8 @@ final class FakeLink: QxLink {
     var onConnected: ((String) -> Void)?
     var onDisconnected: (() -> Void)?
     var onLinkUnusable: ((String) -> Void)?
+    var onLinkBusy: ((String) -> Void)?
+    var busyText: String?
     var onPacket: (([UInt8]) -> Void)?
 
     private let lock = NSLock()
@@ -23,6 +25,10 @@ final class FakeLink: QxLink {
 
     func start() {
         started = true
+        if let busyText {
+            onLinkBusy?(busyText)
+            return
+        }
         if autoConnectOnStart { bringUp() }
     }
 
@@ -457,6 +463,39 @@ final class QxSessionTests: XCTestCase {
         } catch let error as QxSessionError {
             XCTAssertEqual(error, .linkUnusable("BlueZ is not on the system bus"))
             XCTAssertEqual(error.description, "BlueZ is not on the system bus")
+        }
+        session.close()
+    }
+
+    func testABusyDeviceFailsConnectAtOnce() async {
+        let link = FakeLink()
+        link.busyText = "held elsewhere"
+        let session = QxSession(link: link, timeout: 30)
+        let began = Date()
+        do {
+            try await session.connect(timeout: 30)
+            XCTFail("connect should not have resolved")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .deviceBusy("held elsewhere"))
+            XCTAssertEqual(error.description, "held elsewhere")
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5)
+        session.close()
+    }
+
+    func testABusyReportDuringAPendingWaitFailsIt() async throws {
+        let link = FakeLink()
+        let session = QxSession(link: link, timeout: 30)
+        async let connecting: Void = session.connect(timeout: 30)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        link.onLinkBusy?("held elsewhere")
+        do {
+            try await connecting
+            XCTFail("connect should not have resolved")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .deviceBusy("held elsewhere"))
         }
         session.close()
     }

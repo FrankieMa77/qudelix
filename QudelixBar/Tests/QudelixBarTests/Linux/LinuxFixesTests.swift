@@ -306,7 +306,7 @@ final class LinuxFixesTests: XCTestCase {
         let exit = await QudelixCLI.run(arguments: ["status"], makeLinks: { _ in [link] })
         XCTAssertEqual(exit, CLIExit.deviceError)
         XCTAssertTrue(captured.text.contains(lockURL.path), captured.text)
-        XCTAssertFalse(captured.text.contains("is using the device"))
+        XCTAssertFalse(captured.text.contains("is using the 5K"))
         XCTAssertFalse(link.started)
     }
 
@@ -332,8 +332,24 @@ final class LinuxFixesTests: XCTestCase {
         let link = QxFixtures.answeringLink()
         let exit = await QudelixCLI.run(arguments: ["status"], makeLinks: { _ in [link] })
         XCTAssertEqual(exit, CLIExit.deviceBusy)
-        XCTAssertTrue(captured.text.contains("another qudelix or the Qudelix app is using the device"))
-        XCTAssertTrue(captured.text.contains("close it or wait for it to finish"))
+        XCTAssertTrue(captured.text.contains("qudelix: another qudelix command or the Qudelix app is using the 5K"))
+        XCTAssertTrue(captured.text.contains("quit it there, then try again"))
+    }
+
+    func testADeviceHeldElsewhereFailsFastWithTheBusyExitCode() async {
+        defer { StdIO.errorSink = nil }
+        let captured = StdIOCapture()
+        StdIO.errorSink = { captured.append($0) }
+        let link = QxFixtures.answeringLink()
+        link.busyText = "held elsewhere"
+        let began = Date()
+        let exit = await QudelixCLI.run(arguments: ["--timeout", "30", "status"],
+                                        makeLinks: { _ in [link] })
+        XCTAssertEqual(exit, CLIExit.deviceBusy)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 10)
+        XCTAssertTrue(captured.text.contains("qudelix: "), captured.text)
+        XCTAssertTrue(captured.text.contains("using the 5K"), captured.text)
+        XCTAssertFalse(captured.text.contains("held elsewhere"))
     }
 
     func testTheLockIsReleasedAfterACommand() async {
