@@ -142,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             w.blindTuner.cancel(w.controller)
         }
         w.automation.restoreBaseForQuit()
+        w.controller.flushSaveForQuit()
         w.controller.flushEqSnapshot()
         w.automation.persistNow()
         Self.flushPendingWrites(batteryLog: w.controller.batteryLog,

@@ -3,6 +3,9 @@
 A native macOS menu bar app for configuring the **Qudelix 5K** DAC/amp, over USB
 or Bluetooth.
 
+On Linux there is a desktop app, `qudelix-app`, and a command-line version,
+`qudelix`, for Ubuntu, Debian and other distributions — see [Linux](#linux).
+
 [![Download](https://img.shields.io/github/v/release/FrankieMa77/qudelix?label=download&style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/latest)
 [![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFrankieMa77%2Fqudelix%2Fbadges%2Fdownloads.json&style=flat-square&cacheSeconds=3600)](https://github.com/FrankieMa77/qudelix/releases)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?style=flat-square&logo=apple)](https://github.com/FrankieMa77/qudelix/releases/latest)
@@ -53,7 +56,8 @@ right.
   clear it; undo and redo throughout
 - **Auto pre-gain** — works out how much the boosted bands need pulling back
   and offers the number, rather than moving it for you
-- **Per-band mute** for an instant A/B of one band; the gain is kept
+- **Per-band mute** for an instant A/B of one band; the gain is kept, and a
+  mute is never saved to the 5K
 - **20 preset slots**, which you can name from the app — the name is stored on
   the 5K, so other software sees it too
 - **Preset library** on the Mac, beside the twenty slots on the device — as
@@ -136,7 +140,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.5.1.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.6.0.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -144,7 +148,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.5.1.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.6.0.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -155,6 +159,32 @@ download or an asset replaced after publication, and it lets you confirm two
 people downloaded the same bytes. It is not a substitute for notarization, and
 it assumes the release page you read the hash from is itself genuine. Building
 from source sidesteps all of it.
+
+## Linux
+
+`qudelix` is a command-line version of the app for Linux: status, volume, DAC
+filter, the parametric EQ, the 5K's 20 preset slots, a local preset library,
+AutoEq search and import, AI presets and an EQ history. `qudelix-app` is a
+desktop app (GTK 4 and libadwaita) with a window and a top-bar tray menu for
+most of the same things plus a battery graph; it leaves out a few command-line
+features, listed in [linux/README.md](linux/README.md). Neither has Soundstage or
+Auto-fit — those need the Mac's audio engine.
+
+- **Ubuntu 22.04 or later, Debian 12 or later (x86_64):** download
+  `qudelix_<version>_amd64.deb` from [Releases](../../releases) and run
+  `sudo apt install ./qudelix_<version>_amd64.deb`.
+- **Desktop app, Ubuntu 24.04 or later or any distribution with GTK 4.14 and
+  libadwaita 1.5:** also download `qudelix-app_<version>_amd64.deb` and install
+  both with `sudo apt install ./qudelix_<version>_amd64.deb ./qudelix-app_<version>_amd64.deb`.
+- **Other distributions:** download `qudelix-<version>-linux-x86_64.tar.gz`
+  (and `qudelix-app-<version>-linux-x86_64.tar.gz` for the app), unpack it and
+  run `sudo ./install.sh`.
+
+Then unplug and replug the 5K so the included udev rule lets your user reach it
+without `sudo`. USB is the supported link and the recommended one; Bluetooth is
+included but untested.
+Commands, permissions, file locations and uninstalling are in
+[linux/README.md](linux/README.md).
 
 ## Supported devices
 
@@ -652,9 +682,12 @@ than there.
   room sooner than its length suggests.
 - Crossfeed is shown but cannot be changed here — it lives inside the preset
   the device stores, and writing it means rewriting that preset.
-- A muted band comes back after an app restart as a bypassed band rather than
-  a muted one. The gain is safe on the device and the row reads "Off"; the
-  unmute button is what's missing.
+- A mute is never saved to the 5K: its automatic save waits until no band is
+  muted, and saving into a slot or quitting stores the band's real shape. If
+  the app restarts while the 5K stays on, the band comes back muted when the
+  app can tell it was muted from your last session; otherwise it reads "Off"
+  as a bypassed band and the unmute button is what's missing. After the 5K
+  itself restarts, the band simply plays with its real gain.
 - Profiles match the *output device*, not your headphones. Two pairs sharing
   one adapter look like the same output — and some cheap adapters report an
   identical identity to every other unit of their model.
@@ -668,6 +701,30 @@ than there.
   exists, but downloading and installing it is manual.
 
 ## Changelog
+
+### 1.6.0 — 2026-11-09
+
+- **Qudelix on Linux.** A command-line version, `qudelix`, for Ubuntu 22.04+,
+  Debian 12+ and other distributions on x86_64: status, volume, DAC filter, the
+  parametric EQ, the 20 preset slots, a local library, AutoEq search and import,
+  AI presets and an EQ history, over USB. Packaged as a `.deb` and as a tarball
+  with an installer; a udev rule gives your user access without `sudo`. Tested on
+  a real 5K on Ubuntu 26.04. A desktop app, `qudelix-app` (GTK 4 and libadwaita,
+  Ubuntu 24.04+), adds a window with Device, EQ, Presets and Library pages, a
+  battery discharge graph, a top-bar menu with volume, mute, EQ and preset
+  shortcuts, and Start at Login, packaged the same two ways. The top-bar menu
+  needs a StatusNotifier host; without one, closing the window quits the app.
+  See [Linux](#linux).
+- **Undo and redo now save to the 5K** after five seconds, like any other
+  edit, instead of leaving the undone curve unsaved.
+- **A mute is never saved to the 5K.** While a band is muted the automatic save
+  waits, and it goes out five seconds after the last mute is cleared. Saving
+  into a slot, or quitting, writes the muted band's real shape for the save and
+  then mutes it again.
+- **Quitting right after an edit no longer loses it.** A save still waiting
+  when you quit is now sent before the app closes.
+- Parts of the macOS app's code moved into separate files so the two versions
+  share them.
 
 ### 1.5.1 — 2026-10-27
 

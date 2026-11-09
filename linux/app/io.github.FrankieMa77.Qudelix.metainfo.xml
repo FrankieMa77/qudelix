@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.FrankieMa77.Qudelix</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Qudelix</name>
+  <summary>Control the Qudelix 5K DAC and amplifier</summary>
+  <developer id="io.github.frankiema77">
+    <name>FrankieMa77</name>
+  </developer>
+  <description>
+    <p>Qudelix is a desktop app for the Qudelix 5K DAC and amplifier. It shows the device state and changes its settings: volume and mute, the DAC filter, the parametric EQ, the device's 20 preset slots, a local preset library with AutoEq import, and the battery level with a discharge graph.</p>
+    <p>The USB link is the tested one. The Bluetooth link is included but has not been tried against a real device on Linux.</p>
+    <p>A tray icon gives quick access to volume, mute, EQ and presets. It needs a StatusNotifier host, such as the AppIndicator extension that Ubuntu ships; without one the app has no tray icon and closing the window quits it.</p>
+  </description>
+  <launchable type="desktop-id">io.github.FrankieMa77.Qudelix.desktop</launchable>
+  <url type="homepage">https://github.com/FrankieMa77/qudelix</url>
+  <url type="bugtracker">https://github.com/FrankieMa77/qudelix/issues</url>
+  <provides>
+    <binary>qudelix-app</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Settings</category>
+  </categories>
+  <releases>
+    <release version="1.6.0" date="2026-11-09"/>
+  </releases>
+</component>

@@ -1,6 +1,6 @@
 import Foundation
 
-enum QxCmd: UInt16 {
+package enum QxCmd: UInt16 {
     case reqInitData      = 0x0100
     case rspInitData      = 0x0101
     case disconnect       = 0x0107

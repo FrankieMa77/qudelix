@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#endif
 
 struct StageSettings: Codable, Equatable {
     var enabled = false
@@ -206,7 +209,11 @@ enum SafeFile {
         var data = Data()
         var chunk = [UInt8](repeating: 0, count: 64 << 10)
         while true {
+#if canImport(Glibc)
+            let n = chunk.withUnsafeMutableBytes { Glibc.read(fd, $0.baseAddress, $0.count) }
+#else
             let n = chunk.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+#endif
             if n < 0 {
                 if errno == EINTR { continue }
                 return nil
@@ -278,7 +285,12 @@ enum SafeFile {
                 guard let path, lstat(path, &st) == 0 else { return false }
                 return st.st_mode & S_IFMT == S_IFREG
             }
-            guard info, now.timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) > age else { continue }
+#if canImport(Glibc)
+            let modified = Double(st.st_mtim.tv_sec)
+#else
+            let modified = Double(st.st_mtimespec.tv_sec)
+#endif
+            guard info, now.timeIntervalSince1970 - modified > age else { continue }
             let gone = file.withUnsafeFileSystemRepresentation { path -> Bool in
                 guard let path else { return false }
                 return unlink(path) == 0
@@ -308,8 +320,13 @@ enum SafeFile {
         guard fd >= 0 else { return false }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         let written = (try? handle.write(contentsOf: data)) != nil
+#if canImport(Glibc)
+        if written { Glibc.fsync(fd) }
+        Glibc.close(fd)
+#else
         if written { Darwin.fsync(fd) }
         Darwin.close(fd)
+#endif
         let renamed = written && temp.withUnsafeFileSystemRepresentation { from -> Bool in
             guard let from else { return false }
             return url.withUnsafeFileSystemRepresentation { to -> Bool in
@@ -331,7 +348,11 @@ enum SafeFile {
 enum StageStateFile {
     static var directory: URL {
         let fm = FileManager.default
+#if os(Linux)
+        let parent = XDGDirectory.data()
+#else
         let parent = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+#endif
         let dir = parent.appendingPathComponent("QudelixBar", isDirectory: true)
         switch lstatMode(dir) {
         case let mode? where mode & S_IFMT == S_IFDIR:

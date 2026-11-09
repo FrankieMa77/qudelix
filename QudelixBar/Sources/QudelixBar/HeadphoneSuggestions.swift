@@ -1,4 +1,6 @@
+#if canImport(Combine)
 import Combine
+#endif
 import Foundation
 
 @MainActor
@@ -277,6 +279,7 @@ final class HeadphoneSuggestions: ObservableObject {
         }
     }
 
+#if !os(Linux)
     func quickFit(name: String, controller: QudelixController,
                   openImport: @escaping @MainActor (String, String) -> Void) {
         guard !fitting else { return }
@@ -332,6 +335,7 @@ final class HeadphoneSuggestions: ObservableObject {
             }
         }
     }
+#endif
 
     func dismiss() {
         banner = nil

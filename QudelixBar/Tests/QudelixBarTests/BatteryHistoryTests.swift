@@ -403,6 +403,7 @@ final class BatteryHistoryTests: XCTestCase {
         XCTAssertEqual(BatteryHistory.Window.week.tickLabel(ticks[0], calendar: calendar), "Sat")
     }
 
+#if !os(Linux)
     func testDurationsReadNaturally() {
         XCTAssertEqual(BatteryHistoryBody.duration(30), "1 min")
         XCTAssertEqual(BatteryHistoryBody.duration(25 * 60), "25 min")
@@ -410,6 +411,7 @@ final class BatteryHistoryTests: XCTestCase {
         XCTAssertEqual(BatteryHistoryBody.duration(3 * 3600 + 12 * 60), "3 h 12 min")
         XCTAssertEqual(BatteryHistoryBody.duration(2 * 86400 + 5 * 3600), "2 d 5 h")
     }
+#endif
 
     private var scratch: URL!
 
@@ -678,6 +680,7 @@ final class BatteryHistoryTests: XCTestCase {
         }
     }
 
+#if !os(Linux)
     @MainActor
     func testADayOfPlusMinusOnePercentFlickerWritesAFractionOfWhatItUsedTo() {
         let url = scratch.appendingPathComponent("battery-history.json")
@@ -730,4 +733,5 @@ final class BatteryHistoryTests: XCTestCase {
         XCTAssertEqual(loaded.samples.count, log.history.samples.count)
         XCTAssertLessThan(log.history.samples.count * 2, legacy.samples.count)
     }
+#endif
 }

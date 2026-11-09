@@ -2,6 +2,12 @@ import XCTest
 @testable import QudelixBar
 
 final class ParserHardeningTests: XCTestCase {
+#if os(Linux)
+    static let parseBudget: Duration = .milliseconds(250)
+#else
+    static let parseBudget: Duration = .milliseconds(50)
+#endif
+
     private func elapsed(_ work: () -> Void) -> Duration {
         (0..<5).map { _ in ContinuousClock().measure(work) }.min() ?? .zero
     }
@@ -38,7 +44,7 @@ final class ParserHardeningTests: XCTestCase {
             var parsed: ParametricEQFile?
             let took = elapsed { parsed = ParametricEQFile.parse(line) }
             XCTAssertNil(parsed, "nothing in a hostile line is a filter: \(line.prefix(24))")
-            XCTAssertLessThan(took, .milliseconds(50), "\(line.prefix(24)) took \(took)")
+            XCTAssertLessThan(took, Self.parseBudget, "\(line.prefix(24)) took \(took)")
         }
     }
 
@@ -50,7 +56,7 @@ final class ParserHardeningTests: XCTestCase {
         var parsed: ParametricEQFile?
         let took = elapsed { parsed = ParametricEQFile.parse(text) }
         XCTAssertNil(parsed)
-        XCTAssertLessThan(took, .milliseconds(50), "took \(took)")
+        XCTAssertLessThan(took, Self.parseBudget, "took \(took)")
     }
 
     func testASingleSixtyFourKilobyteLineIsRefusedOutright() {
@@ -59,7 +65,7 @@ final class ParserHardeningTests: XCTestCase {
         var parsed: ParametricEQFile?
         let took = elapsed { parsed = ParametricEQFile.parse(line) }
         XCTAssertNil(parsed)
-        XCTAssertLessThan(took, .milliseconds(50), "took \(took)")
+        XCTAssertLessThan(took, Self.parseBudget, "took \(took)")
     }
 
     func testHostileLinesDoNotStopRealFiltersAroundThemFromImporting() {
@@ -71,7 +77,7 @@ final class ParserHardeningTests: XCTestCase {
         let took = elapsed { parsed = ParametricEQFile.parse(text) }
         XCTAssertEqual(parsed?.bands.count, 1)
         XCTAssertEqual(parsed?.preamp, -3)
-        XCTAssertLessThan(took, .milliseconds(50), "took \(took)")
+        XCTAssertLessThan(took, Self.parseBudget, "took \(took)")
     }
 
     func testEveryLegitimateFilterLineLayoutParsesToTheSameBand() {

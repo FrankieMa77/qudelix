@@ -13,7 +13,11 @@ final class DebugLogTests: XCTestCase {
 
     func testTheRealLogStaysInTheLogsFolderOutsideTests() throws {
         let url = try XCTUnwrap(DebugLog.logURL(underTests: false))
+#if os(Linux)
+        XCTAssertTrue(url.path.hasSuffix("/qudelix/qudelix.log"), url.path)
+#else
         XCTAssertTrue(url.path.hasSuffix("/Library/Logs/QudelixBar.log"), url.path)
+#endif
     }
 
     func testEveryLogLineStartsWithTheDateAndTime() throws {

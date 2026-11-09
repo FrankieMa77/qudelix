@@ -18,12 +18,7 @@ final class BLETransport: NSObject {
     static let gaiaCommand = CBUUID(string: "00001101-D102-11E1-9B23-00025B00A5A5")
     static let gaiaResponse = CBUUID(string: "00001102-D102-11E1-9B23-00025B00A5A5")
 
-    enum Vendor: UInt16, CaseIterable {
-        case qudelix = 0xF001
-        case qudelixMk2 = 0xF003
-
-        var label: String { String(format: "0x%04X", rawValue) }
-    }
+    typealias Vendor = GaiaFraming.Vendor
 
     private var central: CBCentralManager!
     private var lastReportedState: CBManagerState?
@@ -50,24 +45,15 @@ final class BLETransport: NSObject {
     }
 
     static func frame(_ vendor: Vendor, _ cmd: QxCmd, _ data: [UInt8]) -> [UInt8] {
-        [UInt8(vendor.rawValue >> 8), UInt8(vendor.rawValue & 0xFF)]
-            + QxPacket.payload(cmd, data)
+        GaiaFraming.frame(vendor, cmd, data)
     }
 
     static func decode(_ raw: [UInt8], expecting vendor: Vendor) -> (packet: [UInt8], status: UInt8)? {
-        guard raw.count >= 5 else { return nil }
-        let seen = UInt16(raw[0]) << 8 | UInt16(raw[1])
-        guard seen == vendor.rawValue else { return nil }
-        let status = raw[4]
-        let payload = Array(raw[5...])
-        guard payload.count + 2 <= 0xFF else { return nil }
-        let packet = [UInt8(payload.count + 2), raw[2] & 0x7F, raw[3]] + payload
-        return (packet, status)
+        GaiaFraming.decode(raw, expecting: vendor)
     }
 
     static func writeRefusal(frame: [UInt8], budget: Int) -> String? {
-        guard frame.count > budget else { return nil }
-        return "\(frame.count) bytes, over the \(budget)-byte single-write budget"
+        GaiaFraming.writeRefusal(frame: frame, budget: budget)
     }
 
     func send(_ cmd: QxCmd, _ data: [UInt8] = []) {

@@ -1,0 +1,109 @@
+name: Linux
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container: swift:6.4-jammy
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libdbus-1-dev pkg-config libcurl4-openssl-dev binutils
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: QudelixBar/.build-test
+          key: ${{ runner.os }}-jammy-swift-6.4-test-${{ hashFiles('QudelixBar/Package.swift', 'QudelixBar/Sources/**', 'QudelixBar/Tests/**') }}
+          restore-keys: |
+            ${{ runner.os }}-jammy-swift-6.4-test-
+
+      - name: Test
+        run: swift test --scratch-path .build-test
+        working-directory: QudelixBar
+
+      - name: Build release binary
+        run: swift build -c release --static-swift-stdlib --product qudelix
+        working-directory: QudelixBar
+
+      - name: Build packages
+        run: |
+          bash linux/build-deb.sh --binary QudelixBar/.build/release/qudelix --out dist-linux
+          bash linux/build-tarball.sh --binary QudelixBar/.build/release/qudelix --out dist-linux
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qudelix-deb
+          path: dist-linux/*.deb
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qudelix-tarball
+          path: dist-linux/*.tar.gz
+
+  app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container: swift:6.4-noble
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libdbus-1-dev pkg-config libcurl4-openssl-dev binutils \
+            libgtk-4-dev libadwaita-1-dev \
+            xvfb xauth fonts-cantarell adwaita-icon-theme librsvg2-common libgl1-mesa-dri \
+            dpkg-dev desktop-file-utils appstream dbus
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: QudelixBar/.build-test
+          key: ${{ runner.os }}-noble-app-swift-6.4-test-${{ hashFiles('QudelixBar/Package.swift', 'QudelixBar/Sources/**', 'QudelixBar/Tests/**') }}
+          restore-keys: |
+            ${{ runner.os }}-noble-app-swift-6.4-test-
+
+      - name: Test
+        run: xvfb-run -a swift test --scratch-path .build-test --filter QudelixGtkTests
+        working-directory: QudelixBar
+        env:
+          QUDELIX_APP: "1"
+
+      - name: Build release binary
+        run: swift build -c release --static-swift-stdlib --product qudelix-app
+        working-directory: QudelixBar
+        env:
+          QUDELIX_APP: "1"
+
+      - name: Validate desktop file and metadata
+        run: |
+          desktop-file-validate linux/app/io.github.FrankieMa77.Qudelix.desktop
+          appstreamcli validate --no-net linux/app/io.github.FrankieMa77.Qudelix.metainfo.xml
+
+      - name: Build packages
+        run: |
+          bash linux/build-app-deb.sh --binary QudelixBar/.build/release/qudelix-app --out dist-linux
+          bash linux/build-app-tarball.sh --binary QudelixBar/.build/release/qudelix-app --out dist-linux
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qudelix-app-deb
+          path: dist-linux/*.deb
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qudelix-app-tarball
+          path: dist-linux/*.tar.gz

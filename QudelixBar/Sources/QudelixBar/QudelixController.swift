@@ -59,17 +59,6 @@ final class QudelixController: ObservableObject {
         return "Plugged in, not charging"
     }
 
-    nonisolated static func exportToken(for filter: QxFilter) -> String? {
-        switch filter {
-        case .peak: return "PK"
-        case .lowShelf: return "LSC"
-        case .highShelf: return "HSC"
-        case .lpf: return "LPQ"
-        case .hpf: return "HPQ"
-        case .bypass: return nil
-        }
-    }
-
     var dacFilterLabel: String? {
         guard let i = dacFilterType,
               QxStatusParser.dacFilters.indices.contains(i) else { return nil }
@@ -87,7 +76,19 @@ final class QudelixController: ObservableObject {
     @Published var activePreset: Int?
     @Published var lastImportSummary: String?
 
-    @Published private(set) var mutedBands: [Int: QxFilter] = [:]
+    @Published private(set) var mutedBands: [Int: QxFilter] = [:] {
+        didSet {
+            guard !holdingMutes else { return }
+            if mutedBands.isEmpty {
+                if !oldValue.isEmpty { releaseParkedSave() }
+            } else if let work = saveAllWork, !work.isCancelled {
+                work.cancel()
+                saveAllWork = nil
+                saveWasPending = true
+            }
+        }
+    }
+    private var holdingMutes = false
 
     @Published private(set) var requestedCorrection: ParametricEQFile?
 
@@ -99,8 +100,6 @@ final class QudelixController: ObservableObject {
         paneRequests &+= 1
     }
     var previewAutoEq: (entries: [AutoEqEntry], query: String)?
-    static let presetCount = QxEq.presetCount
-
     @Published private(set) var eqGroup: QxEqGroup = .user
     var bandCount: Int { eqGroup.bandCount }
 
@@ -131,10 +130,7 @@ final class QudelixController: ObservableObject {
         byEarSessionActive = false
         sessionBase = nil
         if wasActive {
-            if saveWasPending {
-                saveWasPending = false
-                armSaveAll()
-            }
+            releaseParkedSave()
             if observe, presetRead { eqObserved() }
         }
         if lastImportSummary == Self.sessionRefusalText { lastImportSummary = nil }
@@ -338,6 +334,7 @@ final class QudelixController: ObservableObject {
             updateBand(i, band, persistToFlash: false)
         }
         mutedBands = entry.mutedBands
+        requestSave()
         entry.label = ""
         onBaseEvent?(.undoRedo)
     }
@@ -390,10 +387,22 @@ final class QudelixController: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: snap)
 
         guard persistToFlash else { return }
-        guard !byEarSessionActive else {
+        requestSave()
+    }
+
+    private func requestSave() {
+        guard !byEarSessionActive, mutedBands.isEmpty else {
+            saveAllWork?.cancel()
+            saveAllWork = nil
             saveWasPending = true
             return
         }
+        armSaveAll()
+    }
+
+    private func releaseParkedSave() {
+        guard saveWasPending, !byEarSessionActive, mutedBands.isEmpty else { return }
+        saveWasPending = false
         armSaveAll()
     }
 
@@ -401,8 +410,12 @@ final class QudelixController: ObservableObject {
         saveAllWork?.cancel()
         let persist = DispatchWorkItem { [weak self] in
             guard let self, self.canWrite else { return }
-            DebugLog.shared.log("asking the device to persist settings")
             self.saveAllWork = nil
+            guard self.mutedBands.isEmpty, !self.byEarSessionActive else {
+                self.saveWasPending = true
+                return
+            }
+            DebugLog.shared.log("asking the device to persist settings")
             self.commitToFlash { self.transportSend(.saveAll) }
         }
         saveAllWork = persist
@@ -412,21 +425,53 @@ final class QudelixController: ObservableObject {
     @discardableResult
     private func commitToFlash(_ send: () -> Void) -> Bool {
         flushPendingEqSends()
-        guard let base = baseProvider?() else {
-            send()
-            return true
+        let held = mutedBands
+        holdingMutes = true
+        defer { holdingMutes = false }
+        let following = baseProvider?()
+        if let base = following {
+            writeFollowed(bands: base.bands, preGain: base.preGain)
+            let restored = Self.sameQuantized(bands, base.bands)
+                && abs(ReferenceFollower.quantized(preGain) - ReferenceFollower.quantized(base.preGain)) < 0.05
+            guard restored else {
+                DebugLog.shared.log("flash save skipped: could not put the base EQ back first")
+                return false
+            }
+            flushPendingEqSends()
         }
-        writeFollowed(bands: base.bands, preGain: base.preGain)
-        let restored = Self.sameQuantized(bands, base.bands)
-            && abs(ReferenceFollower.quantized(preGain) - ReferenceFollower.quantized(base.preGain)) < 0.05
-        guard restored else {
-            DebugLog.shared.log("flash save skipped: could not put the base EQ back first")
-            return false
+        if !held.isEmpty {
+            for (index, shape) in held where bands.indices.contains(index) && bands[index].filter == .bypass {
+                var real = bands[index]
+                real.filter = shape
+                updateBand(index, real, persistToFlash: false, recordUndo: false)
+            }
+            flushPendingEqSends()
         }
-        flushPendingEqSends()
         send()
-        onFlashCommitted?()
+        if !held.isEmpty {
+            for (index, shape) in held where bands.indices.contains(index) && bands[index].filter == shape {
+                var silent = bands[index]
+                silent.filter = .bypass
+                updateBand(index, silent, persistToFlash: false, recordUndo: false)
+                if bands[index].filter == .bypass { mutedBands[index] = shape }
+            }
+            flushPendingEqSends()
+        }
+        if following != nil { onFlashCommitted?() }
         return true
+    }
+
+    func flushSaveForQuit() {
+        let armed = saveAllWork.map { !$0.isCancelled } ?? false
+        guard armed || saveWasPending, canWriteEq, !byEarSessionActive else { return }
+        saveAllWork?.cancel()
+        saveAllWork = nil
+        saveWasPending = false
+        commitToFlash { transportSend(.saveAll) }
+        flushEqSendsBlocking()
+        if link == .bluetooth {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
     }
 
     nonisolated static func sameQuantized(_ a: [QxEqBandValue], _ b: [QxEqBandValue]) -> Bool {
@@ -892,25 +937,6 @@ final class QudelixController: ObservableObject {
         let name = Self.displayName(raw)
         let stored = name.isEmpty ? nil : name
         if presetNames[idx] != stored { presetNames[idx] = stored }
-    }
-
-    nonisolated static let maxPresetNameLength = 32
-
-    nonisolated static func displayName(_ s: String,
-                                        limit: Int = maxPresetNameLength) -> String {
-        let s = SafeText.scrubbed(
-            String(String.UnicodeScalarView(s.unicodeScalars.prefix(limit * 4))),
-            limit: limit * 4)
-        let kept = s.unicodeScalars.filter { u in
-            switch u.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator: return false
-            default: return true
-            }
-        }
-        return String(String.UnicodeScalarView(kept))
-            .trimmingCharacters(in: .whitespaces)
-            .prefix(limit)
-            .trimmingCharacters(in: .whitespaces)
     }
 
     private func evaluateCompatibility() {
@@ -1405,15 +1431,6 @@ final class QudelixController: ObservableObject {
         }
     }
 
-    nonisolated static func nameOnSave(source: String?, existing: String?,
-                                       unchangedSinceSource: Bool) -> String? {
-        guard unchangedSinceSource else { return nil }
-        guard let source = source?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !source.isEmpty else { return nil }
-        guard source != existing else { return nil }
-        return source
-    }
-
     func setPresetName(_ index: Int, _ name: String) {
         guard canWriteEq,
               let payload = QxPacket.presetNamePayload(
@@ -1579,8 +1596,6 @@ final class QudelixController: ObservableObject {
 
     var currentSourceName: String? { eqSourceName }
 
-    static let maxImportBytes = 1_000_000
-
     func importText(_ text: String, named: String? = nil) {
         guard text.utf8.count <= Self.maxImportBytes else {
             lastImportSummary = "That is too much text to be an EQ preset."
@@ -1625,18 +1640,6 @@ final class QudelixController: ObservableObject {
                 + "check that the folder is writable and the disk has room."
             return false
         }
-    }
-
-    nonisolated static func exportText(bands: [QxEqBandValue], preGain: Double,
-                                       mutedBands: [Int: QxFilter] = [:]) -> String {
-        var lines = [String(format: "Preamp: %.1f dB", preGain)]
-        for (i, b) in bands.enumerated() {
-            let shape = b.filter == .bypass ? (mutedBands[i] ?? .bypass) : b.filter
-            guard let token = exportToken(for: shape) else { continue }
-            lines.append(String(format: "Filter %d: ON %@ Fc %d Hz Gain %.1f dB Q %.2f",
-                                i + 1, token, b.freq, b.gain, b.q))
-        }
-        return lines.joined(separator: "\n") + "\n"
     }
 
     func refreshStatus() {

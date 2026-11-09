@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Qudelix
+Comment=Control the Qudelix 5K DAC and amplifier
+Exec=qudelix-app
+Icon=io.github.FrankieMa77.Qudelix
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=Qudelix;5K;DAC;Equalizer;EQ;Headphones;Amplifier;
+StartupNotify=true

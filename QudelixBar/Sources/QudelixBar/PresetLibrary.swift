@@ -212,6 +212,29 @@ enum PresetLibraryFile {
         }
     }
 
+    struct Stamp: Equatable {
+        var inode: UInt64
+        var size: Int64
+        var seconds: Int64
+        var nanoseconds: Int64
+    }
+
+    static func stamp(of fileURL: URL) -> Stamp? {
+        var status = stat()
+        let found = fileURL.withUnsafeFileSystemRepresentation { path -> Bool in
+            guard let path else { return false }
+            return stat(path, &status) == 0
+        }
+        guard found else { return nil }
+#if os(Linux)
+        let modified = status.st_mtim
+#else
+        let modified = status.st_mtimespec
+#endif
+        return Stamp(inode: UInt64(status.st_ino), size: Int64(status.st_size),
+                     seconds: Int64(modified.tv_sec), nanoseconds: Int64(modified.tv_nsec))
+    }
+
     static func outcome(from fileURL: URL = url) -> Outcome {
         guard let data = SafeFile.read(fileURL, cap: maxBytes) else {
             return hasContent(fileURL) ? .unreadable : .loaded(PresetLibraryDocument())
@@ -382,45 +405,79 @@ final class PresetLibrary: ObservableObject {
     private var nameWindow: DispatchWorkItem?
     private var nameUnsettled = false
     private var parkedSuggestion: String?
+    private var knownStamp: PresetLibraryFile.Stamp?
+    private var readOnlyFromReload = false
+    var tracksDiskChanges = false
 
     func start(fileURL url: URL = PresetLibraryFile.url) {
         guard !started else { return }
         started = true
         fileURL = url
-        let name = url.lastPathComponent
-        let document: PresetLibraryDocument
-        switch PresetLibraryFile.outcome(from: url) {
+        if tracksDiskChanges { knownStamp = PresetLibraryFile.stamp(of: url) }
+        guard let document = document(from: PresetLibraryFile.outcome(from: url)) else { return }
+        adopt(document)
+    }
+
+    @discardableResult
+    func reloadIfChangedOnDisk() -> Bool {
+        guard started, tracksDiskChanges, persistable || readOnlyFromReload else { return false }
+        let current = PresetLibraryFile.stamp(of: fileURL)
+        guard current != knownStamp else { return false }
+        knownStamp = current
+        let wasReadOnly = !persistable
+        guard let document = document(from: PresetLibraryFile.outcome(from: fileURL)) else {
+            if !persistable { readOnlyFromReload = true }
+            return true
+        }
+        adopt(document)
+        if wasReadOnly {
+            persistable = true
+            readOnlyFromReload = false
+            readOnlyNotice = nil
+            publishMessage()
+        }
+        return true
+    }
+
+    private func document(from outcome: PresetLibraryFile.Outcome) -> PresetLibraryDocument? {
+        let name = fileURL.lastPathComponent
+        switch outcome {
         case .loaded(let loaded):
-            document = loaded
+            return loaded
         case .recovered(let loaded, let parked):
-            document = loaded
             say("Some entries in \(name) couldn't be understood and were left out. "
                 + "The original is kept beside it as \(parked).")
             DebugLog.shared.log("preset library had entries that could not be read; "
                                 + "original kept as \(parked)")
+            return loaded
         case .undecodable(let parked):
             holdReadOnly("\(name) couldn't be understood, so the saved library is "
                          + "left alone. A copy is kept beside it as \(parked).")
             DebugLog.shared.log("preset library file could not be decoded; "
                                 + "kept as \(parked) and left alone")
-            return
+            return nil
         case .newer(let version, let parked):
             holdReadOnly("\(name) was written by a newer QudelixBar (format \(version)), "
                          + "so the saved library is left alone. A copy is kept beside it "
                          + "as \(parked).")
             DebugLog.shared.log("preset library file is format \(version), newer than "
                                 + "this build; kept as \(parked) and left alone")
-            return
+            return nil
         case .unreadable:
             holdReadOnly("\(name) couldn't be read, so the saved library is left "
                          + "alone. Check the file's permissions and its size.")
             DebugLog.shared.log("preset library file could not be read; left alone")
-            return
+            return nil
         }
+    }
+
+    private func adopt(_ document: PresetLibraryDocument) {
         presets = document.presets
         appAssignments = document.appAssignments
-        headphoneName = document.headphoneName
-        committedHeadphoneName = document.headphoneName
+        if !nameUnsettled {
+            headphoneName = document.headphoneName
+            committedHeadphoneName = document.headphoneName
+        }
         suggestedHeadphones = document.suggestedHeadphones
     }
 
@@ -732,6 +789,7 @@ final class PresetLibrary: ObservableObject {
                                   presets: presets,
                                   appAssignments: appAssignments),
             to: fileURL)
+        if tracksDiskChanges { knownStamp = PresetLibraryFile.stamp(of: fileURL) }
         if written {
             guard writeFailureNotice != nil else { return }
             writeFailureNotice = nil

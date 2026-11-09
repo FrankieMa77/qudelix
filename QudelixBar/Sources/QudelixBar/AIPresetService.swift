@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 enum AIProvider: String, CaseIterable, Identifiable {
     case mistral, openai, anthropic, openrouter
@@ -1072,6 +1075,7 @@ final class AIPresetStudio: ObservableObject {
                                             bands: file.bands).sanitized()
     }
 
+#if !os(Linux)
     @discardableResult
     func apply(_ draft: AIDraft, using controller: QudelixController,
                group: QxEqGroup) -> Bool {
@@ -1098,6 +1102,7 @@ final class AIPresetStudio: ObservableObject {
         }
         return true
     }
+#endif
 
     private static func message(for error: Error) -> String {
         SafeText.scrubbed((error as? LocalizedError)?.errorDescription
