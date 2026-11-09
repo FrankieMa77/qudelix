@@ -90,9 +90,9 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0a12", ATTRS{product}=="*Qudelix*", TAG+=
 ```
 
 The rule matches the vendor id and the product name, not a product id, so it works whatever USB
-product id the 5K reports in its current USB mode. On a desktop session managed by logind or elogind, which covers Ubuntu,
-Debian, Arch and Artix with elogind, `uaccess` gives the logged-in user access without any group
-change. Without a seat manager the `plugdev` group is used instead. Debian and Ubuntu ship that
+product id the 5K reports in its current USB mode. On a desktop session managed by logind or
+elogind, which covers Ubuntu, Debian, Arch and Artix with elogind, `uaccess` gives the logged-in
+user access without any group change. Without a seat manager the `plugdev` group is used instead. Debian and Ubuntu ship that
 group. If the device is present but not readable, add your user to it, log out and back in, then
 replug the 5K:
 
@@ -104,11 +104,10 @@ Arch and Artix have no `plugdev` group, so udev logs an error for the `GROUP` en
 it; `uaccess` still applies under logind or elogind. Without one, create the group first
 (`sudo groupadd plugdev`) or change `GROUP` in the rule to a group you belong to.
 
-`qudelix` never needs `sudo`; the rule gives your user access, and running it as root only adds
-confusion. A "busy" message means the Qudelix app (or another `qudelix` command) holds the 5K.
-The app keeps the 5K while it sits in the top bar, even with its window closed, so quit it from
-the top-bar menu or the app menu and run the command again. The message names the program and its
-pid when it can find it.
+`qudelix` never needs `sudo`: the rule gives your user access. A "busy" message means the Qudelix
+app (or another `qudelix` command) holds the 5K. The app keeps the 5K while it sits in the top
+bar, even with its window closed, so quit it from the top-bar menu or the app menu and run the
+command again. The message names the program and its pid when it can find it.
 
 `qudelix probe` needs no device access. It reports the hidraw nodes it can see, their
 permissions and what the machine offers for each link.
