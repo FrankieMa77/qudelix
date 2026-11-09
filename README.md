@@ -1,4 +1,4 @@
-# Qudelix for macOS
+# Qudelix for macOS and Linux
 
 A native macOS menu bar app for configuring the **Qudelix 5K** DAC/amp, over USB
 or Bluetooth.
