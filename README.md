@@ -10,6 +10,8 @@ On Linux there is a desktop app, `qudelix-app`, and a command-line version,
 [![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFrankieMa77%2Fqudelix%2Fbadges%2Fdownloads.json&style=flat-square&cacheSeconds=3600)](https://github.com/FrankieMa77/qudelix/releases)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?style=flat-square&logo=apple)](https://github.com/FrankieMa77/qudelix/releases/latest)
 [![Universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue?style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/latest)
+[![Ubuntu 22.04+](https://img.shields.io/badge/Ubuntu-22.04%2B-E95420?style=flat-square&logo=ubuntu&logoColor=white)](#linux)
+[![Debian 12+](https://img.shields.io/badge/Debian-12%2B-A81D33?style=flat-square&logo=debian&logoColor=white)](#linux)
 [![MIT](https://img.shields.io/badge/licence-MIT-green?style=flat-square)](LICENSE)
 [![Buy me a coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-support-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/alsbegmx)
 
