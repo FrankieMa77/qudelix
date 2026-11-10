@@ -160,7 +160,7 @@ flags:
   --usb                     use the USB link
   --ble                     use the Bluetooth link
   --json                    print one JSON object instead of text
-  --timeout <seconds>       how long to wait for the device (default 5)
+  --timeout <seconds>       how long to wait for the device (default 5, 30 for Bluetooth)
   --verbose                 mirror the packet log to stderr
   --help                    print this text
   --version                 print the version
@@ -218,6 +218,12 @@ same JSON format as the macOS QudelixBar app.
 The Bluetooth link (`--ble`) uses BlueZ over D-Bus. It is included but untested: no Linux
 test has been run against a real Qudelix 5K over Bluetooth. Use `--usb` for everything that
 has to work today.
+
+Connect the 5K in your system Bluetooth settings first. Connected as headphones is fine: the
+audio connection is left alone and the app opens only the Bluetooth LE control link next to it.
+Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output
+in a bug report; its Bluetooth section lists what BlueZ knows about the 5K without connecting
+to anything.
 
 ## Uninstall
 

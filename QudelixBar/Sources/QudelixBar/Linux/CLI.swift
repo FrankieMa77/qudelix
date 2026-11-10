@@ -4,6 +4,7 @@ struct CLIOptions: Equatable {
     var preferred: QxLinkKind?
     var json = false
     var timeout: TimeInterval = 5
+    var timeoutGiven = false
     var verbose = false
 }
 
@@ -85,7 +86,7 @@ enum CLI {
       --usb                     use the USB link
       --ble                     use the Bluetooth link
       --json                    print one JSON object instead of text
-      --timeout <seconds>       how long to wait for the device (default 5)
+      --timeout <seconds>       how long to wait for the device (default 5, 30 for Bluetooth)
       --verbose                 mirror the packet log to stderr
       --help                    print this text
       --version                 print the version
@@ -129,10 +130,12 @@ enum CLI {
                     throw CLIUsageError(message: "--timeout needs a number of seconds")
                 }
                 options.timeout = try seconds(arguments[index])
+                options.timeoutGiven = true
                 index += 1
             default:
                 if token.hasPrefix("--timeout=") {
                     options.timeout = try seconds(String(token.dropFirst("--timeout=".count)))
+                    options.timeoutGiven = true
                 } else if token.hasPrefix("-"), token.count > 1, Double(token) == nil,
                           !familyOwnsFlags(positional) {
                     throw CLIUsageError(message: "unknown option \(token)")
@@ -405,15 +408,18 @@ package enum QudelixCLI {
         defer { lock.release() }
 
         var connected: QxSession?
-        var failures: [(kind: QxLinkKind, error: Error)] = []
+        var failures: [(kind: QxLinkKind, error: Error, reason: String?)] = []
         for link in links {
             let session = QxSession(link: link, timeout: invocation.options.timeout)
             do {
-                try await session.connect(timeout: invocation.options.timeout)
+                try await session.connect(timeout: QxLinkTimeouts.appearance(
+                    kind: link.kind,
+                    explicit: invocation.options.timeoutGiven ? invocation.options.timeout : nil,
+                    fallback: invocation.options.timeout))
                 connected = session
                 break
             } catch {
-                failures.append((link.kind, error))
+                failures.append((link.kind, error, link.failureReason))
                 session.close()
             }
         }
@@ -427,7 +433,7 @@ package enum QudelixCLI {
             for failure in failures {
                 StdIO.error("qudelix: \(failure.kind.rawValue): "
                     + connectFailureText(failure.error, kind: failure.kind,
-                                         sawUsbNode: sawUsbNode))
+                                         sawUsbNode: sawUsbNode, reason: failure.reason))
             }
             if let advice = Probe.permissionAdvice(report) {
                 StdIO.error("qudelix: " + advice)
@@ -465,11 +471,15 @@ package enum QudelixCLI {
     }
 
     static func connectFailureText(_ error: Error, kind: QxLinkKind,
-                                   sawUsbNode: Bool) -> String {
+                                   sawUsbNode: Bool, reason: String? = nil) -> String {
         if kind == .usb, !sawUsbNode,
            let session = error as? QxSessionError,
            case .timedOut(QxSession.deviceAppearance) = session {
             return "no Qudelix 5K found on USB (no matching /dev/hidraw node)"
+        }
+        if let reason, !reason.isEmpty, let session = error as? QxSessionError,
+           case .timedOut(QxSession.deviceAppearance) = session {
+            return reason
         }
         return describe(error)
     }

@@ -111,6 +111,7 @@ package final class AppModel {
     let clock: AppClock
     private let retryInterval: TimeInterval
     private let connectTimeout: TimeInterval
+    private let bluetoothConnectTimeout: TimeInterval
 
     private var observers: [Int: (AppModelState) -> Void] = [:]
     private var nextObserverID = 0
@@ -159,7 +160,8 @@ package final class AppModel {
                  batteryStore: BatteryStore = .memory,
                  clock: AppClock = SystemClock(),
                  retryInterval: TimeInterval = 2,
-                 connectTimeout: TimeInterval = 3) {
+                 connectTimeout: TimeInterval = 3,
+                 bluetoothConnectTimeout: TimeInterval = QxLinkTimeouts.bluetoothAppearance) {
         self.linkFactory = makeLinks
         self.acquireLock = acquireLock
         self.lockProblem = lockProblem
@@ -169,6 +171,7 @@ package final class AppModel {
         self.retryInterval = retryInterval
         self.retryDelay = retryInterval
         self.connectTimeout = connectTimeout
+        self.bluetoothConnectTimeout = bluetoothConnectTimeout
     }
 
     @discardableResult
@@ -386,14 +389,18 @@ package final class AppModel {
 
         var connected: QxSession?
         var failures: [Error] = []
+        var reasons: [String] = []
         for link in links {
             let candidate = QxSession(link: link, timeout: connectTimeout)
             do {
-                try await candidate.connect(timeout: connectTimeout)
+                try await candidate.connect(timeout: QxLinkTimeouts.appearance(
+                    kind: link.kind, explicit: nil, fallback: connectTimeout,
+                    bluetooth: bluetoothConnectTimeout))
                 connected = candidate
                 break
             } catch {
                 failures.append(error)
+                if let reason = link.failureReason { reasons.append(reason) }
                 candidate.close()
             }
         }
@@ -405,10 +412,13 @@ package final class AppModel {
                 return
             }
             let missing = failures.allSatisfy { QudelixCLI.isMissingTransport($0) }
+            let lastReason = reasons.last
             if missing { failureStreak = 0 } else { backOff() }
             publish {
                 $0.status = nil
-                if missing {
+                if missing, let reason = lastReason {
+                    $0.connection = .error(reason)
+                } else if missing {
                     $0.connection = .searching
                 } else {
                     $0.connection = .error(failures.last.map { QudelixCLI.describe($0) }

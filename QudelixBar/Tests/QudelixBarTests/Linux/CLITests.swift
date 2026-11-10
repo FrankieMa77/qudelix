@@ -259,6 +259,42 @@ final class CLITests: XCTestCase {
                        "BlueZ is not on the system bus")
     }
 
+    func testBluetoothGetsThirtySecondsUnlessTimeoutIsGiven() {
+        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .usb, explicit: nil, fallback: 5), 5)
+        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: nil, fallback: 5), 30)
+        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: 12, fallback: 12), 12)
+        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .usb, explicit: 12, fallback: 12), 12)
+        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: nil, fallback: 3,
+                                                 bluetooth: 0.5), 0.5)
+        XCTAssertFalse(try CLI.parse(["status"]).options.timeoutGiven)
+        XCTAssertTrue(try CLI.parse(["--timeout", "7", "status"]).options.timeoutGiven)
+        XCTAssertTrue(try CLI.parse(["--timeout=7", "status"]).options.timeoutGiven)
+    }
+
+    func testTheRecordedBluetoothReasonReplacesTheGenericTimeoutText() {
+        let waiting = QxSessionError.timedOut(QxSession.deviceAppearance)
+        let reason = "found Qudelix-5K (connected for audio), but its Bluetooth LE control link did not come up: x"
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .bluetooth, sawUsbNode: false,
+                                                     reason: reason), reason)
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .bluetooth, sawUsbNode: false,
+                                                     reason: nil), waiting.description)
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .bluetooth, sawUsbNode: false,
+                                                     reason: ""), waiting.description)
+    }
+
+    func testProbeCarriesTheBluetoothSection() throws {
+        let root = try fakeTree([])
+        defer { try? FileManager.default.removeItem(at: root) }
+        var env = environment(root: root)
+        env.bluetooth = { BluetoothReport(bluezOnBus: true, adapterPath: "/org/bluez/hci0", powered: true,
+                                          discovering: false, devices: []) }
+        let report = Probe.report(env)
+        XCTAssertTrue(Probe.lines(report).contains { $0.contains("no Qudelix known to BlueZ") })
+        let object = Probe.object(report)
+        XCTAssertEqual((object["bluetooth"] as? [String: Any])?["bluez_on_bus"] as? Bool, true)
+        XCTAssertEqual(Probe.object(Probe.report(environment(root: root)))["bluetooth"] as? [String: Any] != nil, true)
+    }
+
     private func deviceLink(nameMask: Int = 0, eqEnabled: Bool = true) -> FakeLink {
         let link = QxFixtures.answeringLink(nameMask: nameMask, eqEnabled: eqEnabled)
         link.autoConnectOnStart = true
@@ -450,6 +486,7 @@ final class CLITests: XCTestCase {
         env.kernelRelease = { "5.15.0-generic" }
         env.access = { _ in (accessible, accessible) }
         env.runTool = { tool, _ in tools[tool] ?? nil }
+        env.bluetooth = { .unavailable }
         return env
     }
 

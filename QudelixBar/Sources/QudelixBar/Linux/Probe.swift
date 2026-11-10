@@ -29,6 +29,7 @@ struct ProbeReport: Equatable {
     var bluetoothctlVersion: String?
     var busctlPresent: Bool
     var bluezOnDBus: Bool?
+    var bluetooth: BluetoothReport = .unavailable
     var logPath: String
 }
 
@@ -42,6 +43,7 @@ struct ProbeEnvironment {
     var directoryExists: (URL) -> Bool
     var access: (String) -> (readable: Bool, writable: Bool)
     var runTool: (String, [String]) -> String?
+    var bluetooth: () -> BluetoothReport = { .unavailable }
 
     static func system() -> ProbeEnvironment {
         ProbeEnvironment(
@@ -60,7 +62,8 @@ struct ProbeEnvironment {
                 return there && isDirectory.boolValue
             },
             access: Probe.systemAccess,
-            runTool: Probe.runTool)
+            runTool: Probe.runTool,
+            bluetooth: Probe.systemBluetooth)
     }
 }
 
@@ -100,6 +103,7 @@ enum Probe {
             bluetoothctlVersion: (bluetoothctl?.isEmpty ?? true) ? nil : bluetoothctl,
             busctlPresent: busctl != nil,
             bluezOnDBus: busctl.map { $0.contains("org.bluez") },
+            bluetooth: env.bluetooth(),
             logPath: env.logPath)
     }
 
@@ -140,6 +144,7 @@ enum Probe {
         } else {
             out.append("org.bluez     \(report.bluezOnDBus == true ? "on the system bus" : "not on the system bus")")
         }
+        out += BluetoothProbe.lines(report.bluetooth)
         out.append("log           \(report.logPath)")
         return out
     }
@@ -165,6 +170,7 @@ enum Probe {
         ]
         QxFormat.put(&object, "bluetoothctl_version", report.bluetoothctlVersion)
         QxFormat.put(&object, "bluez_on_dbus", report.bluezOnDBus)
+        object["bluetooth"] = BluetoothProbe.object(report.bluetooth)
         return object
     }
 
@@ -176,6 +182,17 @@ enum Probe {
             + "(/lib/udev/rules.d/70-qudelix.rules), run "
             + "'sudo udevadm control --reload-rules && sudo udevadm trigger', "
             + "then unplug and replug the device"
+    }
+
+    static func systemBluetooth() -> BluetoothReport {
+#if os(Linux)
+        let presence = BluezPresence.system()
+        guard presence.nameHasOwner() else { return .unavailable }
+        let objects = (try? presence.managedObjects()) ?? [:]
+        return BluezLinkPlan.report(onBus: true, objects: objects)
+#else
+        return .unavailable
+#endif
     }
 
     static func systemKernelRelease() -> String {
