@@ -159,6 +159,7 @@ package final class StageModel {
     }
 
     package private(set) var state = StageModelState()
+    private var preview: StageModelState?
     package let level: LevelModel
     package var onStatusChange: (() -> Void)?
 
@@ -299,7 +300,7 @@ package final class StageModel {
     package func addObserver(_ observer: @escaping (StageModelState) -> Void) -> Int {
         nextObserverID += 1
         observers[nextObserverID] = observer
-        observer(state)
+        observer(preview ?? state)
         return nextObserverID
     }
 
@@ -307,7 +308,14 @@ package final class StageModel {
         observers[id] = nil
     }
 
+    package func showPreview(_ stage: StageModelState, level levelState: LevelModelState) {
+        preview = stage
+        level.showPreview(levelState)
+        for observer in observers.values { observer(stage) }
+    }
+
     private func publish() {
+        guard preview == nil else { return }
         state.outputKey = routing.realOutput?.name
         state.outputDescription = routing.realOutput?.description
         state.running = handle != nil

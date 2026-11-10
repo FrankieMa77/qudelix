@@ -99,6 +99,7 @@ package final class LevelModel {
     private static let balanceAnchorCoefficient = 1 - exp(-3.0 / 30)
 
     package private(set) var state = LevelModelState()
+    private var preview: LevelModelState?
     package weak var reporter: AudioDeviceReporting?
 
     var automationTick: ((EqAutomation.Context) -> Void)?
@@ -172,8 +173,13 @@ package final class LevelModel {
     package func addObserver(_ observer: @escaping (LevelModelState) -> Void) -> Int {
         nextObserverID += 1
         observers[nextObserverID] = observer
-        observer(state)
+        observer(preview ?? state)
         return nextObserverID
+    }
+
+    package func showPreview(_ next: LevelModelState) {
+        preview = next
+        for observer in observers.values { observer(next) }
     }
 
     package func removeObserver(_ id: Int) {
@@ -181,7 +187,7 @@ package final class LevelModel {
     }
 
     package func publish() {
-        guard state != notified else { return }
+        guard preview == nil, state != notified else { return }
         notified = state
         for observer in observers.values { observer(state) }
     }
