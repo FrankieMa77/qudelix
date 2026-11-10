@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 
 struct BalanceFeatures: Equatable {
@@ -40,62 +39,40 @@ final class QualityAnalyzer {
     }
 
     static let fftSize = 8192
-    private let log2n = vDSP_Length(13)
-    private var fftSetup: FFTSetup?
-    private var window = [Float](repeating: 0, count: fftSize)
-    private var real = [Float](repeating: 0, count: fftSize / 2)
-    private var imag = [Float](repeating: 0, count: fftSize / 2)
+    private let kernel: SpectrumKernel
+    private let window: [Float]
+    private var windowed = [Float](repeating: 0, count: fftSize)
     private var magnitudes = [Float](repeating: 0, count: fftSize / 2)
+    private var db = [Float](repeating: 0, count: fftSize / 2)
     private var averagedDb = [Float](repeating: -160, count: fftSize / 2)
     private var windowsAveraged = 0
     private var meanPower = [Float](repeating: 0, count: fftSize / 2)
     private var meanPowerWindows = 0
 
-    init() {
-        fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
-        vDSP_hann_window(&window, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_NORM))
-    }
-
-    deinit {
-        if let fftSetup { vDSP_destroy_fftsetup(fftSetup) }
+    init(kernel: SpectrumKernel = SpectrumKernels.make(size: QualityAnalyzer.fftSize)) {
+        precondition(kernel.size == Self.fftSize)
+        self.kernel = kernel
+        window = kernel.hannWindow()
     }
 
     func feed(_ samples: [Float]) {
-        guard samples.count >= Self.fftSize, let fftSetup else { return }
+        guard samples.count >= Self.fftSize else { return }
 
-        var windowed = [Float](repeating: 0, count: Self.fftSize)
-        samples.withUnsafeBufferPointer { p in
-            vDSP_vmul(p.baseAddress!, 1, window, 1, &windowed, 1,
-                      vDSP_Length(Self.fftSize))
-        }
-
-        real.withUnsafeMutableBufferPointer { r in
-            imag.withUnsafeMutableBufferPointer { i in
-                var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
-                windowed.withUnsafeBytes { raw in
-                    vDSP_ctoz(raw.bindMemory(to: DSPComplex.self).baseAddress!, 2,
-                              &split, 1, vDSP_Length(Self.fftSize / 2))
-                }
-                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-                vDSP_zvmags(&split, 1, &magnitudes, 1, vDSP_Length(Self.fftSize / 2))
-            }
-        }
-
-        var floorVal: Float = 1e-12
-        vDSP_vthr(magnitudes, 1, &floorVal, &magnitudes, 1, vDSP_Length(Self.fftSize / 2))
-        var windowPower: Float = 0
-        vDSP_sve(magnitudes, 1, &windowPower, vDSP_Length(Self.fftSize / 2))
+        let input = samples.count == Self.fftSize
+            ? samples : Array(samples.prefix(Self.fftSize))
+        kernel.multiply(input, window, into: &windowed)
+        kernel.powerSpectrum(of: windowed, into: &magnitudes)
+        kernel.clamp(&magnitudes, floor: 1e-12)
+        let windowPower = kernel.sum(magnitudes)
         if windowPower.isFinite {
-            vDSP_vadd(meanPower, 1, magnitudes, 1, &meanPower, 1, vDSP_Length(Self.fftSize / 2))
+            kernel.add(&meanPower, magnitudes)
             meanPowerWindows += 1
         }
-        var one: Float = 1
-        var db = [Float](repeating: 0, count: Self.fftSize / 2)
-        vDSP_vdbcon(magnitudes, 1, &one, &db, 1, vDSP_Length(Self.fftSize / 2), 0)
+        kernel.decibels(magnitudes, into: &db)
         if windowsAveraged == 0 {
             averagedDb = db
         } else {
-            vDSP_vmax(averagedDb, 1, db, 1, &averagedDb, 1, vDSP_Length(Self.fftSize / 2))
+            kernel.maximum(&averagedDb, db)
         }
         windowsAveraged += 1
     }
@@ -108,7 +85,7 @@ final class QualityAnalyzer {
 
     private func clearMeanPower() {
         meanPowerWindows = 0
-        vDSP_vclr(&meanPower, 1, vDSP_Length(Self.fftSize / 2))
+        kernel.clear(&meanPower)
     }
 
     func balance(sampleRate: Double) -> BalanceFeatures? {
