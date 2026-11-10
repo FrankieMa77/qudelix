@@ -29,6 +29,11 @@ final class FakeAudioBackend: LinuxAudioBackend {
     var changeHandler: (() -> Void)?
     var failStreams = false
     var acceptDefaultChange = true
+    var autoStageSink = true
+    var streamFormat: AudioStreamFormat? = AudioStreamFormat(rate: 48000, channels: 2)
+    var deferDefaultChange = false
+    var applyForceRate = true
+    private(set) var pendingDefault: String??
     private(set) var setDefaultCalls: [String?] = []
     private(set) var forceRateCalls: [Int] = []
     private(set) var monitors: [(sink: String, block: AudioCaptureBlock, stream: FakeAudioStream)] = []
@@ -43,15 +48,29 @@ final class FakeAudioBackend: LinuxAudioBackend {
     func setDefaultSink(named name: String?) -> Bool {
         setDefaultCalls.append(name)
         guard acceptDefaultChange else { return false }
-        configuredDefaultSinkName = name
-        defaultSinkName = name
-        changeHandler?()
+        if deferDefaultChange {
+            pendingDefault = .some(name)
+            return true
+        }
+        applyDefault(name)
         return true
+    }
+
+    private func applyDefault(_ name: String?) {
+        configuredDefaultSinkName = name
+        defaultSinkName = name ?? sinks.first { !$0.isStageSink }?.name
+        changeHandler?()
+    }
+
+    func flushDefault() {
+        guard let pending = pendingDefault else { return }
+        pendingDefault = nil
+        applyDefault(pending)
     }
 
     func setForceRate(_ rate: Int) -> Bool {
         forceRateCalls.append(rate)
-        forceRate = rate
+        if applyForceRate { forceRate = rate }
         changeHandler?()
         return true
     }
@@ -59,6 +78,7 @@ final class FakeAudioBackend: LinuxAudioBackend {
     func startMonitor(sink: String, block: @escaping AudioCaptureBlock) throws -> AudioStreamHandle {
         if failStreams { throw AudioBackendError.streamFailed }
         let stream = FakeAudioStream()
+        stream.format = streamFormat
         monitors.append((sink, block, stream))
         return stream
     }
@@ -66,13 +86,24 @@ final class FakeAudioBackend: LinuxAudioBackend {
     func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
         if failStreams { throw AudioBackendError.streamFailed }
         let stream = FakeAudioStream()
+        stream.format = streamFormat
         inserts.append((target, render, stream))
+        if autoStageSink {
+            sinks.append(AudioSink(id: 900, name: LinuxAudioNames.stageSinkName,
+                                   description: LinuxAudioNames.stageSinkDescription))
+            changeHandler?()
+            stream.onStop = { [weak self] in
+                self?.sinks.removeAll { $0.isStageSink }
+                self?.changeHandler?()
+            }
+        }
         return stream
     }
 
     func startTone(sink: String, render: @escaping AudioToneBlock) throws -> AudioStreamHandle {
         if failStreams { throw AudioBackendError.streamFailed }
         let stream = FakeAudioStream()
+        stream.format = streamFormat
         tones.append((sink, render, stream))
         return stream
     }

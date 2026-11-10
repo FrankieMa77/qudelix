@@ -670,6 +670,7 @@ final class QxSession {
         snapshot.activePresetName = snapshot.activePresetIndex.flatMap { presetNames[$0] }
         snapshot.sampleRate = state.sampleRateLabel
         snapshot.inputSource = state.inputSourceLabel
+        snapshot.activeCall = state.activeCall
         snapshot.codec = state.codecLabel
         return snapshot
     }

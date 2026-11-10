@@ -67,6 +67,7 @@ package struct QxStatusSnapshot: Equatable {
     package var activePresetName: String?
     package var sampleRate: String?
     package var inputSource: String?
+    package var activeCall: Bool?
     package var codec: String?
 
     package init() {}
