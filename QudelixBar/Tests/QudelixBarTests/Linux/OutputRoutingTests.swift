@@ -1,0 +1,265 @@
+import XCTest
+@testable import QudelixBar
+
+@MainActor
+final class OutputRoutingTests: XCTestCase {
+    private var directory: URL!
+    private var backend: FakeAudioBackend!
+    private var clock: ManualClock!
+    private var hops: HopQueue!
+
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("routing-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        backend = FakeAudioBackend()
+        backend.sinks = [StageRig.fiveK, StageRig.speakers]
+        backend.defaultSinkName = "qx_5k"
+        backend.configuredDefaultSinkName = "qx_5k"
+        clock = ManualClock()
+        hops = HopQueue()
+    }
+
+    override func tearDown() async throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private var memoryURL: URL { directory.appendingPathComponent("routing.json") }
+
+    private func makeRouting() -> OutputRouting {
+        OutputRouting(backend: backend, clock: clock, hop: hops.hop, memoryURL: memoryURL)
+    }
+
+    private func writeMemory(target: String, previous: String?) throws {
+        let data = try JSONEncoder().encode(RoutingMemory(target: target, previousConfigured: previous))
+        try data.write(to: memoryURL)
+    }
+
+    func testRealOutputIsTheDefaultSinkAndNeverTheStageSink() {
+        backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(routing.realOutput?.name, "qx_5k")
+        XCTAssertEqual(routing.sinks.map(\.name), ["qx_5k", "alsa_speakers"])
+        XCTAssertTrue(routing.stageSinkPresent)
+    }
+
+    func testFiveKOverUsbIsToldApartFromBluetooth() {
+        backend.sinks = [StageRig.fiveK, StageRig.headset, StageRig.speakers]
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertTrue(routing.outputIsQudelix)
+        XCTAssertTrue(routing.outputIsQudelixUsb)
+        backend.defaultSinkName = "bluez_output.AA"
+        routing.refresh()
+        XCTAssertTrue(routing.outputIsQudelix)
+        XCTAssertFalse(routing.outputIsQudelixUsb)
+        XCTAssertEqual(routing.realOutput?.transport, .bluetooth)
+        backend.defaultSinkName = "alsa_speakers"
+        routing.refresh()
+        XCTAssertFalse(routing.outputIsQudelix)
+    }
+
+    func testQudelixSinkPrefersTheUsbOne() {
+        backend.sinks = [StageRig.headset, StageRig.speakers, StageRig.fiveK]
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(routing.qudelixSink?.name, "qx_5k")
+        backend.sinks = [StageRig.headset, StageRig.speakers]
+        routing.refresh()
+        XCTAssertEqual(routing.qudelixSink?.name, "bluez_output.AA")
+    }
+
+    func testChangeEventsAreHoppedBeforeTheyReachTheModel() {
+        let routing = makeRouting()
+        routing.start()
+        var notifications = 0
+        routing.addObserver { notifications += 1 }
+        backend.defaultSinkName = "alsa_speakers"
+        backend.changeHandler?()
+        XCTAssertEqual(notifications, 0)
+        XCTAssertEqual(routing.realOutput?.name, "qx_5k")
+        XCTAssertEqual(hops.pending, 1)
+        hops.drain()
+        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(routing.realOutput?.name, "alsa_speakers")
+    }
+
+    func testObserversHearNothingWhenNothingChanged() {
+        let routing = makeRouting()
+        routing.start()
+        var notifications = 0
+        routing.addObserver { notifications += 1 }
+        routing.refresh()
+        routing.refresh()
+        XCTAssertEqual(notifications, 0)
+    }
+
+    func testAStaleStageDefaultFromACrashIsRestoredToTheRememberedSink() throws {
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        try writeMemory(target: "qx_5k", previous: "alsa_speakers")
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(backend.setDefaultCalls, ["alsa_speakers"])
+        XCTAssertEqual(routing.realOutput?.name, "qx_5k")
+        hops.drain()
+        XCTAssertEqual(backend.configuredDefaultSinkName, "alsa_speakers")
+        routing.refresh()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: memoryURL.path))
+    }
+
+    func testACrashThatHadNoExplicitDefaultClearsTheConfiguredOne() throws {
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        try writeMemory(target: "qx_5k", previous: nil)
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(backend.setDefaultCalls, [nil])
+    }
+
+    func testAStaleDefaultWithoutAnyMemoryIsCleared() {
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(backend.setDefaultCalls, [nil])
+    }
+
+    func testAMissingPreviousSinkFallsBackToClearing() throws {
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        try writeMemory(target: "qx_5k", previous: "unplugged_dac")
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(backend.setDefaultCalls, [nil])
+    }
+
+    func testAStageSinkOwnedByAnotherClientIsNotTouched() throws {
+        backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        try writeMemory(target: "qx_5k", previous: "alsa_speakers")
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(backend.setDefaultCalls, [])
+        XCTAssertEqual(routing.realOutput?.name, "qx_5k")
+    }
+
+    func testRestoreIsNotRepeatedInsideTheRetryWindow() throws {
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        backend.acceptDefaultChange = false
+        try writeMemory(target: "qx_5k", previous: "alsa_speakers")
+        let routing = makeRouting()
+        routing.start()
+        routing.refresh()
+        routing.refresh()
+        XCTAssertEqual(backend.setDefaultCalls.count, 1)
+        clock.advance(OutputRouting.restoreRetry + 0.5)
+        routing.refresh()
+        XCTAssertEqual(backend.setDefaultCalls.count, 2)
+    }
+
+    func testNothingIsRestoredBeforeAnySinkAppears() {
+        backend.sinks = []
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertEqual(backend.setDefaultCalls, [])
+    }
+
+    func testInsertRoundTripRemembersAndRestoresTheDefault() throws {
+        let routing = makeRouting()
+        routing.start()
+        routing.prepareInsert(target: "qx_5k")
+        let saved = try JSONDecoder().decode(RoutingMemory.self, from: Data(contentsOf: memoryURL))
+        XCTAssertEqual(saved, RoutingMemory(target: "qx_5k", previousConfigured: "qx_5k"))
+        backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
+        routing.refresh()
+        XCTAssertTrue(routing.activateStage())
+        XCTAssertEqual(backend.defaultSinkName, LinuxAudioNames.stageSinkName)
+        hops.drain()
+        XCTAssertTrue(routing.isStageDefault)
+        XCTAssertEqual(routing.realOutput?.name, "qx_5k")
+        routing.endInsert()
+        XCTAssertEqual(backend.setDefaultCalls.last, "qx_5k")
+        backend.sinks.removeAll { $0.isStageSink }
+        hops.drain()
+        routing.refresh()
+        XCTAssertFalse(routing.isStageDefault)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: memoryURL.path))
+    }
+
+    func testEndingAnInsertThatNeverSwitchedLeavesTheDefaultAlone() {
+        let routing = makeRouting()
+        routing.start()
+        routing.prepareInsert(target: "qx_5k")
+        routing.endInsert()
+        XCTAssertEqual(backend.setDefaultCalls, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: memoryURL.path))
+    }
+
+    func testEndingAnInsertWhoseSwitchWasStillInFlightStillRestores() {
+        backend.deferDefaultChange = true
+        let routing = makeRouting()
+        routing.start()
+        routing.prepareInsert(target: "qx_5k")
+        XCTAssertTrue(routing.activateStage())
+        routing.endInsert()
+        XCTAssertEqual(backend.setDefaultCalls, [LinuxAudioNames.stageSinkName, "qx_5k"])
+    }
+
+    func testAUserChoiceMadeWhileStagedIsNotOverwrittenOnStop() {
+        let routing = makeRouting()
+        routing.start()
+        routing.prepareInsert(target: "qx_5k")
+        backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
+        routing.refresh()
+        routing.activateStage()
+        routing.refresh()
+        XCTAssertTrue(routing.isStageDefault)
+        backend.defaultSinkName = "alsa_speakers"
+        backend.configuredDefaultSinkName = "alsa_speakers"
+        routing.refresh()
+        let before = backend.setDefaultCalls.count
+        routing.endInsert()
+        XCTAssertEqual(backend.setDefaultCalls.count, before)
+        XCTAssertEqual(backend.configuredDefaultSinkName, "alsa_speakers")
+    }
+
+    func testStageDefaultWithoutAKnownTargetHasNoRealOutput() {
+        backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
+        backend.defaultSinkName = LinuxAudioNames.stageSinkName
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertNil(routing.realOutput)
+    }
+
+    func testSinkVolumeInDecibels() {
+        let routing = makeRouting()
+        routing.start()
+        backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 0.1, muted: false)
+        XCTAssertEqual(try XCTUnwrap(routing.sinkVolumeDb(named: "qx_5k")), -20, accuracy: 0.001)
+        backend.volumes["qx_5k"] = AudioSinkVolume(volume: 0.5, channelVolume: 0.5, muted: false)
+        XCTAssertEqual(try XCTUnwrap(routing.sinkVolumeDb(named: "qx_5k")), -12.041, accuracy: 0.01)
+        backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 0.5, muted: true)
+        XCTAssertNil(routing.sinkVolumeDb(named: "qx_5k"))
+        backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 0, muted: false)
+        XCTAssertNil(routing.sinkVolumeDb(named: "qx_5k"))
+        XCTAssertNil(routing.sinkVolumeDb(named: "missing"))
+    }
+
+    func testShutdownReleasesTheHandlerAndRestores() {
+        let routing = makeRouting()
+        routing.start()
+        routing.prepareInsert(target: "qx_5k")
+        backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
+        routing.refresh()
+        routing.activateStage()
+        routing.shutdown()
+        XCTAssertNil(backend.changeHandler)
+        XCTAssertEqual(backend.setDefaultCalls.last, "qx_5k")
+    }
+}
