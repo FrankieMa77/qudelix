@@ -256,4 +256,64 @@ final class ModelHarnessTests: XCTestCase {
         XCTAssertFalse(model.level.state.exposureDays.isEmpty)
         XCTAssertEqual(model.state.runningRate, Double(Harness.sampleRate))
     }
+
+    func testToneTestPlaybackReachesTheFiveKStandInAtTheExpectedLevel() async throws {
+        model.start()
+        XCTAssertTrue(pump { self.routing.realOutput?.name == Harness.fiveK })
+        let app = AppModel.demo()
+        app.start()
+        for _ in 0..<400 where !app.state.connection.isConnected {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(app.state.connection.isConnected)
+        let onFiveK = Recorder()
+        let onOther = Recorder()
+        let fiveKMonitor = try backend.startMonitor(sink: Harness.fiveK, block: onFiveK.block)
+        let otherMonitor = try backend.startMonitor(sink: Harness.other, block: onOther.block)
+        defer {
+            fiveKMonitor.stop()
+            otherMonitor.stop()
+        }
+        XCTAssertTrue(pump { fiveKMonitor.isReady && otherMonitor.isReady })
+        let tones = ToneTestModel(host: app.eqHost, routing: routing, backend: backend, stage: model)
+        XCTAssertNil(tones.blocker)
+        tones.randomPause = { 0 }
+        tones.randomCatch = { false }
+        var captured: (left: [Float], right: [Float])?
+        var quiet: [Float] = []
+        tones.sleepMs = { ms in
+            guard ms == 1250 else {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            let loud = onFiveK.snapshot
+            captured = (loud.left, loud.right)
+            quiet = onOther.snapshot.left
+        }
+        tones.start()
+        XCTAssertEqual(tones.phase, .running)
+        XCTAssertTrue(model.toneHold)
+        for _ in 0..<600 where captured == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        tones.stop()
+        XCTAssertFalse(model.toneHold)
+        let heard = try XCTUnwrap(captured)
+        let expected = pow(10.0, ToneTestMath.clamp(-40) / 20)
+        let peak = Double(heard.left.map { abs($0) }.max() ?? 0)
+        let peakRight = Double(heard.right.map { abs($0) }.max() ?? 0)
+        print("tone test: peak=\(peak) right=\(peakRight) expected=\(expected) other=\(quiet.map { abs($0) }.max() ?? 0)")
+        XCTAssertEqual(peak, expected, accuracy: expected * 0.05)
+        XCTAssertEqual(peakRight, peak, accuracy: expected * 0.01)
+        XCTAssertLessThan(Double(quiet.map { abs($0) }.max() ?? 0), 1e-4)
+        var crossings = 0
+        var previous: Float = 0
+        for sample in heard.left where abs(sample) > 0.002 {
+            if (sample > 0) != (previous > 0) { crossings += 1 }
+            previous = sample
+        }
+        XCTAssertTrue((1100...1500).contains(crossings), "zero crossings \(crossings)")
+        await app.shutdown()
+    }
 }
