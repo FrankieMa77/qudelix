@@ -1,6 +1,4 @@
-import CoreAudio
 import Foundation
-import os.lock
 
 struct KneeShaper {
     let threshold: Double
@@ -168,11 +166,7 @@ final class StageProcessor {
 
     static let maxChannels = 32
 
-    private let lock: UnsafeMutablePointer<os_unfair_lock_s> = {
-        let p = UnsafeMutablePointer<os_unfair_lock_s>.allocate(capacity: 1)
-        p.initialize(to: os_unfair_lock_s())
-        return p
-    }()
+    private let lock = RTLock()
     private var config = Config()
 
     init() {
@@ -180,9 +174,9 @@ final class StageProcessor {
     }
 
     deinit {
-        lock.deallocate()
-        meterLock.deallocate()
-        specLock.deallocate()
+        lock.destroy()
+        meterLock.destroy()
+        specLock.destroy()
         convScratchL.deallocate()
         convScratchR.deallocate()
         appZ.deallocate()
@@ -207,13 +201,13 @@ final class StageProcessor {
         epoch &+= 1
         kShelfDesign = KWeighting.shelf(sampleRate: self.sampleRate)
         kHighpassDesign = KWeighting.highpass(sampleRate: self.sampleRate)
-        os_unfair_lock_lock(specLock)
+        specLock.lock()
         specWritten = 0
         specWriteIdx = 0
         specTotalWritten = 0
         specDrainedTotal = 0
-        os_unfair_lock_unlock(specLock)
-        os_unfair_lock_lock(meterLock)
+        specLock.unlock()
+        meterLock.lock()
         meterSumSquares = 0
         meterFrames = 0
         loudSumSquares = 0
@@ -221,7 +215,7 @@ final class StageProcessor {
         corrLR = 0; corrLL = 0; corrRR = 0
         limMinGain = 1
         guardMaxRedDb = 0
-        os_unfair_lock_unlock(meterLock)
+        meterLock.unlock()
         rebuildImpulse(block: wantedBlockFrames)
         if !appCurves.isEmpty {
             rebuildAppChains()
@@ -412,10 +406,10 @@ final class StageProcessor {
             ? Int32(min(appCurves.count + 1, Self.maxTapStreams)) : 1
         next.perAppEpoch = perAppEpoch
         let chains = appChainCurrent.map { Unmanaged.passUnretained($0) }
-        os_unfair_lock_lock(lock)
+        lock.lock()
         config = next
         appChainSlot = chains
-        os_unfair_lock_unlock(lock)
+        lock.unlock()
     }
 
     static let maxAssignedApps = 8
@@ -571,16 +565,12 @@ final class StageProcessor {
         convCurrent = state
         convProblem = problem
         let slot = state.map { Unmanaged.passUnretained($0) }
-        os_unfair_lock_lock(lock)
+        lock.lock()
         convSlot = slot
-        os_unfair_lock_unlock(lock)
+        lock.unlock()
     }
 
-    private let meterLock: UnsafeMutablePointer<os_unfair_lock_s> = {
-        let p = UnsafeMutablePointer<os_unfair_lock_s>.allocate(capacity: 1)
-        p.initialize(to: os_unfair_lock_s())
-        return p
-    }()
+    private let meterLock = RTLock()
     private var meterSumSquares: Double = 0
     private var meterFrames: Int = 0
     private var loudSumSquares: Double = 0
@@ -597,21 +587,21 @@ final class StageProcessor {
     private var corrRR: Double = 0
 
     var observedBlockFrames: Int {
-        os_unfair_lock_lock(meterLock)
+        meterLock.lock()
         let frames = Int(diagBlockFrames)
-        os_unfair_lock_unlock(meterLock)
+        meterLock.unlock()
         return frames
     }
 
     func renderDiagnostics() -> (channels: Int, stageRan: Bool, inputBuffers: Int) {
-        os_unfair_lock_lock(meterLock)
-        defer { os_unfair_lock_unlock(meterLock) }
+        meterLock.lock()
+        defer { meterLock.unlock() }
         return (Int(diagChannels), diagStageRan, Int(diagInputBuffers))
     }
 
     func drainSourceCorrelation() -> Double? {
-        os_unfair_lock_lock(meterLock)
-        defer { os_unfair_lock_unlock(meterLock) }
+        meterLock.lock()
+        defer { meterLock.unlock() }
         let (lr, ll, rr) = (corrLR, corrLL, corrRR)
         corrLR = 0; corrLL = 0; corrRR = 0
         guard ll > 1e-6, rr > 1e-6 else { return nil }
@@ -619,8 +609,8 @@ final class StageProcessor {
     }
 
     func drainMeter() -> (sumSquares: Double, frames: Int) {
-        os_unfair_lock_lock(meterLock)
-        defer { os_unfair_lock_unlock(meterLock) }
+        meterLock.lock()
+        defer { meterLock.unlock() }
         let result = (meterSumSquares, meterFrames)
         meterSumSquares = 0
         meterFrames = 0
@@ -628,24 +618,24 @@ final class StageProcessor {
     }
 
     func drainLimiterFloor() -> Float {
-        os_unfair_lock_lock(meterLock)
-        defer { os_unfair_lock_unlock(meterLock) }
+        meterLock.lock()
+        defer { meterLock.unlock() }
         let floor = limMinGain
         limMinGain = 1
         return floor
     }
 
     func drainBassGuardReduction() -> Float {
-        os_unfair_lock_lock(meterLock)
-        defer { os_unfair_lock_unlock(meterLock) }
+        meterLock.lock()
+        defer { meterLock.unlock() }
         let deepest = guardMaxRedDb
         guardMaxRedDb = 0
         return deepest
     }
 
     func drainLoudnessMeter() -> (sumSquares: Double, frames: Int) {
-        os_unfair_lock_lock(meterLock)
-        defer { os_unfair_lock_unlock(meterLock) }
+        meterLock.lock()
+        defer { meterLock.unlock() }
         let result = (loudSumSquares, loudFrames)
         loudSumSquares = 0
         loudFrames = 0
@@ -653,11 +643,7 @@ final class StageProcessor {
     }
 
     static let specRingSize = 16384
-    private let specLock: UnsafeMutablePointer<os_unfair_lock_s> = {
-        let p = UnsafeMutablePointer<os_unfair_lock_s>.allocate(capacity: 1)
-        p.initialize(to: os_unfair_lock_s())
-        return p
-    }()
+    private let specLock = RTLock()
     private var specRing = [Float](repeating: 0, count: specRingSize)
     private var specWriteIdx = 0
     private var specWritten = 0
@@ -668,8 +654,8 @@ final class StageProcessor {
         let n = min(count, Self.specRingSize)
         guard n > 0 else { return [] }
         var out = [Float](repeating: 0, count: n)
-        os_unfair_lock_lock(specLock)
-        defer { os_unfair_lock_unlock(specLock) }
+        specLock.lock()
+        defer { specLock.unlock() }
         guard specWritten >= n else { return [] }
         guard specTotalWritten - specDrainedTotal >= n else { return [] }
         specDrainedTotal = specTotalWritten
@@ -872,13 +858,12 @@ final class StageProcessor {
         return a
     }()
 
-    func render(input: UnsafePointer<AudioBufferList>,
-                output: UnsafeMutablePointer<AudioBufferList>) {
-        os_unfair_lock_lock(lock)
+    func render(input inList: StageBufferList, output outList: StageBufferList) {
+        lock.lock()
         let cfg = config
         let slot = convSlot
         let chainSlot = appChainSlot
-        os_unfair_lock_unlock(lock)
+        lock.unlock()
         let conv = slot?.takeUnretainedValue()
         let chains = chainSlot?.takeUnretainedValue()
 
@@ -894,11 +879,8 @@ final class StageProcessor {
             perAppEngaged = false
         }
 
-        let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
-        let outList = UnsafeMutableAudioBufferListPointer(output)
-
-        for buf in outList where buf.mData != nil {
-            memset(buf.mData, 0, Int(buf.mDataByteSize))
+        for buf in outList where buf.data != nil {
+            memset(buf.data!, 0, Int(buf.byteSize))
         }
 
         let wantedStreams = cfg.perAppActive && !cfg.monitorOnly
@@ -920,11 +902,11 @@ final class StageProcessor {
         }
 
         if cfg.muted {
-            os_unfair_lock_lock(meterLock)
+            meterLock.lock()
             diagChannels = Int32(inRefs.count)
             diagStageRan = false
             diagInputBuffers = Int32(clamping: inList.count)
-            os_unfair_lock_unlock(meterLock)
+            meterLock.unlock()
             stageEngaged = false
             kEngaged = false
             limEngaged = false
@@ -934,7 +916,7 @@ final class StageProcessor {
         guard !inRefs.isEmpty else { return }
 
         if let first = inRefs.first {
-            os_unfair_lock_lock(specLock)
+            specLock.lock()
             let mask = Self.specRingSize - 1
             var p = first.ptr
             for _ in 0..<first.frames {
@@ -945,7 +927,7 @@ final class StageProcessor {
             }
             specWritten = min(specWritten + first.frames, Self.specRingSize)
             specTotalWritten += first.frames
-            os_unfair_lock_unlock(specLock)
+            specLock.unlock()
         }
 
         var cLR = 0.0, cLL = 0.0, cRR = 0.0
@@ -1018,13 +1000,13 @@ final class StageProcessor {
         if consumed > 1 && !stageRan && !cfg.monitorOnly {
             capPerAppPeaks()
         }
-        os_unfair_lock_lock(meterLock)
+        meterLock.lock()
         diagChannels = Int32(inRefs.count)
         diagStageRan = stageRan
         diagBlockFrames = Int32(clamping: inRefs.first?.frames ?? 0)
         diagInputBuffers = Int32(clamping: inList.count)
         corrLR += cLR; corrLL += cLL; corrRR += cRR
-        os_unfair_lock_unlock(meterLock)
+        meterLock.unlock()
 
         if let first = inRefs.first {
             var ss = 0.0
@@ -1035,7 +1017,7 @@ final class StageProcessor {
                 p += first.stride
             }
 
-            os_unfair_lock_lock(meterLock)
+            meterLock.lock()
             if ss.isFinite {
                 meterSumSquares += ss
                 meterFrames += first.frames
@@ -1044,7 +1026,7 @@ final class StageProcessor {
                 loudSumSquares += kss
                 loudFrames += kFrames
             }
-            os_unfair_lock_unlock(meterLock)
+            meterLock.unlock()
         }
 
         guard !cfg.monitorOnly else { return }
@@ -1052,13 +1034,14 @@ final class StageProcessor {
         copyOut(outList)
     }
 
-    private func collectInputChannels(_ inList: UnsafeMutableAudioBufferListPointer,
+    private func collectInputChannels(_ inList: StageBufferList,
                                       consumed: Int) {
+        guard consumed >= 1, consumed <= inList.count else { return }
         for i in (inList.count - consumed)..<inList.count {
             let buf = inList[i]
-            guard let raw = buf.mData, buf.mNumberChannels > 0 else { continue }
-            let chans = Int(buf.mNumberChannels)
-            let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+            guard let raw = buf.data, buf.channels > 0 else { continue }
+            let chans = Int(buf.channels)
+            let frames = Int(buf.byteSize) / (MemoryLayout<Float>.size * chans)
             let data = raw.assumingMemoryBound(to: Float.self)
             for c in 0..<min(chans, max(0, Self.maxChannels - inRefs.count)) {
                 inRefs.append((ptr: data + c, stride: chans, frames: frames))
@@ -1067,16 +1050,16 @@ final class StageProcessor {
     }
 
     private static func outputBlockFrames(
-        _ outList: UnsafeMutableAudioBufferListPointer) -> Int {
+        _ outList: StageBufferList) -> Int {
         for buf in outList {
-            guard buf.mData != nil, buf.mNumberChannels > 0 else { continue }
-            let chans = Int(buf.mNumberChannels)
-            return Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+            guard buf.data != nil, buf.channels > 0 else { continue }
+            let chans = Int(buf.channels)
+            return Int(buf.byteSize) / (MemoryLayout<Float>.size * chans)
         }
         return 0
     }
 
-    private func mixPerAppStreams(_ inList: UnsafeMutableAudioBufferListPointer,
+    private func mixPerAppStreams(_ inList: StageBufferList,
                                   consumed: Int, blockFrames: Int,
                                   chains: AppChainTable?) {
         let frames = min(max(blockFrames, 0), Self.mixBusFrames)
@@ -1087,10 +1070,10 @@ final class StageProcessor {
         let chained = min(consumed - 1, chains?.count ?? 0)
         for stream in 0..<consumed {
             let buf = inList[first + stream]
-            guard let raw = buf.mData, buf.mNumberChannels > 0,
-                  buf.mNumberChannels <= UInt32(Self.maxChannels) else { continue }
-            let chans = Int(buf.mNumberChannels)
-            let claimed = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+            guard let raw = buf.data, buf.channels > 0,
+                  buf.channels <= UInt32(Self.maxChannels) else { continue }
+            let chans = Int(buf.channels)
+            let claimed = Int(buf.byteSize) / (MemoryLayout<Float>.size * chans)
             let n = min(frames, claimed)
             guard n > 0 else { continue }
             let data = raw.assumingMemoryBound(to: Float.self)
@@ -1487,9 +1470,9 @@ final class StageProcessor {
         if !stateProbe.isFinite { resetStageState(p) }
 
         if p.guardOn {
-            os_unfair_lock_lock(meterLock)
+            meterLock.lock()
             guardMaxRedDb = max(guardMaxRedDb, guardLocalRedDb)
-            os_unfair_lock_unlock(meterLock)
+            meterLock.unlock()
         }
 
         if loudRunning, !p.loudActive, loudWet < 1e-6 {
@@ -1592,9 +1575,9 @@ final class StageProcessor {
         }
         if limCurBlockMax < 1e-20 { limCurBlockMax = 0 }
 
-        os_unfair_lock_lock(meterLock)
+        meterLock.lock()
         limMinGain = min(limMinGain, localMinGain)
-        os_unfair_lock_unlock(meterLock)
+        meterLock.unlock()
     }
 
     @inline(__always)
@@ -1632,18 +1615,18 @@ final class StageProcessor {
         return (Float(step.out), step.residual)
     }
 
-    private func copyOut(_ outList: UnsafeMutableAudioBufferListPointer) {
+    private func copyOut(_ outList: StageBufferList) {
         var totalChannels = 0
-        for buf in outList where buf.mData != nil && buf.mNumberChannels > 0 {
-            totalChannels += Int(buf.mNumberChannels)
+        for buf in outList where buf.data != nil && buf.channels > 0 {
+            totalChannels += Int(buf.channels)
         }
         let fanOut = inRefs.count == 1
         let mixDown = totalChannels == 1 && inRefs.count >= 2
         var outChan = 0
         for buf in outList {
-            guard let raw = buf.mData, buf.mNumberChannels > 0 else { continue }
-            let chans = Int(buf.mNumberChannels)
-            let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * chans)
+            guard let raw = buf.data, buf.channels > 0 else { continue }
+            let chans = Int(buf.channels)
+            let frames = Int(buf.byteSize) / (MemoryLayout<Float>.size * chans)
             let data = raw.assumingMemoryBound(to: Float.self)
             for c in 0..<chans {
                 if mixDown {
