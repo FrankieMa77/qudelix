@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 enum SessionInterruption: Equatable {
     case disconnected
@@ -102,11 +101,10 @@ final class ABTuner: ObservableObject {
         }
     }
 
-    static func blocker(_ c: QudelixController) -> Blocker? {
-        if case .connected = c.connection {} else { return .notConnected }
-        guard c.compatibility == .ok else { return .unsupported }
-        if let src = c.inputSource, src.hasPrefix("HFP") { return .voiceCall }
-        if c.sampleRate == "16 kHz" { return .voiceCall }
+    static func blocker(_ c: TuneHost) -> Blocker? {
+        guard c.isConnectedNow else { return .notConnected }
+        guard c.isCompatible else { return .unsupported }
+        if c.isOnVoiceLink { return .voiceCall }
         guard c.eqEnabled else { return .eqOff }
         guard c.bands.prefix(c.bandCount).contains(where: { $0.filter.rendersGain }) else {
             return .noGainBand
@@ -124,18 +122,15 @@ final class ABTuner: ObservableObject {
         return nil
     }
 
-    private func interruption(_ c: QudelixController) -> SessionInterruption? {
-        var connected = false
-        if case .connected = c.connection { connected = true }
-        let voice = (c.inputSource?.hasPrefix("HFP") ?? false) || c.sampleRate == "16 kHz"
-        return Self.interruption(connected: connected,
-                                 compatible: c.compatibility == .ok,
-                                 voiceCall: voice,
+    private func interruption(_ c: TuneHost) -> SessionInterruption? {
+        return Self.interruption(connected: c.isConnectedNow,
+                                 compatible: c.isCompatible,
+                                 voiceCall: c.isOnVoiceLink,
                                  eqModeChanged: c.eqGroup != sessionGroup)
             ?? (c.byEarSessionActive ? nil : .disconnected)
     }
 
-    private func stillValid(_ c: QudelixController) -> Bool {
+    private func stillValid(_ c: TuneHost) -> Bool {
         guard let interruption = interruption(c) else { return true }
         if interruption != .eqModeChanged, c.byEarSessionActive { restoreBaseline(c) }
         endSession(c)
@@ -150,7 +145,7 @@ final class ABTuner: ObservableObject {
         return EQHeadroom.clamp(min(userPreGain, -max(0, peak)))
     }
 
-    func start(_ c: QudelixController, chance: Chance = .real) {
+    func start(_ c: TuneHost, chance: Chance = .real) {
         guard Self.blocker(c) == nil, phase == .idle else { return }
 
         note = nil
@@ -184,30 +179,30 @@ final class ABTuner: ObservableObject {
         nextTrial(c)
     }
 
-    func cancel(_ c: QudelixController) {
+    func cancel(_ c: TuneHost) {
         restoreBaseline(c)
         endSession(c)
     }
 
-    private func endSession(_ c: QudelixController) {
+    private func endSession(_ c: TuneHost) {
         c.setByEarSessionActive(false)
         phase = .idle
     }
 
-    func abandon(_ c: QudelixController) {
+    func abandon(_ c: TuneHost) {
         guard phase == .running, !c.byEarSessionActive else { return }
         let reason = interruption(c) ?? .disconnected
         endSession(c)
         note = "Comparison stopped \u{2014} \(reason.reason)."
     }
 
-    func toggleSide(_ c: QudelixController) {
+    func toggleSide(_ c: TuneHost) {
         guard phase == .running, stillValid(c) else { return }
         showingA.toggle()
         pushSide(c)
     }
 
-    func noDifference(_ c: QudelixController) {
+    func noDifference(_ c: TuneHost) {
         guard phase == .running, stillValid(c) else { return }
         if isConsistencyCheck {
             sameTrials += 1
@@ -221,7 +216,7 @@ final class ABTuner: ObservableObject {
         nextTrial(c)
     }
 
-    func choose(preferA: Bool, _ c: QudelixController) {
+    func choose(preferA: Bool, _ c: TuneHost) {
         guard phase == .running, stillValid(c) else { return }
         let preferredHigh = (preferA == highIsA)
 
@@ -243,7 +238,7 @@ final class ABTuner: ObservableObject {
 
     private var currentMacroName: String?
 
-    private func nextTrial(_ c: QudelixController) {
+    private func nextTrial(_ c: TuneHost) {
         guard !queue.isEmpty else { finish(c); return }
         let entry = queue.removeFirst()
         round = min(Self.rounds, trialsDone / max(1, Self.trialsPerRound) + 1)
@@ -280,7 +275,7 @@ final class ABTuner: ObservableObject {
         pushSide(c)
     }
 
-    private func finish(_ c: QudelixController) {
+    private func finish(_ c: TuneHost) {
         for m in Self.macros where (indifferent[m.name] ?? 0) >= 2 {
             values[m.name] = 0
             inaudible.insert(m.name)
@@ -321,20 +316,20 @@ final class ABTuner: ObservableObject {
         trials >= minChecksToJudge && guesses * 2 > trials
     }
 
-    func keepResult(_ c: QudelixController) {
+    func keepResult(_ c: TuneHost) {
         guard phase == .finished, !resultBands.isEmpty, stillValid(c) else { return }
         c.setPreGain(Self.safePreGain(for: resultBands, notAbove: baselinePreGain),
-                     recordUndo: false, force: true)
+                     persistToFlash: true, recordUndo: false, force: true)
         endSession(c)
     }
 
-    func discardResult(_ c: QudelixController) {
+    func discardResult(_ c: TuneHost) {
         guard phase == .finished else { return }
         restoreBaseline(c)
         endSession(c)
     }
 
-    private func restoreBaseline(_ c: QudelixController) {
+    private func restoreBaseline(_ c: TuneHost) {
         guard c.byEarSessionActive, c.eqGroup == sessionGroup else { return }
         push(baseline, preGain: baselinePreGain, to: c)
     }
@@ -375,19 +370,19 @@ final class ABTuner: ObservableObject {
         return out
     }
 
-    private func apply(_ bands: [QxEqBandValue], to c: QudelixController) {
+    private func apply(_ bands: [QxEqBandValue], to c: TuneHost) {
         for (i, b) in bands.enumerated() where i < c.bandCount {
-            c.updateBand(i, b, persistToFlash: false, recordUndo: false)
+            c.updateBand(i, b, persistToFlash: false, recordUndo: false, force: false)
         }
     }
 
-    private func pushSide(_ c: QudelixController) {
+    private func pushSide(_ c: TuneHost) {
         push(showingA ? curveA : curveB,
              preGain: showingA ? preGainA : preGainB, to: c)
     }
 
     private func push(_ bands: [QxEqBandValue], preGain: Double,
-                      to c: QudelixController) {
+                      to c: TuneHost) {
         if preGain < devicePreGain {
             writePreGain(preGain, to: c)
             apply(bands, to: c)
@@ -397,9 +392,9 @@ final class ABTuner: ObservableObject {
         }
     }
 
-    private func writePreGain(_ db: Double, to c: QudelixController) {
+    private func writePreGain(_ db: Double, to c: TuneHost) {
         guard abs(db - devicePreGain) >= 0.05 else { return }
-        c.setPreGain(db, persistToFlash: false, recordUndo: false)
+        c.setPreGain(db, persistToFlash: false, recordUndo: false, force: false)
         devicePreGain = db
     }
 }

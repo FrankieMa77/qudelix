@@ -4,7 +4,6 @@ import PackageDescription
 let appleOnlySources = [
     "A2dpGuard.swift",
     "AboutView.swift",
-    "ABTuner.swift",
     "AccelerateFFT.swift",
     "AIKeychain.swift",
     "AIPresetSection.swift",
@@ -15,7 +14,6 @@ let appleOnlySources = [
     "AutomationPanel.swift",
     "BatteryHistoryView.swift",
     "BLETransport.swift",
-    "BlindTuner.swift",
     "Convolver.swift",
     "DeviceSettingsView.swift",
     "EQCurveView.swift",
@@ -42,7 +40,6 @@ let appleOnlySources = [
 
 let appleOnlyTests = [
     "A2dpGuardTests.swift",
-    "ABTunerHeadroomTests.swift",
     "AIPresetStudioTests.swift",
     "AntiAliasingTests.swift",
     "AudioFixTests.swift",

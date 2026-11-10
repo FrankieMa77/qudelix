@@ -224,13 +224,13 @@ struct TuneView: View {
                      ? "\(tones.currentHz / 1000) kHz" : "\(tones.currentHz) Hz")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                 Spacer()
-                Text("\(tones.bandsDone) / \(ToneTester.order.count) done")
+                Text("\(tones.bandsDone) / \(ToneTestMath.order.count) done")
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
 
             ProgressView(value: Double(tones.bandsDone),
-                         total: Double(ToneTester.order.count))
+                         total: Double(ToneTestMath.order.count))
                 .controlSize(.small)
 
             Button {
@@ -307,7 +307,7 @@ struct TuneView: View {
             Text("Couldn't measure your hearing")
                 .font(.system(size: 12, weight: .medium))
 
-            Text("\(tones.readingCount) of the \(ToneTester.order.count) frequencies "
+            Text("\(tones.readingCount) of the \(ToneTestMath.order.count) frequencies "
                  + "gave a reading — too few to compare against anything. This says "
                  + "nothing about your hearing either way; the test simply didn't "
                  + "get an answer.")
@@ -382,7 +382,7 @@ struct TuneView: View {
 
             if tones.verdict == .withinTestNoise {
                 Text("Your hearing is within test noise of typical "
-                     + (tones.readingCount < ToneTester.order.count
+                     + (tones.readingCount < ToneTestMath.order.count
                         ? "wherever it could be measured" : "across the range")
                      + " — there is no personal correction to make. A headphone "
                      + "correction will do far more.")

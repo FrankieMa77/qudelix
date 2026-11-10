@@ -174,20 +174,20 @@ final class TuneHonestyTests: XCTestCase {
         let barelyAnything: [(Int, Double?)] = [
             (250, nil), (500, -40), (1000, -45), (2000, nil), (4000, nil),
         ]
-        XCTAssertEqual(ToneTester.suggest(barelyAnything).count, 0,
+        XCTAssertEqual(ToneTestMath.suggest(barelyAnything).count, 0,
                        "two readings cannot establish a reference to deviate from")
 
         var enough = barelyAnything
         enough[0] = (250, -30)
-        XCTAssertFalse(ToneTester.suggest(enough).isEmpty,
-                       "\(ToneTester.minThresholds) readings is the boundary")
+        XCTAssertFalse(ToneTestMath.suggest(enough).isEmpty,
+                       "\(ToneTestMath.minThresholds) readings is the boundary")
     }
 
     func testFrequenciesThatGaveNoReadingAreMarkedRatherThanShownAsNormal() {
         let partial: [(Int, Double?)] = [
             (250, -30), (500, -40), (1000, -45), (4000, nil), (8000, nil),
         ]
-        let points = ToneTester.suggest(partial)
+        let points = ToneTestMath.suggest(partial)
 
         XCTAssertEqual(points.count, 5, "every frequency stays visible")
         XCTAssertEqual(points.filter(\.measured).map(\.hz), [250, 500, 1000])
@@ -202,61 +202,61 @@ final class TuneHonestyTests: XCTestCase {
         let tight: [ToneTester.Point] = [
             (125, 2, 5, true), (1000, 0, 0, false), (8000, 2.4, 6, true),
         ]
-        XCTAssertEqual(ToneTester.spread(of: tight), 1, accuracy: 1e-9,
+        XCTAssertEqual(ToneTestMath.spread(of: tight), 1, accuracy: 1e-9,
                        "counting the hole would have read 6 here")
 
         let wide: [ToneTester.Point] = [
             (125, -3.6, -9, true), (1000, 0, 0, false), (8000, 3.6, 9, true),
         ]
-        XCTAssertEqual(ToneTester.spread(of: wide), 18, accuracy: 1e-9)
-        XCTAssertEqual(ToneTester.spread(of: []), 0, accuracy: 1e-9)
+        XCTAssertEqual(ToneTestMath.spread(of: wide), 18, accuracy: 1e-9)
+        XCTAssertEqual(ToneTestMath.spread(of: []), 0, accuracy: 1e-9)
     }
 
     func testAnUnreliableRunIsRefusedHoweverTidyItsNumbersLook() {
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 15,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 15,
                                           falseAlarms: 6, spread: 15), .unreliable)
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 15,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 15,
                                           falseAlarms: 6, spread: 45), .unreliable,
                        "unreliable outranks scattered — neither is applicable, "
                            + "and the reason given must be the deeper one")
-        XCTAssertEqual(ToneTester.verdict(readings: 2, catchTrials: 15,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 2, catchTrials: 15,
                                           falseAlarms: 6, spread: 15), .tooFewReadings,
                        "nothing was measured, so there is nothing to disbelieve")
     }
 
     func testAFewPressesOnSilenceDoNotCondemnARun() {
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 3,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 3,
                                           falseAlarms: 3, spread: 15), .usable,
                        "three silent checks cannot support a rate")
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 16,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 16,
                                           falseAlarms: 1, spread: 15), .usable)
     }
 
     func testScatterBeyondHearingIsRefusedAndNamed() {
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 0,
                                           falseAlarms: 0, spread: 45),
                        .tooScattered(spread: 45))
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 0,
                                           falseAlarms: 0,
-                                          spread: ToneTester.maxDeviationSpread), .usable,
+                                          spread: ToneTestMath.maxDeviationSpread), .usable,
                        "the limit itself is still believable")
     }
 
     func testFlatEnoughIsSaidPlainlyRatherThanApplied() {
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0,
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 0,
                                           falseAlarms: 0, spread: 3), .withinTestNoise)
-        XCTAssertEqual(ToneTester.verdict(readings: 10, catchTrials: 0, falseAlarms: 0,
-                                          spread: ToneTester.withinTestNoiseSpread),
+        XCTAssertEqual(ToneTestMath.verdict(readings: 10, catchTrials: 0, falseAlarms: 0,
+                                          spread: ToneTestMath.withinTestNoiseSpread),
                        .usable, "the boundary is where a correction starts being worth it")
     }
 
     func testElevatedFalseAlarmsAreSaidWithoutRefusingTheRun() {
-        XCTAssertTrue(ToneTester.falseAlarmsElevated(catchTrials: 20, falseAlarms: 5))
-        XCTAssertFalse(ToneTester.falseAlarmsElevated(catchTrials: 20, falseAlarms: 1),
+        XCTAssertTrue(ToneTestMath.falseAlarmsElevated(catchTrials: 20, falseAlarms: 5))
+        XCTAssertFalse(ToneTestMath.falseAlarmsElevated(catchTrials: 20, falseAlarms: 1),
                        "an ordinary run says nothing")
-        XCTAssertFalse(ToneTester.falseAlarmsElevated(catchTrials: 20, falseAlarms: 8),
+        XCTAssertFalse(ToneTestMath.falseAlarmsElevated(catchTrials: 20, falseAlarms: 8),
                        "past the gate the run is refused outright, not cautioned")
-        XCTAssertFalse(ToneTester.falseAlarmsElevated(catchTrials: 4, falseAlarms: 2),
+        XCTAssertFalse(ToneTestMath.falseAlarmsElevated(catchTrials: 4, falseAlarms: 2),
                        "too few checks to say anything about a rate")
     }
 
@@ -277,14 +277,14 @@ final class TuneHonestyTests: XCTestCase {
         var settled: Double??
 
         for _ in 0..<40 {
-            let didHear = staircase.level >= ToneTester.maxLevelDBFS
+            let didHear = staircase.level >= ToneTestMath.maxLevelDBFS
             if case .settled(let t) = staircase.answer(didHear) { settled = t; break }
             presented.append(staircase.level)
         }
 
-        XCTAssertTrue(presented.contains(ToneTester.maxLevelDBFS),
+        XCTAssertTrue(presented.contains(ToneTestMath.maxLevelDBFS),
                       "the cap has to be presented before it can be ruled out")
-        XCTAssertEqual(settled ?? nil, ToneTester.maxLevelDBFS)
+        XCTAssertEqual(settled ?? nil, ToneTestMath.maxLevelDBFS)
     }
 
     func testTwoMissesAtTheCapEndTheFrequency() {
@@ -293,9 +293,9 @@ final class TuneHonestyTests: XCTestCase {
         var settled: Double?? = nil
 
         for _ in 0..<40 {
-            if staircase.level == ToneTester.maxLevelDBFS { missesAtCap += 1 }
+            if staircase.level == ToneTestMath.maxLevelDBFS { missesAtCap += 1 }
             if case .settled(let t) = staircase.answer(false) { settled = t; break }
-            XCTAssertLessThanOrEqual(staircase.level, ToneTester.maxLevelDBFS,
+            XCTAssertLessThanOrEqual(staircase.level, ToneTestMath.maxLevelDBFS,
                                      "the level clamps at the cap rather than running past it")
         }
 
@@ -319,18 +319,18 @@ final class TuneHonestyTests: XCTestCase {
         let results: [(Int, Double?)] = [
             (250, -30), (1000, -45), (3000, -40), (4000, nil),
         ]
-        XCTAssertEqual(ToneTester.readingCount(in: results), 2)
-        XCTAssertNil(ToneTester.reference[3000])
+        XCTAssertEqual(ToneTestMath.readingCount(in: results), 2)
+        XCTAssertNil(ToneTestMath.reference[3000])
     }
 
     func testAnImpossibleSampleRateFallsBackInsteadOfSilencingTheTest() {
-        XCTAssertEqual(ToneTester.plausibleRate(0), ToneTester.fallbackRate)
-        XCTAssertEqual(ToneTester.plausibleRate(-48000), ToneTester.fallbackRate)
-        XCTAssertEqual(ToneTester.plausibleRate(.nan), ToneTester.fallbackRate)
-        XCTAssertEqual(ToneTester.plausibleRate(.infinity), ToneTester.fallbackRate)
-        XCTAssertEqual(ToneTester.plausibleRate(1_000_000), ToneTester.fallbackRate)
-        XCTAssertEqual(ToneTester.plausibleRate(48000), 48000)
-        XCTAssertEqual(ToneTester.plausibleRate(384_000), 384_000)
+        XCTAssertEqual(ToneTestMath.plausibleRate(0), ToneTestMath.fallbackRate)
+        XCTAssertEqual(ToneTestMath.plausibleRate(-48000), ToneTestMath.fallbackRate)
+        XCTAssertEqual(ToneTestMath.plausibleRate(.nan), ToneTestMath.fallbackRate)
+        XCTAssertEqual(ToneTestMath.plausibleRate(.infinity), ToneTestMath.fallbackRate)
+        XCTAssertEqual(ToneTestMath.plausibleRate(1_000_000), ToneTestMath.fallbackRate)
+        XCTAssertEqual(ToneTestMath.plausibleRate(48000), 48000)
+        XCTAssertEqual(ToneTestMath.plausibleRate(384_000), 384_000)
     }
 
     func testASessionIsFoldedForTheDeeperReasonFirst() {
@@ -348,18 +348,18 @@ final class TuneHonestyTests: XCTestCase {
     }
 
     func testAToneRunNoticesItsPlayerAndItsOutput() {
-        XCTAssertNil(ToneTester.interruption(connected: true, compatible: true,
+        XCTAssertNil(ToneTestMath.interruption(connected: true, compatible: true,
                                              voiceCall: false, eqModeChanged: false,
                                              playerRunning: true, outputIsDevice: true))
-        XCTAssertEqual(ToneTester.interruption(connected: true, compatible: true,
+        XCTAssertEqual(ToneTestMath.interruption(connected: true, compatible: true,
                                                voiceCall: false, eqModeChanged: false,
                                                playerRunning: false, outputIsDevice: true),
                        .playerStopped)
-        XCTAssertEqual(ToneTester.interruption(connected: true, compatible: true,
+        XCTAssertEqual(ToneTestMath.interruption(connected: true, compatible: true,
                                                voiceCall: false, eqModeChanged: false,
                                                playerRunning: true, outputIsDevice: false),
                        .outputChanged)
-        XCTAssertEqual(ToneTester.interruption(connected: true, compatible: true,
+        XCTAssertEqual(ToneTestMath.interruption(connected: true, compatible: true,
                                                voiceCall: false, eqModeChanged: true,
                                                playerRunning: false, outputIsDevice: false),
                        .eqModeChanged,
@@ -490,10 +490,10 @@ final class TuneHonestyTests: XCTestCase {
             (250, 4, 10, true), (1000, 0, 0, false), (4000, 4, 10, true),
         ]
         let measured = points.filter(\.measured).map { (hz: Double($0.hz), gain: $0.gain) }
-        XCTAssertEqual(ToneTester.gain(at: 1000, from: measured), 4, accuracy: 0.01)
+        XCTAssertEqual(ToneTestMath.gain(at: 1000, from: measured), 4, accuracy: 0.01)
 
         let withTheHole = points.map { (hz: Double($0.hz), gain: $0.gain) }
-        XCTAssertEqual(ToneTester.gain(at: 1000, from: withTheHole), 0, accuracy: 0.01,
+        XCTAssertEqual(ToneTestMath.gain(at: 1000, from: withTheHole), 0, accuracy: 0.01,
                        "what feeding the placeholder in would have written")
     }
 

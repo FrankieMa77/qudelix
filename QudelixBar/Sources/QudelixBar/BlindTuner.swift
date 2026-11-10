@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 struct Chance {
     var coin: () -> Bool
@@ -354,11 +353,10 @@ final class BlindTuner: ObservableObject {
         }
     }
 
-    static func blocker(_ c: QudelixController, mode: Mode) -> Blocker? {
-        if case .connected = c.connection {} else { return .notConnected }
-        guard c.compatibility == .ok else { return .unsupported }
-        if let src = c.inputSource, src.hasPrefix("HFP") { return .voiceCall }
-        if c.sampleRate == "16 kHz" { return .voiceCall }
+    static func blocker(_ c: TuneHost, mode: Mode) -> Blocker? {
+        guard c.isConnectedNow else { return .notConnected }
+        guard c.isCompatible else { return .unsupported }
+        if c.isOnVoiceLink { return .voiceCall }
         let live = Array(c.bands.prefix(c.bandCount))
         switch mode {
         case .shape:
@@ -382,7 +380,7 @@ final class BlindTuner: ObservableObject {
             .contains { $0.isFinite && abs($0) >= audibleTrimDb }
     }
 
-    static func trimBlocker(_ c: QudelixController, automation: EqAutomation) -> Blocker? {
+    static func trimBlocker(_ c: TuneHost, automation: EqAutomation) -> Blocker? {
         guard automation.autoTrimOn else { return .trimOff }
         if let base = blocker(c, mode: .trim) { return base }
         guard trimAudible(automation.trim) else { return .trimInaudible }
@@ -482,7 +480,7 @@ final class BlindTuner: ObservableObject {
         return (floor.scale, floor.base)
     }
 
-    func start(_ c: QudelixController, mode: Mode, chance: Chance = .real) {
+    func start(_ c: TuneHost, mode: Mode, chance: Chance = .real) {
         guard phase == .idle, mode != .trim, Self.blocker(c, mode: mode) == nil else { return }
         note = nil
         self.mode = mode
@@ -534,7 +532,7 @@ final class BlindTuner: ObservableObject {
         }
     }
 
-    func startTrim(_ c: QudelixController, trim: TrimGains, chance: Chance = .real) {
+    func startTrim(_ c: TuneHost, trim: TrimGains, chance: Chance = .real) {
         guard phase == .idle, Self.blocker(c, mode: .trim) == nil,
               Self.trimAudible(trim) else { return }
         note = nil
@@ -573,7 +571,7 @@ final class BlindTuner: ObservableObject {
                g.bassDb, g.tiltDbPerOctave, g.presenceDb, g.airDb)
     }
 
-    func cancel(_ c: QudelixController) {
+    func cancel(_ c: TuneHost) {
         guard phase != .idle else { return }
         if mode == .trim {
             if phase == .running {
@@ -588,12 +586,12 @@ final class BlindTuner: ObservableObject {
         endSession(c)
     }
 
-    private func endSession(_ c: QudelixController) {
+    private func endSession(_ c: TuneHost) {
         c.setByEarSessionActive(false)
         phase = .idle
     }
 
-    func abandon(_ c: QudelixController) {
+    func abandon(_ c: TuneHost) {
         guard phase == .running, !c.byEarSessionActive else { return }
         let reason = interruption(c) ?? .disconnected
         endSession(c)
@@ -602,18 +600,15 @@ final class BlindTuner: ObservableObject {
         if mode == .trim { DebugLog.shared.log("trim blind: cancelled") }
     }
 
-    private func interruption(_ c: QudelixController) -> SessionInterruption? {
-        var connected = false
-        if case .connected = c.connection { connected = true }
-        let voice = (c.inputSource?.hasPrefix("HFP") ?? false) || c.sampleRate == "16 kHz"
-        return ABTuner.interruption(connected: connected,
-                                    compatible: c.compatibility == .ok,
-                                    voiceCall: voice,
+    private func interruption(_ c: TuneHost) -> SessionInterruption? {
+        return ABTuner.interruption(connected: c.isConnectedNow,
+                                    compatible: c.isCompatible,
+                                    voiceCall: c.isOnVoiceLink,
                                     eqModeChanged: c.eqGroup != sessionGroup)
             ?? (c.byEarSessionActive ? nil : .disconnected)
     }
 
-    private func stillValid(_ c: QudelixController) -> Bool {
+    private func stillValid(_ c: TuneHost) -> Bool {
         guard let interruption = interruption(c) else { return true }
         if interruption != .eqModeChanged, c.byEarSessionActive { restoreBaseline(c) }
         endSession(c)
@@ -623,19 +618,19 @@ final class BlindTuner: ObservableObject {
         return false
     }
 
-    func toggleSide(_ c: QudelixController) {
+    func toggleSide(_ c: TuneHost) {
         guard phase == .running, stillValid(c) else { return }
         showingA.toggle()
         pushSide(c)
     }
 
-    func choose(preferA: Bool, _ c: QudelixController) {
+    func choose(preferA: Bool, _ c: TuneHost) {
         answer(preferA ? .preferA : .preferB, c)
     }
 
-    func noDifference(_ c: QudelixController) { answer(.same, c) }
+    func noDifference(_ c: TuneHost) { answer(.same, c) }
 
-    private func answer(_ answer: ShapeRun.Answer, _ c: QudelixController) {
+    private func answer(_ answer: ShapeRun.Answer, _ c: TuneHost) {
         guard phase == .running, stillValid(c) else { return }
         switch mode {
         case .shape:
@@ -677,7 +672,7 @@ final class BlindTuner: ObservableObject {
         skippedTrials = r.skipped
     }
 
-    private func presentTrial(_ c: QudelixController) {
+    private func presentTrial(_ c: TuneHost) {
         guard let r = run, let trial = r.trial else { return }
         if let axis = trial.axis {
             isConsistencyCheck = false
@@ -691,7 +686,7 @@ final class BlindTuner: ObservableObject {
         present(trial.a, trial.b, c)
     }
 
-    private func presentBypassTrial(_ c: QudelixController) {
+    private func presentBypassTrial(_ c: TuneHost) {
         isConsistencyCheck = false
         currentTitle = "Your EQ, or none"
         currentDetail = "trial \(trialsDone + 1) of \(Self.bypassTrials)"
@@ -700,7 +695,7 @@ final class BlindTuner: ObservableObject {
         present(eqIsA ? baseline : flat, eqIsA ? flat : baseline, c)
     }
 
-    private func presentTrimTrial(_ c: QudelixController) {
+    private func presentTrimTrial(_ c: TuneHost) {
         isConsistencyCheck = false
         currentTitle = "Auto-trim, or not"
         currentDetail = "trial \(trialsDone + 1) of \(Self.bypassTrials)"
@@ -709,7 +704,7 @@ final class BlindTuner: ObservableObject {
         present(eqIsA ? trimSide : baseline, eqIsA ? baseline : trimSide, c)
     }
 
-    private func present(_ a: [QxEqBandValue], _ b: [QxEqBandValue], _ c: QudelixController) {
+    private func present(_ a: [QxEqBandValue], _ b: [QxEqBandValue], _ c: TuneHost) {
         curveA = a
         curveB = b
         let matched = LevelMatch.matchedPreGains(a, b, base: sessionPreGain)
@@ -719,11 +714,11 @@ final class BlindTuner: ObservableObject {
         pushSide(c)
     }
 
-    private func pushSide(_ c: QudelixController) {
+    private func pushSide(_ c: TuneHost) {
         push(showingA ? curveA : curveB, preGain: showingA ? preGainA : preGainB, c)
     }
 
-    private func push(_ bands: [QxEqBandValue], preGain: Double, _ c: QudelixController) {
+    private func push(_ bands: [QxEqBandValue], preGain: Double, _ c: TuneHost) {
         if preGain < devicePreGain {
             writePreGain(preGain, c)
             write(bands, c)
@@ -733,9 +728,9 @@ final class BlindTuner: ObservableObject {
         }
     }
 
-    private func writePreGain(_ db: Double, _ c: QudelixController) {
+    private func writePreGain(_ db: Double, _ c: TuneHost) {
         guard abs(db - devicePreGain) >= 0.05 else { return }
-        c.setPreGain(db, persistToFlash: false, recordUndo: false)
+        c.setPreGain(db, persistToFlash: false, recordUndo: false, force: false)
         devicePreGain = db
     }
 
@@ -747,19 +742,19 @@ final class BlindTuner: ObservableObject {
         }
     }
 
-    private func write(_ bands: [QxEqBandValue], _ c: QudelixController) {
+    private func write(_ bands: [QxEqBandValue], _ c: TuneHost) {
         for i in Self.changedIndices(from: onDevice, to: bands, limit: c.bandCount) {
-            c.updateBand(i, bands[i], persistToFlash: false, recordUndo: false)
+            c.updateBand(i, bands[i], persistToFlash: false, recordUndo: false, force: false)
         }
         onDevice = bands
     }
 
-    private func restoreBaseline(_ c: QudelixController) {
+    private func restoreBaseline(_ c: TuneHost) {
         guard c.byEarSessionActive, c.eqGroup == sessionGroup else { return }
         push(baseline, preGain: baselinePreGain, c)
     }
 
-    private func finishShape(_ c: QudelixController) {
+    private func finishShape(_ c: TuneHost) {
         guard let r = run else { return }
         resultBands = ShapeRun.curve(baseline: baseline, weights: weights, values: r.values)
         curveA = resultBands
@@ -772,7 +767,7 @@ final class BlindTuner: ObservableObject {
         phase = .finished
     }
 
-    private func finishTrim(_ c: QudelixController) {
+    private func finishTrim(_ c: TuneHost) {
         restoreBaseline(c)
         endSession(c)
         phase = .finished
@@ -788,7 +783,7 @@ final class BlindTuner: ObservableObject {
         }
     }
 
-    private func finishBypass(_ c: QudelixController) {
+    private func finishBypass(_ c: TuneHost) {
         restoreBaseline(c)
         phase = .finished
     }
@@ -820,16 +815,16 @@ final class BlindTuner: ObservableObject {
 
     var maxMovement: Double { ABTuner.movement(from: baseline, to: resultBands) }
 
-    func keepResult(_ c: QudelixController) {
+    func keepResult(_ c: TuneHost) {
         guard mode == .shape, phase == .finished, verdict == .usable,
               !resultBands.isEmpty, stillValid(c) else { return }
         write(resultBands, c)
         c.setPreGain(ABTuner.safePreGain(for: resultBands, notAbove: baselinePreGain),
-                     recordUndo: false, force: true)
+                     persistToFlash: true, recordUndo: false, force: true)
         endSession(c)
     }
 
-    func discardResult(_ c: QudelixController) {
+    func discardResult(_ c: TuneHost) {
         guard phase == .finished else { return }
         if mode == .trim {
             phase = .idle
