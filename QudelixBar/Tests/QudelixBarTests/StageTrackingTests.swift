@@ -4,20 +4,20 @@ import XCTest
 @MainActor
 final class StageTrackingTests: XCTestCase {
     func testTrackingOffRecordsNothingHoweverLoudTheSecondWas() {
-        let after = StageState.exposureAfterTick([], db: -6, power: 0.25,
+        let after = StagePolicy.exposureAfterTick([], db: -6, power: 0.25,
                                                  tracking: false, today: "2026-08-06")
         XCTAssertTrue(after.isEmpty)
     }
 
     func testTrackingOffLeavesHistoryRecordedEarlierExactlyAsItWas() {
         let existing = [day("2026-08-05", audible: 900, loud: 60, energy: 4)]
-        let after = StageState.exposureAfterTick(existing, db: -20, power: 0.01,
+        let after = StagePolicy.exposureAfterTick(existing, db: -20, power: 0.01,
                                                  tracking: false, today: "2026-08-06")
         XCTAssertEqual(after, existing)
     }
 
     func testTrackingOnCountsTheSecond() {
-        let after = StageState.exposureAfterTick([], db: -20, power: 0.01,
+        let after = StagePolicy.exposureAfterTick([], db: -20, power: 0.01,
                                                  tracking: true, today: "2026-08-06")
         XCTAssertEqual(after.count, 1)
         XCTAssertEqual(after[0].day, "2026-08-06")
@@ -27,11 +27,11 @@ final class StageTrackingTests: XCTestCase {
     }
 
     func testLoudSecondsCountOnlyPastTheLoudThreshold() {
-        let loud = StageState.exposureAfterTick([], db: StageState.loudThresholdDb + 1,
+        let loud = StagePolicy.exposureAfterTick([], db: StagePolicy.loudThresholdDb + 1,
                                                 power: 0.1, tracking: true,
                                                 today: "2026-08-06")
         XCTAssertEqual(loud[0].loudSeconds, 1)
-        let quiet = StageState.exposureAfterTick([], db: StageState.loudThresholdDb - 1,
+        let quiet = StagePolicy.exposureAfterTick([], db: StagePolicy.loudThresholdDb - 1,
                                                  power: 0.1, tracking: true,
                                                  today: "2026-08-06")
         XCTAssertEqual(quiet[0].loudSeconds, 0)
@@ -39,14 +39,14 @@ final class StageTrackingTests: XCTestCase {
     }
 
     func testSilenceIsNotListeningEvenWithTrackingOn() {
-        let after = StageState.exposureAfterTick([], db: StageState.silenceFloorDb - 1,
+        let after = StagePolicy.exposureAfterTick([], db: StagePolicy.silenceFloorDb - 1,
                                                  power: 1e-9, tracking: true,
                                                  today: "2026-08-06")
         XCTAssertTrue(after.isEmpty)
     }
 
     func testANewDayStartsItsOwnEntry() {
-        let after = StageState.exposureAfterTick([day("2026-08-05", audible: 10)],
+        let after = StagePolicy.exposureAfterTick([day("2026-08-05", audible: 10)],
                                                  db: -20, power: 0.01, tracking: true,
                                                  today: "2026-08-06")
         XCTAssertEqual(after.map(\.day), ["2026-08-05", "2026-08-06"])
@@ -56,7 +56,7 @@ final class StageTrackingTests: XCTestCase {
 
     func testHistoryStaysCappedAtFourteenDays() {
         let old = (1...14).map { day(String(format: "2026-07-%02d", $0), audible: 5) }
-        let after = StageState.exposureAfterTick(old, db: -20, power: 0.01,
+        let after = StagePolicy.exposureAfterTick(old, db: -20, power: 0.01,
                                                  tracking: true, today: "2026-08-06")
         XCTAssertEqual(after.count, 14)
         XCTAssertEqual(after.first?.day, "2026-07-02")
@@ -65,7 +65,7 @@ final class StageTrackingTests: XCTestCase {
 
     func testTodayIsFoundByKeyNotByPosition() {
         let existing = [day("2026-08-06", audible: 30), day("2026-08-07", audible: 5)]
-        let after = StageState.exposureAfterTick(existing, db: -20, power: 0.01,
+        let after = StagePolicy.exposureAfterTick(existing, db: -20, power: 0.01,
                                                  tracking: true, today: "2026-08-06")
         XCTAssertEqual(after.count, 2)
         XCTAssertEqual(after[0].audibleSeconds, 31)
@@ -155,7 +155,7 @@ final class StageTrackingTests: XCTestCase {
         let rates = [44100.0, 48000, 88200, 96000]
         for verdict in [QualityAnalyzer.Verdict.losslessLike(cutoffKHz: 21.9),
                         .hiRes(cutoffKHz: 24.5), .lossy(cutoffKHz: 16.4)] {
-            let narrated = StageState.rateForVerdict(
+            let narrated = StagePolicy.rateForVerdict(
                 verdict, availableRates: rates,
                 manualRateHz: 44100, deviceRate: 48000)
             let acted = target(verdict: verdict, measuredOn: qudelix.uid,
@@ -169,7 +169,7 @@ final class StageTrackingTests: XCTestCase {
     func testVerdictsThatAbstainResolveNoRateAtAll() {
         for verdict in [QualityAnalyzer.Verdict.tooQuiet, .noTreble,
                         .natural(cutoffKHz: 18), .lossyHigh(cutoffKHz: 19.9)] {
-            XCTAssertNil(StageState.rateForVerdict(
+            XCTAssertNil(StagePolicy.rateForVerdict(
                 verdict, availableRates: [44100, 48000, 96000],
                 manualRateHz: nil, deviceRate: 48000), "\(verdict)")
         }
@@ -177,7 +177,7 @@ final class StageTrackingTests: XCTestCase {
 
     func testLosslessOnAnOutputWithoutFortyFourPointOneStillResolvesToIt() {
         XCTAssertEqual(
-            StageState.rateForVerdict(.losslessLike(cutoffKHz: 21.9),
+            StagePolicy.rateForVerdict(.losslessLike(cutoffKHz: 21.9),
                                       availableRates: [96000],
                                       manualRateHz: nil, deviceRate: 96000),
             44100)
@@ -205,38 +205,38 @@ final class StageTrackingTests: XCTestCase {
                                       name: "Qudelix 5K", sampleRate: 48000)
 
     func testTheQudelixOwnVolumeIsTheAnchorWhileTheMacPlaysToIt() {
-        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: true,
+        XCTAssertEqual(StagePolicy.volumeAnchor(playingToQudelix: true,
                                                qudelixVolumeDb: -22,
                                                systemVolumeDb: 0),
                        .qudelix(-22))
     }
 
     func testAnyOtherOutputIsAnchoredByItsOwnVolume() {
-        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: false,
+        XCTAssertEqual(StagePolicy.volumeAnchor(playingToQudelix: false,
                                                qudelixVolumeDb: -22,
                                                systemVolumeDb: -8),
                        .system(-8))
     }
 
     func testASilentControlLinkFallsBackToTheOutputsOwnVolume() {
-        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: true,
+        XCTAssertEqual(StagePolicy.volumeAnchor(playingToQudelix: true,
                                                qudelixVolumeDb: nil,
                                                systemVolumeDb: -8),
                        .system(-8))
     }
 
     func testAnImplausibleDeviceReadingIsNotAnAnchor() {
-        XCTAssertEqual(StageState.volumeAnchor(playingToQudelix: true,
+        XCTAssertEqual(StagePolicy.volumeAnchor(playingToQudelix: true,
                                                qudelixVolumeDb: 1e9,
                                                systemVolumeDb: -8),
                        .system(-8))
-        XCTAssertNil(StageState.volumeAnchor(playingToQudelix: true,
+        XCTAssertNil(StagePolicy.volumeAnchor(playingToQudelix: true,
                                              qudelixVolumeDb: .nan,
                                              systemVolumeDb: nil))
     }
 
     func testNoVolumeAnywhereLeavesNothingToAnchorTo() {
-        XCTAssertNil(StageState.volumeAnchor(playingToQudelix: false,
+        XCTAssertNil(StagePolicy.volumeAnchor(playingToQudelix: false,
                                              qudelixVolumeDb: -22,
                                              systemVolumeDb: nil))
     }
@@ -264,12 +264,12 @@ final class StageTrackingTests: XCTestCase {
     }
 
     func testCallRatesAreNotPlaybackRates() {
-        XCTAssertEqual(StageState.playbackRates([8000, 16000, 44100, 96000]), [44100, 96000])
-        XCTAssertNil(StageState.acceptableManualRate(16000))
-        XCTAssertNil(StageState.acceptableManualRate(8000))
-        XCTAssertNil(StageState.acceptableManualRate(nil))
-        XCTAssertNil(StageState.acceptableManualRate(.infinity))
-        XCTAssertEqual(StageState.acceptableManualRate(44100), 44100)
+        XCTAssertEqual(StagePolicy.playbackRates([8000, 16000, 44100, 96000]), [44100, 96000])
+        XCTAssertNil(StagePolicy.acceptableManualRate(16000))
+        XCTAssertNil(StagePolicy.acceptableManualRate(8000))
+        XCTAssertNil(StagePolicy.acceptableManualRate(nil))
+        XCTAssertNil(StagePolicy.acceptableManualRate(.infinity))
+        XCTAssertEqual(StagePolicy.acceptableManualRate(44100), 44100)
     }
 
     private func target(verdict: QualityAnalyzer.Verdict = .losslessLike(cutoffKHz: 21.9),

@@ -416,7 +416,7 @@ struct LevelView: View {
                     }
                     Rectangle().fill(.tertiary)
                         .frame(width: 1)
-                        .offset(x: fraction(StageState.loudThresholdDb) * geo.size.width)
+                        .offset(x: fraction(StagePolicy.loudThresholdDb) * geo.size.width)
                 }
             }
             .frame(height: 8)

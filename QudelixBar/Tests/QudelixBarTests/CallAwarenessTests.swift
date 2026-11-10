@@ -3,20 +3,20 @@ import XCTest
 
 final class CallAwarenessTests: XCTestCase {
     func testCoreAudioAloneIsEnough() {
-        XCTAssertTrue(StageState.callIsActive(outputOnCall: true,
+        XCTAssertTrue(StagePolicy.callIsActive(outputOnCall: true,
                                               deviceActiveCall: false,
                                               deviceInputSource: "A2DP 1"))
     }
 
     func testTheDevicesOwnReportIsEnough() {
-        XCTAssertTrue(StageState.callIsActive(outputOnCall: false,
+        XCTAssertTrue(StagePolicy.callIsActive(outputOnCall: false,
                                               deviceActiveCall: true,
                                               deviceInputSource: "USB"))
     }
 
     func testAnHfpInputSourceIsEnough() {
         for source in ["HFP 1", "HFP 2"] {
-            XCTAssertTrue(StageState.callIsActive(outputOnCall: false,
+            XCTAssertTrue(StagePolicy.callIsActive(outputOnCall: false,
                                                   deviceActiveCall: nil,
                                                   deviceInputSource: source),
                           source)
@@ -24,16 +24,16 @@ final class CallAwarenessTests: XCTestCase {
     }
 
     func testNeitherWitnessMeansNoCall() {
-        XCTAssertFalse(StageState.callIsActive(outputOnCall: false,
+        XCTAssertFalse(StagePolicy.callIsActive(outputOnCall: false,
                                                deviceActiveCall: false,
                                                deviceInputSource: "A2DP 2"))
     }
 
     func testAnUnknownDeviceStateIsNotACall() {
-        XCTAssertFalse(StageState.callIsActive(outputOnCall: false,
+        XCTAssertFalse(StagePolicy.callIsActive(outputOnCall: false,
                                                deviceActiveCall: nil,
                                                deviceInputSource: nil))
-        XCTAssertFalse(StageState.callIsActive(outputOnCall: false,
+        XCTAssertFalse(StagePolicy.callIsActive(outputOnCall: false,
                                                deviceActiveCall: nil,
                                                deviceInputSource: "None"))
     }
@@ -41,10 +41,10 @@ final class CallAwarenessTests: XCTestCase {
     func testTheDeviceAloneCountsUntilReleasedByHand() {
         var w = CallWitnesses()
         w.deviceActiveCall = true
-        let before = StageState.callVerdict(w, releasedByHand: false)
+        let before = StagePolicy.callVerdict(w, releasedByHand: false)
         XCTAssertTrue(before.active)
         XCTAssertFalse(before.stillReleased)
-        let after = StageState.callVerdict(w, releasedByHand: true)
+        let after = StagePolicy.callVerdict(w, releasedByHand: true)
         XCTAssertFalse(after.active)
         XCTAssertTrue(after.stillReleased)
     }
@@ -52,30 +52,30 @@ final class CallAwarenessTests: XCTestCase {
     func testAnHfpLabelAloneIsReleasedTheSameWay() {
         var w = CallWitnesses()
         w.deviceInputSource = "HFP 1"
-        XCTAssertFalse(StageState.callVerdict(w, releasedByHand: true).active)
+        XCTAssertFalse(StagePolicy.callVerdict(w, releasedByHand: true).active)
     }
 
     func testReleasingByHandDoesNotOverruleTheMacsOwnAudioState() {
         var w = CallWitnesses()
         w.headsetMicRunning = true
         w.deviceActiveCall = true
-        let verdict = StageState.callVerdict(w, releasedByHand: true)
+        let verdict = StagePolicy.callVerdict(w, releasedByHand: true)
         XCTAssertTrue(verdict.active)
         XCTAssertTrue(verdict.stillReleased)
         w.headsetMicRunning = false
         w.outputAtCallRate = true
-        XCTAssertTrue(StageState.callVerdict(w, releasedByHand: true).active)
+        XCTAssertTrue(StagePolicy.callVerdict(w, releasedByHand: true).active)
     }
 
     func testTheReleaseIsSpentOnceTheDeviceClearsSoTheNextCallCounts() {
         var w = CallWitnesses()
         w.deviceActiveCall = false
         w.deviceInputSource = "A2DP 1"
-        let cleared = StageState.callVerdict(w, releasedByHand: true)
+        let cleared = StagePolicy.callVerdict(w, releasedByHand: true)
         XCTAssertFalse(cleared.active)
         XCTAssertFalse(cleared.stillReleased)
         w.deviceActiveCall = true
-        XCTAssertTrue(StageState.callVerdict(w, releasedByHand: cleared.stillReleased).active)
+        XCTAssertTrue(StagePolicy.callVerdict(w, releasedByHand: cleared.stillReleased).active)
     }
 
     func testTheWitnessSummaryNamesEveryVoiceThatIsUp() {
@@ -92,32 +92,32 @@ final class CallAwarenessTests: XCTestCase {
     }
 
     func testTheRateAfterACallPrefersTheUsersOwnPick() {
-        XCTAssertEqual(StageState.rateAfterCall(manual: 96000,
+        XCTAssertEqual(StagePolicy.rateAfterCall(manual: 96000,
                                                 available: [8000, 16000, 44100, 48000, 96000]),
                        96000)
     }
 
     func testWithoutAPickTheRateAfterACallIsTheHighestEverydayRate() {
-        XCTAssertEqual(StageState.rateAfterCall(manual: nil,
+        XCTAssertEqual(StagePolicy.rateAfterCall(manual: nil,
                                                 available: [8000, 16000, 44100, 48000, 96000]),
                        48000)
-        XCTAssertEqual(StageState.rateAfterCall(manual: 22050,
+        XCTAssertEqual(StagePolicy.rateAfterCall(manual: 22050,
                                                 available: [16000, 44100]), 44100)
     }
 
     func testAHeadsetOfferingOnlyCallRatesGetsNoRateAfterACall() {
-        XCTAssertNil(StageState.rateAfterCall(manual: nil, available: [8000, 16000]))
-        XCTAssertNil(StageState.rateAfterCall(manual: 44100, available: []))
+        XCTAssertNil(StagePolicy.rateAfterCall(manual: nil, available: [8000, 16000]))
+        XCTAssertNil(StagePolicy.rateAfterCall(manual: 44100, available: []))
     }
 
     func testTheBadgeHelpNamesTheWitnessThatHoldsTheCall() {
         var w = CallWitnesses()
         w.deviceActiveCall = true
-        XCTAssertTrue(StageState.callBadgeHelp(w).contains("The 5K reports"))
+        XCTAssertTrue(StagePolicy.callBadgeHelp(w).contains("The 5K reports"))
         w.outputAtCallRate = true
-        XCTAssertTrue(StageState.callBadgeHelp(w).contains("call sample rate"))
+        XCTAssertTrue(StagePolicy.callBadgeHelp(w).contains("call sample rate"))
         w.headsetMicRunning = true
-        XCTAssertTrue(StageState.callBadgeHelp(w).contains("using the headset's microphone"))
+        XCTAssertTrue(StagePolicy.callBadgeHelp(w).contains("using the headset's microphone"))
     }
 
     func testAQuietEventWaitsTheSettlingWindow() {

@@ -4,9 +4,7 @@ import Foundation
 
 @MainActor
 final class StageEngine: ObservableObject {
-    enum Mode: Equatable {
-        case insert, monitor
-    }
+    typealias Mode = StageMode
 
     @Published private(set) var isRunning = false
     @Published private(set) var status = "Off."

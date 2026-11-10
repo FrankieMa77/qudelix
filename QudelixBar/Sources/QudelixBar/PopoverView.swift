@@ -581,7 +581,7 @@ struct DeviceHeader: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
                 }
-                .help(StageState.callBadgeHelp(stageState.callWitnesses))
+                .help(StagePolicy.callBadgeHelp(stageState.callWitnesses))
             }
 
             GlyphButton(action: { controller.refresh() }) {
@@ -835,7 +835,7 @@ private struct UsbAudioRateRow: View {
     }
 
     private func ratePicker(_ device: AudioOutput) -> some View {
-        let playable = StageState.playbackRates(availableRates)
+        let playable = StagePolicy.playbackRates(availableRates)
         let rates = playable.isEmpty ? [device.sampleRate] : playable
         let binding = Binding<Double>(
             get: { device.sampleRate },
@@ -885,7 +885,7 @@ private struct UsbAudioRateRow: View {
         case .lossyHigh(let k):
             return String(format: "borderline cliff (%.1f kHz) — holding", k)
         case .losslessLike, .hiRes:
-            guard let target = StageState.rateForVerdict(
+            guard let target = StagePolicy.rateForVerdict(
                     verdict, availableRates: availableRates,
                     manualRateHz: stageState.manualRate, deviceRate: current) else {
                 return "hi-res — holding, the 5K isn't offering a "

@@ -297,7 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func deviceCallStateMayHaveChanged() {
         guard let w = wiring else { return }
-        let onCall = StageState.callIsActive(outputOnCall: false,
+        let onCall = StagePolicy.callIsActive(outputOnCall: false,
                                              deviceActiveCall: w.controller.activeCall,
                                              deviceInputSource: w.controller.inputSource)
         guard onCall != lastDeviceOnCall else { return }

@@ -4,51 +4,51 @@ import XCTest
 
 final class StageBassGuardTests: XCTestCase {
     func testAFlatCurveOffersNothingToGuard() {
-        XCTAssertEqual(StageState.bassGuardBoostDb(bands: Self.flatBands,
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(bands: Self.flatBands,
                                                    loudnessShelfDb: 0), 0)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 0, strength: 1), 0)
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 0, strength: 1), 0)
     }
 
     func testACutIsNotABoost() {
-        XCTAssertEqual(StageState.bassGuardBoostDb(
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 60, -6)], loudnessShelfDb: 0), 0)
     }
 
     func testTrebleIsOutsideTheScannedDecade() {
-        let worst = StageState.bassGuardBoostDb(
+        let worst = StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 8000, 10)], loudnessShelfDb: 0)
-        XCTAssertLessThan(worst, StageState.bassGuardInertDb)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: worst,
+        XCTAssertLessThan(worst, StagePolicy.bassGuardInertDb)
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: worst,
                                                      strength: 1), 0)
     }
 
     func testALowShelfIsMeasuredWhereItActuallyPeaks() {
-        let worst = StageState.bassGuardBoostDb(
+        let worst = StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.lowShelf, 100, 6)], loudnessShelfDb: 0)
         XCTAssertEqual(worst, 6.44, accuracy: 0.1)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: worst,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: worst,
                                                      strength: 1),
                        worst, accuracy: 1e-9)
     }
 
     func testABellIsMeasuredAtItsOwnCentre() {
-        XCTAssertEqual(StageState.bassGuardBoostDb(
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 50, 10)], loudnessShelfDb: 0),
                        10, accuracy: 0.05)
     }
 
     func testTheMacSideLoudnessShelfCountsTowardTheBoost() {
-        XCTAssertEqual(StageState.bassGuardBoostDb(bands: Self.flatBands,
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(bands: Self.flatBands,
                                                    loudnessShelfDb: 6),
                        6.07, accuracy: 0.1)
-        XCTAssertEqual(StageState.bassGuardBoostDb(
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 50, 10)], loudnessShelfDb: 6),
                        16.04, accuracy: 0.1)
     }
 
     func testThePreGainIsNotSubtractedFromWhatThereIsToGuard() {
         let bands = [Self.band(.peak, 50, 10)]
-        let withPreGain = StageState.bassGuardBoostDb(bands: bands,
+        let withPreGain = StagePolicy.bassGuardBoostDb(bands: bands,
                                                       loudnessShelfDb: 0)
         XCTAssertEqual(withPreGain, 10, accuracy: 0.05)
         XCTAssertEqual(EQCurve.response(bands: bands, preGain: -10, at: [50])[0],
@@ -56,52 +56,52 @@ final class StageBassGuardTests: XCTestCase {
     }
 
     func testAnEnormousBoostStillStopsAtTheCap() {
-        let worst = StageState.bassGuardBoostDb(
+        let worst = StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 50, 20)], loudnessShelfDb: 0)
         XCTAssertEqual(worst, 20, accuracy: 0.05)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: worst,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: worst,
                                                      strength: 1),
                        StageProcessor.bassGuardMaxCeilingDb)
     }
 
     func testHalfADecibelIsNotWorthGuarding() {
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 0.4,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 0.4,
                                                      strength: 1), 0)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 0.6,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 0.6,
                                                      strength: 1), 0.6,
                        accuracy: 1e-9)
     }
 
     func testStrengthScalesTheCeiling() {
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 10,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 10,
                                                      strength: 0.5), 5,
                        accuracy: 1e-9)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 10,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 10,
                                                      strength: 0), 0)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 10,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 10,
                                                      strength: 4), 10,
                        accuracy: 1e-9)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: 10,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: 10,
                                                      strength: .nan), 0)
     }
 
     func testNonsenseNeverBecomesACeiling() {
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: .nan,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: .nan,
                                                      strength: 1), 0)
-        XCTAssertEqual(StageState.bassGuardCeilingDb(worstBoostDb: .infinity,
+        XCTAssertEqual(StagePolicy.bassGuardCeilingDb(worstBoostDb: .infinity,
                                                      strength: 1), 0)
-        XCTAssertEqual(StageState.bassGuardBoostDb(
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 50, .nan)], loudnessShelfDb: 0), 0)
-        XCTAssertEqual(StageState.bassGuardBoostDb(bands: Self.flatBands,
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(bands: Self.flatBands,
                                                    loudnessShelfDb: .nan), 0)
-        XCTAssertEqual(StageState.bassGuardBoostDb(bands: Self.flatBands,
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(bands: Self.flatBands,
                                                    loudnessShelfDb: -20), 0)
     }
 
     func testABypassedBandBoostsNothing() {
         var muted = Self.band(.peak, 50, 12)
         muted.filter = .bypass
-        XCTAssertEqual(StageState.bassGuardBoostDb(bands: [muted],
+        XCTAssertEqual(StagePolicy.bassGuardBoostDb(bands: [muted],
                                                    loudnessShelfDb: 0), 0)
     }
     func testTheGuardIsOffByDefaultAndSavesNothing() {
@@ -194,9 +194,9 @@ final class StageBassGuardTests: XCTestCase {
 
         var on = flatStage()
         on.bassGuard = true
-        let worst = StageState.bassGuardBoostDb(bands: Self.flatBands,
+        let worst = StagePolicy.bassGuardBoostDb(bands: Self.flatBands,
                                                 loudnessShelfDb: 0)
-        let ceiling = StageState.bassGuardCeilingDb(worstBoostDb: worst,
+        let ceiling = StagePolicy.bassGuardCeilingDb(worstBoostDb: worst,
                                                     strength: 1)
         XCTAssertEqual(ceiling, 0)
         XCTAssertEqual(render(on, input: samples, ceilingDb: ceiling,
@@ -247,7 +247,7 @@ final class StageBassGuardTests: XCTestCase {
     func testStrengthScalesWhatTheGuardActuallyTakesBack() {
         let frames = 24000
         let samples = Self.tone(hz: 40, frames: frames, amplitude: 0.7)
-        let worst = StageState.bassGuardBoostDb(
+        let worst = StagePolicy.bassGuardBoostDb(
             bands: [Self.band(.peak, 50, 10)], loudnessShelfDb: 0)
 
         func deepest(strength: Double) -> Double {
@@ -258,7 +258,7 @@ final class StageBassGuardTests: XCTestCase {
             p.prepare(sampleRate: 48000)
             p.applyStage(on)
             p.applyBassGuard(
-                ceilingDb: StageState.bassGuardCeilingDb(worstBoostDb: worst,
+                ceilingDb: StagePolicy.bassGuardCeilingDb(worstBoostDb: worst,
                                                          strength: strength),
                 predictedBoostDb: worst)
             _ = renderOnce(p, samples)

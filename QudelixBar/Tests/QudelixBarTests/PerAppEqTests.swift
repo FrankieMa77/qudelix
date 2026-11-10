@@ -174,20 +174,20 @@ final class PerAppEqTests: XCTestCase {
         XCTAssertEqual(plan.first?.chain.preGain, preset.preGain)
     }
     func testPerAppEqIsAReasonToInsertEvenWithTheStageOff() {
-        XCTAssertEqual(StageState.wantedMode(stageEnabled: false, perAppEQ: true,
+        XCTAssertEqual(StagePolicy.wantedMode(stageEnabled: false, perAppEQ: true,
                                              levelTracking: false,
                                              detectQuality: false), .insert)
-        XCTAssertEqual(StageState.wantedMode(stageEnabled: false, perAppEQ: true,
+        XCTAssertEqual(StagePolicy.wantedMode(stageEnabled: false, perAppEQ: true,
                                              levelTracking: true,
                                              detectQuality: true), .insert,
                        "monitor mode writes nothing, so it could never be heard")
-        XCTAssertEqual(StageState.wantedMode(stageEnabled: true, perAppEQ: false,
+        XCTAssertEqual(StagePolicy.wantedMode(stageEnabled: true, perAppEQ: false,
                                              levelTracking: false,
                                              detectQuality: false), .insert)
-        XCTAssertEqual(StageState.wantedMode(stageEnabled: false, perAppEQ: false,
+        XCTAssertEqual(StagePolicy.wantedMode(stageEnabled: false, perAppEQ: false,
                                              levelTracking: true,
                                              detectQuality: false), .monitor)
-        XCTAssertNil(StageState.wantedMode(stageEnabled: false, perAppEQ: false,
+        XCTAssertNil(StagePolicy.wantedMode(stageEnabled: false, perAppEQ: false,
                                            levelTracking: false, detectQuality: false))
     }
 
