@@ -52,6 +52,11 @@ package struct AutomationLine: Equatable {
         EqCurveGeometry.response(bands: bands, count: count).map { $0 + offsetDb }
     }
 
+    package init(bands: [EqBand], offsetDb: Double) {
+        self.bands = bands
+        self.offsetDb = offsetDb
+    }
+
     init(_ line: EQLine) {
         bands = line.bands.map(EqBand.init)
         offsetDb = line.offsetDb
@@ -93,6 +98,42 @@ package struct AutomationState: Equatable {
     package var readOnly: Bool { following }
 
     package static let readOnlyHelp = AutomationReadout.readOnlyHelp
+
+    package static let keepHelp = "Write the followed gains and pre-gain into your EQ and stop "
+        + "following. It also turns Auto-trim off if it is on, since the bands now "
+        + "carry the trim."
+
+    package static let resumeHelp = "Try following again from your own EQ."
+
+    package static let showHelp = "Draw the reference line on the graph."
+
+    package static let referenceHelp = "Where the reference line comes from"
+
+    package static let autoFitHelp = "The 5K's gains follow the reference line: only gains move, your band "
+        + "layout and saved presets stay as they are. With the listening "
+        + "reference this turns Auto-trim on. Untick to edit again; Keep "
+        + "writes what it found into your EQ."
+
+    package static let autoTrimHelp = "Slowly trims what's playing toward the balance you usually listen to, "
+        + "at most a few dB, level-matched. It moves the 5K's bands a little at "
+        + "a time and your saved presets stay untouched until you Keep. Turning "
+        + "it on enables quality detection."
+
+    package var isForced: Bool { autoFit || autoTrimOn || following || hasReference }
+
+    package var summary: String {
+        var parts: [String] = []
+        if autoFit { parts.append("Auto-fit on") }
+        if autoTrimOn { parts.append("Auto-trim " + trimMode.label.lowercased()) }
+        if paused {
+            parts.append("paused")
+        } else if following {
+            parts.append("following")
+        }
+        return parts.isEmpty ? "Off" : parts.joined(separator: " \u{00B7} ")
+    }
+
+    package var strengthEnabled: Bool { autoTrimOn && trimMode != .audiophile }
 }
 
 @MainActor

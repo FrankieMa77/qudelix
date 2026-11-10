@@ -250,10 +250,10 @@ final class QxSessionTests: XCTestCase {
     func testAllowedCommandsAreExactlyTheOnesTheControllerSends() {
         XCTAssertEqual(QxSession.allowed, [
             .reqInitData, .reqDevConfig, .reqDevStatus, .reqEqPreset, .reqEqPresetName,
-            .setVolume, .setDacFilter, .setEqEnable, .setEqType, .setEqPreGain,
+            .setVolume, .setDacFilter, .setEqEnable, .setEqMode, .setEqType, .setEqPreGain,
             .setEqBandParam, .saveEqPreset, .loadEqPreset, .setEqPresetName, .saveAll,
         ])
-        for forbidden in [QxCmd.setEqMode, .setUsbFsMode, .sysReboot, .disconnect,
+        for forbidden in [QxCmd.setUsbFsMode, .sysReboot, .disconnect,
                           .setCharger, .setBatteryCare, .setLedMode, .setEqMute,
                           .playTestTone, .setUsbDacMode] {
             XCTAssertFalse(QxSession.allowed.contains(forbidden), "\(forbidden)")
@@ -528,7 +528,7 @@ final class QxSessionTests: XCTestCase {
         let session = try await connected(link)
         defer { session.close() }
         link.clearSends()
-        for forbidden in [QxCmd.setEqMode, .setUsbFsMode, .sysReboot, .disconnect,
+        for forbidden in [QxCmd.setUsbFsMode, .sysReboot, .disconnect,
                           .setCharger, .setBatteryCare] {
             do {
                 try await session.send(forbidden, [0])
@@ -744,5 +744,33 @@ final class QxSessionTests: XCTestCase {
         defer { session.close() }
         XCTAssertFalse(link.sentCommands.isEmpty)
         XCTAssertTrue(capture.all.isEmpty, capture.text)
+    }
+
+    func testTheModeSwitchSendsOneCommandAndWaitsForTheGroupToChange() async throws {
+        let device = EqTestDevice()
+        let session = try await connected(device.link)
+        defer { session.close() }
+        device.link.clearSends()
+        try await session.setEqMode(twentyBand: true, retryDelays: [0.05, 0.05, 1])
+        XCTAssertEqual(device.link.payloads(for: .setEqMode), [[1]])
+        XCTAssertTrue(device.link.sentCommands.contains(.reqDevConfig))
+        let snapshot = await session.snapshot()
+        XCTAssertEqual(snapshot.eqGroup, .b20)
+    }
+
+    func testAnUnansweredModeSwitchTimesOutAfterAskingForTheConfigurationAgain() async throws {
+        let device = EqTestDevice()
+        device.acceptsModeSwitch = false
+        let session = try await connected(device.link)
+        defer { session.close() }
+        device.link.clearSends()
+        do {
+            try await session.setEqMode(twentyBand: true, retryDelays: [0.05, 0.05])
+            XCTFail("expected a timeout")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .timedOut("the EQ mode switch"))
+        }
+        XCTAssertEqual(device.link.payloads(for: .setEqMode), [[1]])
+        XCTAssertEqual(device.link.payloads(for: .reqDevConfig).count, 1)
     }
 }

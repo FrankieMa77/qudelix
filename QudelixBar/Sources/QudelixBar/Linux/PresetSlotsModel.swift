@@ -102,9 +102,13 @@ package final class PresetSlotsModel {
             save(slot: index)
             return nil
         }
-        return SlotOverwritePrompt(slot: index, title: Self.overwriteTitle,
-                                   message: Self.overwriteMessage(slot: index, name: label(forSlot: index)),
-                                   confirmLabel: Self.saveHereLabel)
+        return overwritePrompt(slot: index)
+    }
+
+    package func overwritePrompt(slot index: Int) -> SlotOverwritePrompt {
+        SlotOverwritePrompt(slot: index, title: Self.overwriteTitle,
+                            message: Self.overwriteMessage(slot: index, name: label(forSlot: index)),
+                            confirmLabel: Self.saveHereLabel)
     }
 
     package func waitForIdle() async {

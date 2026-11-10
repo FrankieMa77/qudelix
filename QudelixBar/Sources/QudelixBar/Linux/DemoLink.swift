@@ -49,7 +49,7 @@ package final class DemoLink: QxLink {
     private var muted = false
     private var dacFilter = 3
     private var eqEnabled = true
-    private var presetIndex = 5
+    private var presetIndex: Int
     private var liveBands = DemoLink.bands
     private var livePreGain = DemoLink.preGain
     private var names = DemoLink.presetNames
@@ -63,8 +63,9 @@ package final class DemoLink: QxLink {
 
     private let power: Power
 
-    package init(power: Power = .battery) {
+    package init(power: Power = .battery, activeSlot: Int? = 5) {
         self.power = power
+        presetIndex = activeSlot ?? 0xFF
     }
 
     package func start() {
@@ -194,8 +195,9 @@ package final class DemoLink: QxLink {
 
 @MainActor
 package extension AppModel {
-    package static func demo(power: DemoLink.Power = .battery, clock: AppClock = SystemClock()) -> AppModel {
-        let model = AppModel(makeLinks: { [DemoLink(power: power)] },
+    package static func demo(power: DemoLink.Power = .battery, activeSlot: Int? = 5,
+                             clock: AppClock = SystemClock()) -> AppModel {
+        let model = AppModel(makeLinks: { [DemoLink(power: power, activeSlot: activeSlot)] },
                              acquireLock: { QxInstanceLock.acquire(at: nil) },
                              probeDevice: { AppDeviceProbe(present: true) },
                              batteryStore: .demo,

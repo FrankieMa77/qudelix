@@ -380,4 +380,49 @@ final class EqEditorExtrasTests: XCTestCase {
         XCTAssertEqual(PresetSlotsModel.customSettingNote, "Current EQ is a custom setting, not a saved slot.")
         XCTAssertEqual(PresetSlotsModel.noActiveSlotHelp, "No slot is active \u{2014} load or save one first.")
     }
+
+    func testTheAutomationSummaryAndForcingFollowTheMacRules() {
+        var state = AutomationState()
+        XCTAssertEqual(state.summary, "Off")
+        XCTAssertFalse(state.isForced)
+        XCTAssertFalse(state.strengthEnabled)
+        state.autoTrimOn = true
+        state.trimMode = .resolution
+        XCTAssertTrue(state.isForced)
+        XCTAssertTrue(state.strengthEnabled)
+        XCTAssertEqual(state.summary, "Auto-trim resolution")
+        state.trimMode = .audiophile
+        XCTAssertFalse(state.strengthEnabled)
+        state.autoFit = true
+        state.following = true
+        XCTAssertEqual(state.summary, "Auto-fit on \u{00B7} Auto-trim audiophile \u{00B7} following")
+        state.paused = true
+        XCTAssertTrue(state.summary.hasSuffix("paused"))
+        var reference = AutomationState()
+        reference.hasReference = true
+        XCTAssertTrue(reference.isForced)
+        XCTAssertEqual(AutomationState.readOnlyHelp, AutomationReadout.readOnlyHelp)
+    }
+
+    @MainActor
+    func testAPreviewStateMakesTheEditorReadOnlyWithoutAnyAutomationRunning() async {
+        let device = EqTestDevice()
+        let model = await open(device)
+        let automation = AutomationModel(app: model, stage: nil,
+                                         url: directory.appendingPathComponent("autofit.json"))
+        var preview = AutomationState()
+        preview.following = true
+        preview.autoFit = true
+        preview.referenceLine = AutomationLine(bands: [EqBand(filter: .peak, freq: 1000, gain: 3, q: 1)],
+                                               offsetDb: 0)
+        automation.showPreview(preview)
+        XCTAssertEqual(automation.state.referenceLine?.bands.count, 1)
+        XCTAssertFalse(model.eq.state.canEdit)
+        XCTAssertEqual(model.eq.state.readOnlyReason, EqEditorModel.followRefusal)
+        model.eq.setBand(2, EqBand(filter: .peak, freq: 250, gain: 5, q: 1))
+        XCTAssertTrue(device.link.payloads(for: .setEqBandParam).isEmpty)
+        XCTAssertEqual(automation.state.referenceLine?.response(count: 50).count, 50)
+        automation.shutdown()
+        await model.shutdown()
+    }
 }
