@@ -39,6 +39,7 @@ private typealias ScrollHandler = (Double, Double) -> Bool
 private typealias ResponseHandler = (String) -> Void
 private typealias DecisionHandler = () -> Bool
 private typealias StateHandler = (Bool) -> Void
+private typealias KeyHandler = (UInt32, UInt32) -> Bool
 
 private let instanceTrampoline: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { instance, data in
     guard let instance, let handler = unbox(data, InstanceHandler.self) else { return }
@@ -84,6 +85,11 @@ private let decisionTrampoline: @convention(c) (UnsafeMutableRawPointer?, Unsafe
 private let stateTrampoline: @convention(c) (UnsafeMutableRawPointer?, OpaquePointer?, UnsafeMutableRawPointer?) -> Void = { _, value, data in
     guard let value, let handler = unbox(data, StateHandler.self) else { return }
     handler(g_variant_get_boolean(value) != 0)
+}
+
+private let keyTrampoline: @convention(c) (UnsafeMutableRawPointer?, UInt32, UInt32, UInt32, UnsafeMutableRawPointer?) -> Int32 = { _, keyval, _, state, data in
+    guard let handler = unbox(data, KeyHandler.self) else { return 0 }
+    return handler(keyval, state) ? 1 : 0
 }
 
 package enum Signals {
@@ -232,6 +238,17 @@ package enum Signals {
         let callback = unsafeBitCast(scrollTrampoline, to: GCallback.self)
         g_signal_connect_data(UnsafeMutableRawPointer(controller), "scroll", callback,
                               retain(handler as ScrollHandler),
+                              releaseSignalData, GConnectFlags(rawValue: 0))
+        gtk_widget_add_controller(widget.widget, controller)
+    }
+
+    package static func addKey(to widget: some GPointer,
+                               handler: @escaping (UInt32, UInt32) -> Bool) {
+        let controller = gtk_event_controller_key_new()!
+        gtk_event_controller_set_propagation_phase(controller, GTK_PHASE_CAPTURE)
+        let callback = unsafeBitCast(keyTrampoline, to: GCallback.self)
+        g_signal_connect_data(UnsafeMutableRawPointer(controller), "key-pressed", callback,
+                              retain(handler as KeyHandler),
                               releaseSignalData, GConnectFlags(rawValue: 0))
         gtk_widget_add_controller(widget.widget, controller)
     }

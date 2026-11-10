@@ -11,6 +11,10 @@ enum AppWindow {
     private static var libraryPage: LibraryPage?
     private static var stagePage: StagePage?
     private static var levelPage: LevelPage?
+    private static var tunePage: TunePage?
+    private static var tuneDriver: TuneRenderDriver?
+    private static var tuneBadge: UnsafeMutablePointer<GtkWidget>?
+    private static var tuneRow: UnsafeMutablePointer<GtkWidget>?
     private static var audioDriver: AudioRenderDriver?
     private static var libraryDriver: LibraryRenderDriver?
     private static var eqDriver: EqRenderDriver?
@@ -88,7 +92,14 @@ enum AppWindow {
                     content = makePlaceholder(for: page, audio: audio)
                 }
             case .tune:
-                content = makePlaceholder(for: page, audio: audio)
+                if let tune = audio?.tune {
+                    let tunePage = TunePage(tune: tune)
+                    self.tunePage = tunePage
+                    tuneDriver = TuneRenderDriver(options: options, tune: tune, page: tunePage)
+                    content = tunePage.widget
+                } else {
+                    content = makePlaceholder(for: page, audio: audio)
+                }
             }
             adw_view_stack_add_titled_with_icon(stack.opaque, content, page.rawValue, page.title, page.icon)
         }
@@ -106,6 +117,7 @@ enum AppWindow {
         adw_header_bar_set_title_widget(sidebarHeader.opaque, sidebarTitle.widget)
         adw_header_bar_pack_end(sidebarHeader.opaque, AppMenu.makeButton())
         let list = makeSidebar()
+        audio?.tune.addObserver { state in onLive { showTuneBadge(state.active != nil) } }
         let listScroller = gtk_scrolled_window_new()!
         gtk_scrolled_window_set_policy(listScroller.opaque, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
         gtk_scrolled_window_set_child(listScroller.opaque, list)
@@ -184,6 +196,7 @@ enum AppWindow {
         if options.noDevice {
             guard connection == .searching else { return false }
             if options.render?.page == .stage || options.render?.page == .level { return audioDriver?.ready() ?? true }
+            if options.render?.page == .tune { return tuneDriver?.ready() ?? true }
             return options.render?.page != .library || libraryDriver?.ready() ?? true
         }
         guard options.demo else { return true }
@@ -204,6 +217,7 @@ enum AppWindow {
         }
         if options.render?.page == .library { return libraryDriver?.ready() ?? true }
         if options.render?.page == .stage || options.render?.page == .level { return audioDriver?.ready() ?? true }
+        if options.tuneDemo != nil, tuneDriver?.ready() == false { return false }
         if options.render?.page == .eq, eqDriver?.ready() == false { return false }
         if options.menuOpen { return menuReady() }
         if options.dialog == "about" { return aboutReady() }
@@ -263,6 +277,16 @@ enum AppWindow {
             gtk_box_append(box.typed(GtkBox.self), icon)
             gtk_box_append(box.typed(GtkBox.self), label)
             gtk_list_box_row_set_child(row.typed(GtkListBoxRow.self), box)
+            if page == .tune {
+                let badge = gtk_label_new("Running")!
+                gtk_widget_add_css_class(badge, "caption")
+                gtk_widget_add_css_class(badge, "accent")
+                gtk_widget_set_valign(badge, GTK_ALIGN_CENTER)
+                gtk_widget_set_visible(badge, 0)
+                gtk_box_append(box.typed(GtkBox.self), badge)
+                tuneBadge = badge
+                tuneRow = row
+            }
             Accessible.setLabel(row, page.title)
             gtk_widget_set_tooltip_text(row, page.summary)
             gtk_list_box_append(list.opaque, row)
@@ -284,6 +308,12 @@ enum AppWindow {
             }
         }
         return list
+    }
+
+    private static func showTuneBadge(_ running: Bool) {
+        guard let tuneBadge, let tuneRow else { return }
+        gtk_widget_set_visible(tuneBadge, running ? 1 : 0)
+        Accessible.setLabel(tuneRow, running ? TunePresentation.sidebarBadgeLabel : AppPage.tune.title)
     }
 
     static func navigate(to page: AppPage, showContent: Bool) {

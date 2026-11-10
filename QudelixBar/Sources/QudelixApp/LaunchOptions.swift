@@ -29,6 +29,7 @@ struct LaunchOptions {
     var customEq = false
     var stageDemo: String?
     var levelDemo: String?
+    var tuneDemo: String?
     var version = false
     var help = false
     var trayDump: String?
@@ -119,6 +120,9 @@ struct LaunchOptions {
                 index += 1
             case "--level-demo":
                 options.levelDemo = value
+                index += 1
+            case "--tune-demo":
+                options.tuneDemo = value
                 index += 1
             case "--no-audio":
                 options.noAudio = true

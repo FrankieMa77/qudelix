@@ -151,6 +151,18 @@ docker run --rm --init \
         render level-delete level "$theme" 360x640 --demo --level-demo live --dialog delete
       done
     fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "u3" ]; then
+      for theme in light dark; do
+        for scenario in compare-idle compare-running compare-finished shape-idle shape-running shape-finished \
+          tones-idle tones-running tones-finished tones-unreliable blind-idle blind-running blind-finished \
+          trim-idle trim-running trim-finished tones-blocked compare-blocked interrupted tone-interrupted; do
+          render "tune-$scenario" tune "$theme" 900x900 --demo --tune-demo "$scenario"
+          render "tune-$scenario" tune "$theme" 360x1300 --demo --tune-demo "$scenario"
+        done
+        render tune-sidebar-running device "$theme" 900x640 --demo --tune-demo compare-running
+        render tune-sidebar-running device "$theme" 360x640 --demo --sidebar --tune-demo compare-running
+      done
+    fi
     /build/debug/qudelix-app --version
     /build/debug/qudelix-app --help
     dump_tray() {

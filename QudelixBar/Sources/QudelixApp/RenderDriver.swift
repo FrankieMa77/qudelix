@@ -176,3 +176,28 @@ final class AudioRenderDriver {
         return true
     }
 }
+
+@MainActor
+final class TuneRenderDriver {
+    private let options: LaunchOptions
+    private let tune: TuneModel
+    private let page: TunePage
+    private var applied = false
+
+    init(options: LaunchOptions, tune: TuneModel, page: TunePage) {
+        self.options = options
+        self.tune = tune
+        self.page = page
+    }
+
+    func ready() -> Bool {
+        guard let name = options.tuneDemo, let scenario = DemoTuneScenario(rawValue: name) else { return true }
+        if !applied {
+            applied = true
+            tune.showPreview(DemoTuneData.state(scenario))
+            page.select(scenario.method)
+            return false
+        }
+        return true
+    }
+}

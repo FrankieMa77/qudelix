@@ -21,7 +21,7 @@ enum AppPage: String, CaseIterable {
 
     var needsAudio: Bool {
         switch self {
-        case .tune, .stage, .level: return true
+        case .stage, .level: return true
         default: return false
         }
     }
