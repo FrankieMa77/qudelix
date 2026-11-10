@@ -51,7 +51,7 @@ enum CLIExit {
 }
 
 enum CLI {
-    static let version = "1.6.2"
+    static let version = "1.6.3"
     static let maxImportBytes = 1 << 20
     static let maxSnapshotBytes = 100_000
 

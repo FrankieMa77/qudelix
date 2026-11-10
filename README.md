@@ -142,7 +142,7 @@ Because the app is signed ad-hoc, macOS cannot tell you who built it, and the
 release is what narrows that gap. Before opening the DMG:
 
 ```
-shasum -a 256 ~/Downloads/Qudelix-1.6.2.dmg
+shasum -a 256 ~/Downloads/Qudelix-1.6.3.dmg
 ```
 
 Compare the result against the SHA-256 in the [latest release
@@ -150,7 +150,7 @@ notes](../../releases/latest). Or, if you also downloaded the `.dmg.sha256`
 file, let `shasum` do the comparison:
 
 ```
-cd ~/Downloads && shasum -a 256 -c Qudelix-1.6.2.dmg.sha256
+cd ~/Downloads && shasum -a 256 -c Qudelix-1.6.3.dmg.sha256
 ```
 
 That should print `OK`. If the hashes differ, or the check fails, do not open
@@ -706,6 +706,17 @@ than there.
   exists, but downloading and installing it is manual.
 
 ## Changelog
+
+### 1.6.3 — 2026-11-10
+
+- **Linux: Bluetooth connects on BlueZ older than 5.88.** Those versions list the
+  5K's control link but keep the call that opens it behind an experimental
+  switch, so 1.6.2 retried it until it gave up. Qudelix now opens the link with
+  a plain connect instead; the audio connection is still never touched.
+- Linux: `qudelix --verbose` also prints the Bluetooth steps while it waits.
+- Linux: `qudelix probe` says whether BlueZ is running, installed but not
+  running, or not installed; it no longer reports an idle BlueZ as "on the
+  system bus".
 
 ### 1.6.2 — 2026-11-10
 

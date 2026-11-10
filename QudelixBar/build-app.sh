@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="1.6.2"
+VERSION="1.6.3"
 APP="${QUDELIX_APP_OUT:-../Qudelix.app}"
 APP_PARENT="$(dirname "$APP")"
 
