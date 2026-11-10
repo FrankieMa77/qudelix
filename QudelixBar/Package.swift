@@ -135,6 +135,27 @@ import Foundation
 
 let includesApp = ProcessInfo.processInfo.environment["QUDELIX_APP"] == "1"
 
+func pipewireIncludeFlags() -> [String] {
+    let fallback = ["-I/usr/include/pipewire-0.3", "-I/usr/include/spa-0.2"]
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["pkg-config", "--cflags", "libpipewire-0.3"]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        return fallback
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0,
+          let text = String(data: data, encoding: .utf8) else { return fallback }
+    let flags = text.split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
+    return flags.isEmpty ? fallback : flags
+}
+
 var products: [Product] = [
     .executable(name: "qudelix", targets: ["QudelixCLI"])
 ]
@@ -182,6 +203,22 @@ if includesApp {
             name: "QudelixGtkTests",
             dependencies: ["QudelixGtk", "QudelixBar", "CGtk"],
             path: "Tests/QudelixGtkTests"
+        ),
+        .target(
+            name: "CQxAudio",
+            path: "Sources/CQxAudio",
+            cSettings: [.unsafeFlags(pipewireIncludeFlags())],
+            linkerSettings: [.linkedLibrary("pipewire-0.3")]
+        ),
+        .target(
+            name: "QudelixAudio",
+            dependencies: ["CQxAudio", "QudelixBar"],
+            path: "Sources/QudelixAudio"
+        ),
+        .testTarget(
+            name: "QudelixAudioTests",
+            dependencies: ["QudelixAudio", "QudelixBar"],
+            path: "Tests/QudelixAudioTests"
         )
     ]
 }
