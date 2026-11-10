@@ -166,6 +166,65 @@ func fitTone(_ samples: [Float], frequency: Double, rate: Int = Harness.sampleRa
                    activeFrames: last - first)
 }
 
+struct SteadyTone {
+    var amplitude: Double
+    var residualRatio: Double
+    var windows: Int
+    var agreeing: Int
+    var amplitudes: [Double]
+
+    func agreeingSeconds(rate: Int = Harness.sampleRate, windowFrames: Int) -> Double {
+        Double(agreeing * windowFrames) / Double(rate)
+    }
+}
+
+func fitToneWindows(_ samples: [Float], frequency: Double, rate: Int = Harness.sampleRate,
+                    windowFrames: Int = Harness.sampleRate / 10) -> SteadyTone? {
+    guard let first = samples.firstIndex(where: { abs($0) > 0.02 }),
+          let last = samples.lastIndex(where: { abs($0) > 0.02 }),
+          last - first >= windowFrames * 4 else { return nil }
+    let step = 2.0 * Double.pi * frequency / Double(rate)
+    var amplitudes: [Double] = []
+    var residuals: [Double] = []
+    var start = first
+    while start + windowFrames <= last {
+        var scc = 0.0, sss = 0.0, scs = 0.0, sxc = 0.0, sxs = 0.0
+        for i in start..<(start + windowFrames) {
+            let phase = step * Double(i)
+            let c = cos(phase), s = sin(phase), x = Double(samples[i])
+            scc += c * c
+            sss += s * s
+            scs += c * s
+            sxc += x * c
+            sxs += x * s
+        }
+        let determinant = scc * sss - scs * scs
+        guard abs(determinant) > 1e-9 else { return nil }
+        let a = (sxc * sss - sxs * scs) / determinant
+        let b = (sxs * scc - sxc * scs) / determinant
+        var residual = 0.0
+        var energy = 0.0
+        for i in start..<(start + windowFrames) {
+            let phase = step * Double(i)
+            let fitted = a * cos(phase) + b * sin(phase)
+            let x = Double(samples[i])
+            residual += (x - fitted) * (x - fitted)
+            energy += x * x
+        }
+        amplitudes.append((a * a + b * b).squareRoot())
+        residuals.append((residual / max(energy, 1e-12)).squareRoot())
+        start += windowFrames
+    }
+    let sounding = amplitudes.indices.filter { amplitudes[$0] > 0.02 }
+    guard !sounding.isEmpty else { return nil }
+    let sorted = sounding.map { amplitudes[$0] }.sorted()
+    let median = sorted[sorted.count / 2]
+    let medianResidual = sounding.map { residuals[$0] }.sorted()[sounding.count / 2]
+    let agreeing = sounding.filter { abs(amplitudes[$0] - median) <= 0.05 * median }.count
+    return SteadyTone(amplitude: median, residualRatio: medianResidual, windows: amplitudes.count,
+                      agreeing: agreeing, amplitudes: amplitudes)
+}
+
 func playWav(_ url: URL, target: String) -> Bool {
     runTool(["pw-play", "--target", target, url.path]).status == 0
 }

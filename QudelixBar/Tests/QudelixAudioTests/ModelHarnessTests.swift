@@ -115,11 +115,6 @@ final class ModelHarnessTests: XCTestCase {
         return condition()
     }
 
-    private func steady(left: [Float], right: [Float]) -> (left: Double, right: Double)? {
-        guard let l = fitTone(left, frequency: 1000), let r = fitTone(right, frequency: 1000) else { return nil }
-        return (l.amplitude, r.amplitude)
-    }
-
     func testStageInsertChangesTheCapturedOutputAndStopsCleanly() throws {
         model.start()
         XCTAssertTrue(pump { self.model.state.outputKey == Harness.fiveK })
@@ -150,9 +145,16 @@ final class ModelHarnessTests: XCTestCase {
         XCTAssertTrue(playWav(wav, target: LinuxAudioNames.stageSinkName))
         XCTAssertTrue(pump { recorder.frameCount > Harness.sampleRate * 2 })
         let snapshot = recorder.snapshot
-        let shaped = try XCTUnwrap(steady(left: snapshot.left, right: snapshot.right))
+        let windowFrames = Harness.sampleRate / 10
+        let leftTone = try XCTUnwrap(fitToneWindows(snapshot.left, frequency: 1000, windowFrames: windowFrames))
+        let rightTone = try XCTUnwrap(fitToneWindows(snapshot.right, frequency: 1000, windowFrames: windowFrames))
+        XCTAssertGreaterThanOrEqual(leftTone.agreeingSeconds(windowFrames: windowFrames), 1.5,
+                                    "left windows: \(leftTone.amplitudes)")
+        XCTAssertGreaterThanOrEqual(rightTone.agreeingSeconds(windowFrames: windowFrames), 1.5,
+                                    "right windows: \(rightTone.amplitudes)")
+        let shaped = (left: leftTone.amplitude, right: rightTone.amplitude)
         let ratio = shaped.right / shaped.left
-        print("stage balance 3 dB: left=\(shaped.left) right=\(shaped.right) ratio=\(ratio)")
+        print("stage balance 3 dB: left=\(shaped.left) right=\(shaped.right) ratio=\(ratio) windows=\(leftTone.windows) agreeing=\(leftTone.agreeing)/\(rightTone.agreeing)")
         XCTAssertEqual(ratio, 1.4125, accuracy: 0.06)
         XCTAssertEqual(shaped.left, 0.25 * 0.8414, accuracy: 0.01)
 
