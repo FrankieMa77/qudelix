@@ -19,6 +19,7 @@ package struct EqEditorState: Equatable {
     package var canEdit = false
     package var canUndo = false
     package var canRedo = false
+    package var readOnlyReason: String?
     package var undoLabel: String?
     package var redoLabel: String?
 
@@ -46,6 +47,9 @@ package struct EqImportResult: Equatable {
 package final class EqEditorModel {
     package static let undoDepth = 40
     package static let burstWindow: TimeInterval = 0.7
+    package static let sessionRefusal = "A tuning session is running \u{2014} finish or stop it first."
+    package static let followRefusal = "Auto-fit or Auto-trim is moving the gains \u{2014} "
+        + "press Keep, or turn them off, to edit."
 
     private enum WriteKey: Hashable {
         case band(Int)
@@ -85,6 +89,10 @@ package final class EqEditorModel {
     private var readFailed = false
     private var recheck = false
     private var sourceName: String?
+    private(set) var sessionActive = false
+    private(set) var following = false
+    private var flashHolds = 0
+    private var modeChanging = false
 
     private var undoStack: [EqHistoryEntry] = []
     private var redoStack: [EqHistoryEntry] = []
@@ -135,7 +143,40 @@ package final class EqEditorModel {
 
     private var linkedAndRead: Bool { ready && host.state.connection.isConnected && host.session != nil }
 
-    package var canEdit: Bool { linkedAndRead && !operationInFlight }
+    var canWriteBands: Bool {
+        linkedAndRead && !operationInFlight && !modeChanging
+            && (host.state.status?.eqGroup ?? group) == group
+    }
+
+    var readOnly: Bool { sessionActive || following }
+
+    package var canEdit: Bool { canWriteBands && !readOnly }
+
+    var isFlashing: Bool { flashHolds > 0 }
+
+    var isModeChanging: Bool { modeChanging }
+
+    var isSettling: Bool { operationInFlight || flashHolds > 0 || modeChanging }
+
+    var isReady: Bool { ready }
+
+    var liveBands: [QxEqBandValue] { bands }
+
+    var livePreGain: Double { preGain }
+
+    var liveEnabled: Bool { enabled }
+
+    func setSessionActive(_ on: Bool) {
+        guard on != sessionActive else { return }
+        sessionActive = on
+        publish()
+    }
+
+    func setFollowing(_ on: Bool) {
+        guard on != following else { return }
+        following = on
+        publish()
+    }
 
     private var operationInFlight: Bool { running || !operations.isEmpty }
 
@@ -146,7 +187,8 @@ package final class EqEditorModel {
     package var writeRefusal: String? { writeRefusal(attempted: true) }
 
     package func writeRefusal(attempted: Bool) -> String? {
-        if canEdit { return nil }
+        if canWriteBands, !sessionActive { return nil }
+        if host.state.connection.isConnected, sessionActive { return Self.sessionRefusal }
         switch host.state.connection {
         case .connected:
             return "The 5K is busy \u{2014} try again in a moment."
@@ -199,6 +241,7 @@ package final class EqEditorModel {
                 let snapshot = await session.snapshot()
                 self.adoptDeviceState(applied, snapshot: snapshot)
                 self.publish()
+                self.host.eqHost.onBaseEvent?(.fit)
                 await self.host.refreshStatus()
             } catch {
                 DebugLog.shared.log("import failed: \(QudelixCLI.describe(error))")
@@ -228,10 +271,12 @@ package final class EqEditorModel {
     }
 
     package func setBand(_ index: Int, _ band: EqBand) {
+        guard canEdit else { return }
         commitBand(index, band.raw, persist: true, record: true, force: false)
     }
 
     package func setPreGain(_ db: Double) {
+        guard canEdit else { return }
         commitPreGain(db, persist: true, record: true, force: false)
     }
 
@@ -297,6 +342,7 @@ package final class EqEditorModel {
     }
 
     package func setEnabled(_ on: Bool) {
+        guard !sessionActive else { return }
         host.setEqEnabled(on)
     }
 
@@ -336,11 +382,12 @@ package final class EqEditorModel {
         muted = target.mutedBands
         host.armSave()
         publish()
+        host.eqHost.onBaseEvent?(.undoRedo)
     }
 
-    private func commitBand(_ index: Int, _ value: QxEqBandValue, persist: Bool,
-                            record: Bool, force: Bool) {
-        guard canEdit, bands.indices.contains(index) else { return }
+    func commitBand(_ index: Int, _ value: QxEqBandValue, persist: Bool,
+                    record: Bool, force: Bool) {
+        guard canWriteBands, bands.indices.contains(index) else { return }
         let band = QxSession.clamped(value)
         guard force || band != bands[index] else { return }
         guard QxPacket.bandParamPayload(group: group, band: index, band) != nil else { return }
@@ -352,8 +399,8 @@ package final class EqEditorModel {
         publish()
     }
 
-    private func commitPreGain(_ db: Double, persist: Bool, record: Bool, force: Bool) {
-        guard canEdit, db.isFinite else { return }
+    func commitPreGain(_ db: Double, persist: Bool, record: Bool, force: Bool) {
+        guard canWriteBands, db.isFinite else { return }
         let clamped = EQHeadroom.clamp(db)
         guard force || clamped != preGain else { return }
         if record { checkpoint("pre-gain") }
@@ -363,7 +410,7 @@ package final class EqEditorModel {
         publish()
     }
 
-    private func checkpoint(_ label: String, discrete: Bool = false) {
+    func checkpoint(_ label: String, discrete: Bool = false) {
         guard !suppressUndo else { return }
         let now = host.clock.now()
         let continuing = !discrete && label == lastEditLabel
@@ -466,7 +513,80 @@ package final class EqEditorModel {
 
     var isBusy: Bool { running || !pending.isEmpty || !operations.isEmpty }
 
+    func followedDiff(_ target: [QxEqBandValue], preGain wanted: Double)
+        -> (pre: Double, changed: [(Int, QxEqBandValue)]) {
+        let wantPre = EQHeadroom.clamp(ReferenceFollower.quantized(wanted))
+        var changed: [(Int, QxEqBandValue)] = []
+        for index in target.indices where bands.indices.contains(index) {
+            var want = target[index]
+            want.gain = min(max(ReferenceFollower.quantized(want.gain), -12), 12)
+            var have = bands[index]
+            have.gain = ReferenceFollower.quantized(have.gain)
+            if want != have { changed.append((index, want)) }
+        }
+        return (wantPre, changed)
+    }
+
+    private func writeBaseDirect(_ session: QxSession,
+                                 _ base: (bands: [QxEqBandValue], preGain: Double)) async -> Bool {
+        guard base.bands.count == bands.count else { return false }
+        let diff = followedDiff(base.bands, preGain: base.preGain)
+        let preFirst = diff.pre < preGain
+        do {
+            if preFirst { try await writePreGainDirect(session, diff.pre) }
+            for (index, want) in diff.changed {
+                let band = QxSession.clamped(want)
+                try await session.writeBand(index: index, band)
+                bands[index] = band
+                if band.filter != .bypass, muted[index] != nil { muted[index] = nil }
+            }
+            if !preFirst { try await writePreGainDirect(session, diff.pre) }
+        } catch {
+            DebugLog.shared.log("base EQ write failed: \(QudelixCLI.describe(error))")
+            publish()
+            return false
+        }
+        publish()
+        return ReferenceFollower.sameQuantized(bands, base.bands)
+            && abs(ReferenceFollower.quantized(preGain) - ReferenceFollower.quantized(base.preGain)) < 0.05
+    }
+
+    private func writePreGainDirect(_ session: QxSession, _ db: Double) async throws {
+        guard db != preGain else { return }
+        try await session.writePreGain(db: db)
+        preGain = db
+    }
+
+    func committingToFlash(_ session: QxSession, _ send: () async -> Void) async -> Bool {
+        flashHolds += 1
+        defer { flashHolds -= 1 }
+        let base = host.eqHost.baseProvider?()
+        if let base, !(await writeBaseDirect(session, base)) { return false }
+        await send()
+        if base != nil { host.eqHost.onFlashCommitted?() }
+        return true
+    }
+
+    func prepareModeChange(_ session: QxSession) async -> Bool {
+        await flushWrites()
+        modeChanging = true
+        if let base = host.eqHost.baseProvider?() {
+            guard await writeBaseDirect(session, base) else {
+                modeChanging = false
+                return false
+            }
+            host.eqHost.onFlashCommitted?()
+        }
+        return true
+    }
+
+    func finishModeChange() {
+        modeChanging = false
+        publish()
+    }
+
     func sessionOpened(_ session: QxSession, snapshot: QxStatusSnapshot) async {
+        host.eqHost.onBaseEvent?(.reset)
         generation += 1
         worker = nil
         pending.removeAll()
@@ -499,6 +619,7 @@ package final class EqEditorModel {
             bands = preset.bands
             preGain = EQHeadroom.clamp(preset.preGain)
             ready = true
+            host.eqHost.onReadback?(bands, preGain)
         } else {
             readFailed = true
         }
@@ -507,6 +628,10 @@ package final class EqEditorModel {
     }
 
     func sessionClosed() {
+        host.eqHost.endEqSession()
+        host.eqHost.onBaseEvent?(.reset)
+        flashHolds = 0
+        modeChanging = false
         generation += 1
         worker = nil
         pending.removeAll()
@@ -553,7 +678,10 @@ package final class EqEditorModel {
             if isBusy {
                 recheck = true
             } else {
-                if groupMoved { group = snapshot.eqGroup }
+                if groupMoved {
+                    group = snapshot.eqGroup
+                    host.eqHost.onBaseEvent?(.group)
+                }
                 activeSlot = snapshot.activePresetIndex
                 reloadFromDevice()
             }
@@ -561,7 +689,7 @@ package final class EqEditorModel {
         if changed { publish() }
     }
 
-    private func reloadFromDevice() {
+    func reloadFromDevice() {
         enqueueOperation { [weak self] in
             guard let self, let session = self.host.session else { return }
             guard let preset = try? await session.readPreset() else { return }
@@ -609,6 +737,7 @@ package final class EqEditorModel {
         readFailed = false
         muted = muted.filter { bands.indices.contains($0.key) && bands[$0.key].filter == .bypass }
         if let selected, !bands.indices.contains(selected) { self.selected = nil }
+        host.eqHost.onReadback?(bands, preGain)
     }
 
     func presetLoading(_ label: String, slot: Int) {
@@ -616,6 +745,7 @@ package final class EqEditorModel {
         muted = [:]
         sourceName = nil
         activeSlot = slot
+        host.eqHost.onBaseEvent?(.slotLoad)
     }
 
     func checkpointForImport(_ label: String) {
@@ -636,6 +766,7 @@ package final class EqEditorModel {
         next.canEdit = canEdit
         next.canUndo = !undoStack.isEmpty
         next.canRedo = !redoStack.isEmpty
+        next.readOnlyReason = sessionActive ? Self.sessionRefusal : (following ? Self.followRefusal : nil)
         next.undoLabel = undoStack.last?.label
         next.redoLabel = redoStack.last?.label
         guard next != state else { return }

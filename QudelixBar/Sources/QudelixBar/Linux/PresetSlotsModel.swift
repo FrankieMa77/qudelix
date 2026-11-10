@@ -78,6 +78,7 @@ package final class PresetSlotsModel {
         guard (0..<Self.slotCount).contains(index) else { return }
         let failure = "Could not load slot \(index + 1)."
         guard canWrite else { return refuse(failure) }
+        guard !host.eq.sessionActive else { return host.notify(.failure, EqEditorModel.sessionRefusal) }
         host.eq.presetLoading(label(forSlot: index), slot: index)
         run(failure) { [weak self] session in
             guard let self else { return }
@@ -92,6 +93,7 @@ package final class PresetSlotsModel {
                 await self.host.refreshStatus()
             } catch {
                 DebugLog.shared.log("preset load failed: \(QudelixCLI.describe(error))")
+                self.host.eq.reloadFromDevice()
                 self.fail(failure)
             }
         }
@@ -101,17 +103,24 @@ package final class PresetSlotsModel {
         guard (0..<Self.slotCount).contains(index) else { return }
         let failure = "Could not save to slot \(index + 1)."
         guard canWrite else { return refuse(failure) }
+        guard !host.eq.sessionActive else { return host.notify(.failure, EqEditorModel.sessionRefusal) }
         run(failure) { [weak self] session in
             guard let self else { return }
-            let held = await self.host.eq.writeRealShapes(session)
             var saved = false
-            do {
-                try await session.savePreset(index: index)
-                saved = true
-            } catch {
-                DebugLog.shared.log("preset save failed: \(QudelixCLI.describe(error))")
+            let committed = await self.host.eq.committingToFlash(session) {
+                let held = await self.host.eq.writeRealShapes(session)
+                do {
+                    try await session.savePreset(index: index)
+                    saved = true
+                } catch {
+                    DebugLog.shared.log("preset save failed: \(QudelixCLI.describe(error))")
+                }
+                await self.host.eq.writeMutedShapes(held, session)
             }
-            await self.host.eq.writeMutedShapes(held, session)
+            guard committed else {
+                DebugLog.shared.log("slot save skipped: could not put the base EQ back first")
+                return self.fail(failure)
+            }
             guard saved else { return self.fail(failure) }
             try? await session.refreshStatus()
             self.host.notify(.success, "Saved to slot \(index + 1).")

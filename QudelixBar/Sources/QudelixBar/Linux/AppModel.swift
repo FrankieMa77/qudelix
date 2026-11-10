@@ -137,6 +137,7 @@ package final class AppModel {
 
     package private(set) lazy var eq = EqEditorModel(host: self)
     package private(set) lazy var presets = PresetSlotsModel(host: self)
+    private(set) lazy var eqHost = LinuxEqHost(app: self)
     let batteryLog: BatteryLog
     package private(set) lazy var batteryGraph = BatteryGraphModel(host: self, log: batteryLog)
     var libraryEnvironment = LibraryEnvironment.system()
@@ -217,6 +218,8 @@ package final class AppModel {
         stopped = true
         retryTimer?.cancel()
         retryTimer = nil
+        eqHost.onTuneShutdown?()
+        eqHost.onQuit?()
         await drainTask?.value
         await flushSave()
         saveTimer?.cancel()
@@ -275,11 +278,17 @@ package final class AppModel {
         saveTimer?.cancel()
         saveTimer = nil
         await eq.flushWrites()
-        guard pendingSave, let session, session.isConnected else { return }
+        guard pendingSave, let session, session.isConnected, !eq.sessionActive else { return }
         pendingSave = false
-        _ = await eq.writeRealShapes(session)
-        DebugLog.shared.log("asking the device to persist settings")
-        try? await session.saveAll()
+        let committed = await eq.committingToFlash(session) {
+            _ = await eq.writeRealShapes(session)
+            DebugLog.shared.log("asking the device to persist settings")
+            try? await session.saveAll()
+        }
+        guard !committed else { return }
+        DebugLog.shared.log("flash save skipped: could not put the base EQ back first")
+        pendingSave = true
+        if !stopped { armSave() }
     }
 
     private func publish(_ change: (inout AppModelState) -> Void) {
@@ -621,7 +630,7 @@ package final class AppModel {
         pendingSave = true
         saveTimer?.cancel()
         saveTimer = nil
-        guard !eq.hasMutes else { return }
+        guard !eq.hasMutes, !eq.sessionActive else { return }
         saveTimer = clock.schedule(after: Self.saveDelay) { [weak self] in
             guard let self else { return }
             Task { @MainActor in await self.timedSave() }
@@ -629,7 +638,7 @@ package final class AppModel {
     }
 
     private func timedSave() async {
-        guard !eq.hasMutes else {
+        guard !eq.hasMutes, !eq.sessionActive else {
             saveTimer?.cancel()
             saveTimer = nil
             return
@@ -640,6 +649,16 @@ package final class AppModel {
     func parkSaveForMute() {
         saveTimer?.cancel()
         saveTimer = nil
+    }
+
+    func parkSaveForSession() {
+        saveTimer?.cancel()
+        saveTimer = nil
+    }
+
+    func releaseParkedSave() {
+        guard pendingSave, saveTimer == nil, !stopped, !eq.hasMutes, !eq.sessionActive else { return }
+        armSave()
     }
 
     func mutesCleared() {
