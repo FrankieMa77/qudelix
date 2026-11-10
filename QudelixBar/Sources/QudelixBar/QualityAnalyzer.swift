@@ -1,9 +1,9 @@
 import Foundation
 
-struct BalanceFeatures: Equatable {
-    var bassDb: Double
-    var tiltDbPerOctave: Double
-    var presenceDb: Double
+package struct BalanceFeatures: Equatable {
+    package var bassDb: Double
+    package var tiltDbPerOctave: Double
+    package var presenceDb: Double
 }
 
 final class QualityAnalyzer {

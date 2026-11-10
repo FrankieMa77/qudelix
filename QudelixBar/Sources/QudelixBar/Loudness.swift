@@ -94,28 +94,28 @@ struct AveragedLoudness {
     mutating func reset() { lufs = nil }
 }
 
-enum EarVolumeAnchor: Equatable {
+package enum EarVolumeAnchor: Equatable {
     case qudelix(Double)
     case system(Double)
 
-    var db: Double {
+    package var db: Double {
         switch self {
         case .qudelix(let db), .system(let db): return db
         }
     }
 }
 
-enum EarLevelEstimate: Equatable {
+package enum EarLevelEstimate: Equatable {
     case unavailable
     case tooQuiet
     case estimated(Double)
 }
 
-enum EarLevel {
-    static let defaultCalibrationDb: Double = 100
+package enum EarLevel {
+    package static let defaultCalibrationDb: Double = 100
     static let calibrationSpanDb: Double = 30
     static let quietFloorLUFS: Double = -55
-    static let calibrationRange: ClosedRange<Double> =
+    package static let calibrationRange: ClosedRange<Double> =
         (defaultCalibrationDb - calibrationSpanDb)...(defaultCalibrationDb + calibrationSpanDb)
     static let plausibleVolumeDb: ClosedRange<Double> = -160...20
 

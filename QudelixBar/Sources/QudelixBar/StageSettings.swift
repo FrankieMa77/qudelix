@@ -3,67 +3,67 @@ import Foundation
 import Glibc
 #endif
 
-struct StageSettings: Codable, Equatable {
-    var enabled = false
-    var width: Double = 130
-    var crossfeed: Double = 0.3
-    var dialogue: Double = 0
-    var room: Double = 0
+package struct StageSettings: Codable, Equatable {
+    package var enabled = false
+    package var width: Double = 130
+    package var crossfeed: Double = 0.3
+    package var dialogue: Double = 0
+    package var room: Double = 0
 
-    var distance: Double?
-    var span: Double?
-    var center: Double?
-    var size: Double?
-    var night: Double?
+    package var distance: Double?
+    package var span: Double?
+    package var center: Double?
+    package var size: Double?
+    package var night: Double?
 
-    var crossLowTrim: Double?
-    var crossMidTrim: Double?
-    var crossHighTrim: Double?
+    package var crossLowTrim: Double?
+    package var crossMidTrim: Double?
+    package var crossHighTrim: Double?
 
-    var balanceDb: Double?
-    var alignMs: Double?
+    package var balanceDb: Double?
+    package var alignMs: Double?
 
-    var limiter: Bool?
+    package var limiter: Bool?
 
-    var loudness: Bool?
-    var loudnessStrength: Double?
+    package var loudness: Bool?
+    package var loudnessStrength: Double?
 
-    var bassGuard: Bool?
-    var bassGuardStrength: Double?
+    package var bassGuard: Bool?
+    package var bassGuardStrength: Double?
 
-    var impulseFile: String?
-    var impulseMix: Double?
+    package var impulseFile: String?
+    package var impulseMix: Double?
 
-    var distanceValue: Double { distance ?? 0.35 }
-    var spanValue: Double { span ?? 0.5 }
-    var centerValue: Double { center ?? 0 }
-    var sizeValue: Double { size ?? 0.5 }
-    var nightValue: Double { night ?? 0 }
-    var crossLowTrimValue: Double { crossLowTrim ?? 1 }
-    var crossMidTrimValue: Double { crossMidTrim ?? 1 }
-    var crossHighTrimValue: Double { crossHighTrim ?? 1 }
-    var balanceDbValue: Double { balanceDb ?? 0 }
-    var alignMsValue: Double { alignMs ?? 0 }
-    var limiterValue: Bool { limiter ?? false }
-    var loudnessValue: Bool { loudness ?? false }
-    var loudnessStrengthValue: Double { loudnessStrength ?? 1 }
-    var bassGuardValue: Bool { bassGuard ?? false }
-    var bassGuardStrengthValue: Double { bassGuardStrength ?? 1 }
-    var impulseFileValue: String { impulseFile ?? "" }
-    var impulseMixValue: Double { impulseMix ?? 1 }
-    var hasImpulse: Bool { !impulseFileValue.isEmpty }
+    package var distanceValue: Double { distance ?? 0.35 }
+    package var spanValue: Double { span ?? 0.5 }
+    package var centerValue: Double { center ?? 0 }
+    package var sizeValue: Double { size ?? 0.5 }
+    package var nightValue: Double { night ?? 0 }
+    package var crossLowTrimValue: Double { crossLowTrim ?? 1 }
+    package var crossMidTrimValue: Double { crossMidTrim ?? 1 }
+    package var crossHighTrimValue: Double { crossHighTrim ?? 1 }
+    package var balanceDbValue: Double { balanceDb ?? 0 }
+    package var alignMsValue: Double { alignMs ?? 0 }
+    package var limiterValue: Bool { limiter ?? false }
+    package var loudnessValue: Bool { loudness ?? false }
+    package var loudnessStrengthValue: Double { loudnessStrength ?? 1 }
+    package var bassGuardValue: Bool { bassGuard ?? false }
+    package var bassGuardStrengthValue: Double { bassGuardStrength ?? 1 }
+    package var impulseFileValue: String { impulseFile ?? "" }
+    package var impulseMixValue: Double { impulseMix ?? 1 }
+    package var hasImpulse: Bool { !impulseFileValue.isEmpty }
 
-    static let music = StageSettings(enabled: true, width: 115, crossfeed: 0.35,
+    package static let music = StageSettings(enabled: true, width: 115, crossfeed: 0.35,
                                      dialogue: 0, room: 0.1,
                                      distance: 0.15, span: 0.4, center: 0, size: 0.4)
-    static let movie = StageSettings(enabled: true, width: 140, crossfeed: 0.25,
+    package static let movie = StageSettings(enabled: true, width: 140, crossfeed: 0.25,
                                      dialogue: 2.5, room: 0.35,
                                      distance: 0.35, span: 0.55, center: 0, size: 0.55)
-    static let theater = StageSettings(enabled: true, width: 180, crossfeed: 0.15,
+    package static let theater = StageSettings(enabled: true, width: 180, crossfeed: 0.15,
                                        dialogue: 3, room: 0.7,
                                        distance: 0.55, span: 0.75, center: -1.5, size: 0.75)
 
-    func audiblyEquals(_ other: StageSettings) -> Bool {
+    package func audiblyEquals(_ other: StageSettings) -> Bool {
         enabled == other.enabled && width == other.width
             && crossfeed == other.crossfeed && dialogue == other.dialogue
             && room == other.room
@@ -86,20 +86,20 @@ struct StageSettings: Codable, Equatable {
             && impulseMixValue == other.impulseMixValue
     }
 
-    var doesAnything: Bool {
+    package var doesAnything: Bool {
         var neutral = StageSettings()
         neutral.enabled = enabled
         return !audiblyEquals(neutral)
     }
 
-    var isAudiblyNeutral: Bool {
+    package var isAudiblyNeutral: Bool {
         width == 100 && crossfeed == 0 && dialogue <= 0.05 && room == 0
             && distanceValue == 0 && centerValue == 0 && nightValue == 0
             && balanceDbValue == 0 && alignMsValue == 0 && !limiterValue
             && !loudnessValue && !bassGuardValue && !hasImpulse
     }
 
-    func clamped() -> StageSettings {
+    package func clamped() -> StageSettings {
         var s = self
         s.width = s.width.isFinite ? min(max(s.width, 0), 200) : 100
         s.crossfeed = s.crossfeed.isFinite ? min(max(s.crossfeed, 0), 1) : 0
@@ -177,11 +177,11 @@ struct StageDeviceStore: Equatable {
     }
 }
 
-struct DayExposure: Codable, Equatable {
-    var day: String
-    var audibleSeconds: Double
-    var loudSeconds: Double
-    var energySum: Double
+package struct DayExposure: Codable, Equatable {
+    package var day: String
+    package var audibleSeconds: Double
+    package var loudSeconds: Double
+    package var energySum: Double
 }
 
 struct PersistedStageState: Codable {
