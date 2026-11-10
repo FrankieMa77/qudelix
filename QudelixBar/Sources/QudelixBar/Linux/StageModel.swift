@@ -278,6 +278,14 @@ package final class StageModel {
 
     package var isRunning: Bool { handle != nil }
 
+    package private(set) var toneHold = false
+
+    package func setToneHold(_ on: Bool) {
+        guard on != toneHold else { return }
+        toneHold = on
+        processor.setMuted(on)
+    }
+
     package var engineFailure: StageFailure? {
         guard handle == nil, desiredMode != nil else { return nil }
         return failure
@@ -498,6 +506,7 @@ package final class StageModel {
         let rate = runningRate ?? lastKnownRate ?? Self.defaultGraphRate
         processor.prepare(sampleRate: rate)
         processor.setMonitorOnly(mode == .monitor)
+        processor.setMuted(toneHold)
         let bridge = StageRenderBridge(processor: processor)
         do {
             switch mode {

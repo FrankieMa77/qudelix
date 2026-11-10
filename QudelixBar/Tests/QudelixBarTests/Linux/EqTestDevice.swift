@@ -8,6 +8,7 @@ final class EqTestDevice {
     var preGain: Double
     var slotIndex: Int
     var enabled = true
+    var activeCall = false
     var graphic = false
     var names: [Int: String]
     var slots: [Int: (preGain: Double, bands: [QxEqBandValue])] = [:]
@@ -31,7 +32,9 @@ final class EqTestDevice {
         case .reqInitData:
             link.deliver(.rspInitData, QxFixtures.initData)
         case .reqDevStatus:
-            link.deliver(.rspDevStatus, QxFixtures.devStatus(volumeDb: -12))
+            var frame = QxFixtures.devStatus(volumeDb: -12)
+            if activeCall { frame[1] |= 0x04 }
+            link.deliver(.rspDevStatus, frame)
         case .reqDevConfig:
             if data.first == (QxConfigMask.sys2 | QxConfigMask.eq) {
                 var mask = 0
