@@ -29,6 +29,7 @@ struct ProbeReport: Equatable {
     var bluetoothctlVersion: String?
     var busctlPresent: Bool
     var bluezOnDBus: Bool?
+    var bluezActivatable: Bool = false
     var bluetooth: BluetoothReport = .unavailable
     var logPath: String
 }
@@ -43,6 +44,7 @@ struct ProbeEnvironment {
     var directoryExists: (URL) -> Bool
     var access: (String) -> (readable: Bool, writable: Bool)
     var runTool: (String, [String]) -> String?
+    var bluezHasOwner: () -> Bool = { false }
     var bluetooth: () -> BluetoothReport = { .unavailable }
 
     static func system() -> ProbeEnvironment {
@@ -63,6 +65,7 @@ struct ProbeEnvironment {
             },
             access: Probe.systemAccess,
             runTool: Probe.runTool,
+            bluezHasOwner: { BluezPresence.system().nameHasOwner() },
             bluetooth: Probe.systemBluetooth)
     }
 }
@@ -96,13 +99,18 @@ enum Probe {
         let bluetoothctl = env.runTool("bluetoothctl", ["--version"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let busctl = env.runTool("busctl", ["list", "--no-pager"])
+        let owned = env.bluezHasOwner()
+        let activatable = (busctl ?? "").split(whereSeparator: \.isNewline).contains {
+            $0.hasPrefix("org.bluez ") && $0.contains("(activatable)")
+        }
         return ProbeReport(
             kernelRelease: env.kernelRelease(),
             hidrawClassExists: classExists,
             nodes: nodes,
             bluetoothctlVersion: (bluetoothctl?.isEmpty ?? true) ? nil : bluetoothctl,
             busctlPresent: busctl != nil,
-            bluezOnDBus: busctl.map { $0.contains("org.bluez") },
+            bluezOnDBus: (busctl == nil && !owned) ? nil : owned,
+            bluezActivatable: activatable,
             bluetooth: env.bluetooth(),
             logPath: env.logPath)
     }
@@ -139,14 +147,16 @@ enum Probe {
             }
         }
         out.append("bluetoothctl  \(report.bluetoothctlVersion ?? "not installed")")
-        if !report.busctlPresent {
-            out.append("org.bluez     unknown (busctl not installed)")
-        } else {
-            out.append("org.bluez     \(report.bluezOnDBus == true ? "on the system bus" : "not on the system bus")")
-        }
+        out.append("org.bluez     \(bluezText(report))")
         out += BluetoothProbe.lines(report.bluetooth)
         out.append("log           \(report.logPath)")
         return out
+    }
+
+    static func bluezText(_ report: ProbeReport) -> String {
+        if report.bluezOnDBus == true { return "running" }
+        if report.bluezOnDBus == nil { return "unknown (busctl not installed)" }
+        return report.bluezActivatable ? "installed, not running" : "not installed"
     }
 
     static func object(_ report: ProbeReport) -> [String: Any] {

@@ -30,6 +30,7 @@ final class BluezLinkPlanTests: XCTestCase {
         case .unknown: break
         case .disconnected: interfaces["org.bluez.Bearer.LE1"] = bearer(connected: false)
         case .connected: interfaces["org.bluez.Bearer.LE1"] = bearer(connected: true)
+        case .hidden: interfaces["org.bluez.Bearer.LE1"] = [:]
         }
         var objects: BluezPresence.Objects = ["/org/bluez/hci0": ["org.bluez.Adapter1": [:]], base: interfaces]
         if characteristics {
@@ -117,15 +118,56 @@ final class BluezLinkPlanTests: XCTestCase {
         XCTAssertEqual(BluezLinkPlan.step(objects: appeared, device: base, scanned: true), .connectBearer)
     }
 
+    func testABearerWithoutPropertiesIsHiddenAndOneWithConnectedFalseIsDisconnected() {
+        let hidden = scenario(connected: true, bearerState: .hidden)
+        XCTAssertEqual(BluezLinkPlan.bearerState(of: base, in: hidden), .hidden)
+        let down = scenario(connected: true, bearerState: .disconnected)
+        XCTAssertEqual(BluezLinkPlan.bearerState(of: base, in: down), .disconnected)
+    }
+
+    func testAHiddenBearerGoesStraightToTheDeviceConnectWithoutScanning() {
+        let up = scenario(connected: true, bearerState: .hidden)
+        let off = scenario(connected: false, bearerState: .hidden)
+        for scanned in [true, false] {
+            XCTAssertEqual(BluezLinkPlan.step(objects: up, device: base, scanned: scanned), .connectDevice)
+            XCTAssertEqual(BluezLinkPlan.step(objects: off, device: base, scanned: scanned), .notConnected)
+        }
+    }
+
+    func testAnUnusableBearerConnectFallsBackToTheDeviceConnect() {
+        let up = scenario(connected: true, bearerState: .disconnected)
+        let off = scenario(connected: false, bearerState: .disconnected)
+        XCTAssertEqual(BluezLinkPlan.step(objects: up, device: base, scanned: false, bearerUsable: false),
+                       .connectDevice)
+        XCTAssertEqual(BluezLinkPlan.step(objects: off, device: base, scanned: false, bearerUsable: false),
+                       .notConnected)
+        XCTAssertEqual(BluezLinkPlan.step(objects: up, device: base, scanned: false), .connectBearer)
+    }
+
+    func testTheProbeSaysWhenBlueZHidesTheBearerControls() {
+        var objects = scenario(connected: true, bearerState: .hidden)
+        objects["/org/bluez/hci0"] = ["org.bluez.Adapter1": [:]]
+        let report = BluezLinkPlan.report(onBus: true, objects: objects)
+        XCTAssertEqual(report.devices[0].leBearer, .hidden)
+        let lines = BluetoothProbe.lines(report)
+        XCTAssertTrue(lines.contains {
+            $0.contains("LE bearer")
+                && $0.contains("present, but this BlueZ hides its controls (BlueZ 5.88+, or Experimental = true)")
+        })
+        let devices = BluetoothProbe.object(report)["devices"] as? [[String: Any]]
+        XCTAssertEqual(devices?.first?["le_bearer"] as? String, "hidden")
+    }
+
     func testTheDeviceConnectIsPlannedOnlyForAnAudioConnectedDeviceWithoutABearerAfterAScan() {
         for connected in [true, false] {
-            for state in [BluezBearerState.unknown, .disconnected, .connected] {
+            for state in [BluezBearerState.unknown, .disconnected, .connected, .hidden] {
                 for characteristics in [true, false] {
                     for scanned in [true, false] {
                         let objects = scenario(connected: connected, bearerState: state,
                                                characteristics: characteristics)
                         let step = BluezLinkPlan.step(objects: objects, device: base, scanned: scanned)
-                        let expected = connected && state == .unknown && !characteristics && scanned
+                        let expected = connected && !characteristics
+                            && (state == .hidden || (state == .unknown && scanned))
                         XCTAssertEqual(step == .connectDevice, expected,
                                        "connected \(connected) bearer \(state) chars \(characteristics) scanned \(scanned)")
                     }

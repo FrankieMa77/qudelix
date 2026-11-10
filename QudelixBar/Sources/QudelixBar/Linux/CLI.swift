@@ -87,7 +87,7 @@ enum CLI {
       --ble                     use the Bluetooth link
       --json                    print one JSON object instead of text
       --timeout <seconds>       how long to wait for the device (default 5, 40 for Bluetooth)
-      --verbose                 mirror the packet log to stderr
+      --verbose                 mirror the log (packets and Bluetooth steps) to stderr
       --help                    print this text
       --version                 print the version
 

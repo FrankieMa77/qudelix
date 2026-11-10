@@ -4,12 +4,14 @@ enum BluezBearerState: String, Equatable {
     case unknown
     case disconnected
     case connected
+    case hidden
 
     var probeText: String {
         switch self {
         case .unknown: return "not known to BlueZ"
         case .disconnected: return "known, not connected"
         case .connected: return "connected"
+        case .hidden: return "present, but this BlueZ hides its controls (BlueZ 5.88+, or Experimental = true)"
         }
     }
 }

@@ -47,6 +47,11 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(options.timeout, 5)
     }
 
+    func testTheHelpTextSaysVerboseMirrorsBluetoothSteps() {
+        XCTAssertTrue(CLI.usageText.contains(
+            "--verbose                 mirror the log (packets and Bluetooth steps) to stderr"))
+    }
+
     func testGlobalFlagsAreAcceptedBeforeAndAfterTheCommand() throws {
         let before = try parse("--usb --json --verbose --timeout 12 status")
         XCTAssertEqual(before.options.preferred, .usb)
@@ -491,7 +496,8 @@ final class CLITests: XCTestCase {
 
     private func environment(root: URL,
                              accessible: Bool = true,
-                             tools: [String: String?] = [:]) -> ProbeEnvironment {
+                             tools: [String: String?] = [:],
+                             owned: Bool = false) -> ProbeEnvironment {
         var env = ProbeEnvironment.system()
         env.sysfsRoot = root
         env.devRoot = URL(fileURLWithPath: "/dev", isDirectory: true)
@@ -499,6 +505,7 @@ final class CLITests: XCTestCase {
         env.kernelRelease = { "5.15.0-generic" }
         env.access = { _ in (accessible, accessible) }
         env.runTool = { tool, _ in tools[tool] ?? nil }
+        env.bluezHasOwner = { owned }
         env.bluetooth = { .unavailable }
         return env
     }
@@ -523,7 +530,8 @@ final class CLITests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let report = Probe.report(environment(root: root,
                                               tools: ["bluetoothctl": "bluetoothctl: 5.64\n",
-                                                      "busctl": "NAME PID\norg.bluez 812\n"]))
+                                                      "busctl": "NAME PID\norg.bluez 812\n"],
+                                              owned: true))
         XCTAssertEqual(report.kernelRelease, "5.15.0-generic")
         XCTAssertTrue(report.hidrawClassExists)
         XCTAssertEqual(report.nodes.count, 2)
@@ -561,6 +569,28 @@ final class CLITests: XCTestCase {
         XCTAssertFalse(report.busctlPresent)
         XCTAssertNil(report.bluezOnDBus)
         XCTAssertTrue(Probe.lines(report).contains { $0.contains("busctl not installed") })
+    }
+
+    func testTheBlueZLineSaysRunningInstalledNotRunningOrNotInstalled() throws {
+        let root = try fakeTree([])
+        defer { try? FileManager.default.removeItem(at: root) }
+        func line(tools: [String: String?], owned: Bool) -> String? {
+            let report = Probe.report(environment(root: root, tools: tools, owned: owned))
+            return Probe.lines(report).first { $0.hasPrefix("org.bluez") }
+        }
+        let listed = "NAME PID\norg.bluez 812 bluetoothd\n"
+        let activatable = "NAME PID\norg.bluez - (activatable) -\n"
+        let other = "NAME PID\norg.freedesktop.DBus 1 dbus-daemon\n"
+        XCTAssertEqual(line(tools: ["busctl": listed], owned: true), "org.bluez     running")
+        XCTAssertEqual(line(tools: [:], owned: true), "org.bluez     running")
+        XCTAssertEqual(line(tools: ["busctl": activatable], owned: false),
+                       "org.bluez     installed, not running")
+        XCTAssertEqual(line(tools: ["busctl": other], owned: false), "org.bluez     not installed")
+        XCTAssertEqual(line(tools: [:], owned: false), "org.bluez     unknown (busctl not installed)")
+        let running = Probe.report(environment(root: root, tools: ["busctl": listed], owned: true))
+        XCTAssertEqual(Probe.object(running)["bluez_on_dbus"] as? Bool, true)
+        let asleep = Probe.report(environment(root: root, tools: ["busctl": activatable], owned: false))
+        XCTAssertEqual(Probe.object(asleep)["bluez_on_dbus"] as? Bool, false)
     }
 
     func testPermissionAdviceNamesTheUdevRuleAndReplugging() throws {

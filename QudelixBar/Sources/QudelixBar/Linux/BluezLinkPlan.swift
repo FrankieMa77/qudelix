@@ -85,14 +85,18 @@ enum BluezLinkPlan {
 
     static func bearerState(of device: String, in objects: Objects) -> BluezBearerState {
         guard let bearer = objects[device]?[leBearerInterface] else { return .unknown }
-        return bearer["Connected"]?.boolValue == true ? .connected : .disconnected
+        guard let connected = bearer["Connected"]?.boolValue else { return .hidden }
+        return connected ? .connected : .disconnected
     }
 
-    static func step(objects: Objects, device: String, scanned: Bool) -> BluezLinkStep {
+    static func step(objects: Objects, device: String, scanned: Bool,
+                     bearerUsable: Bool = true) -> BluezLinkStep {
         if characteristics(under: device, in: objects) != nil { return .useCharacteristics }
         switch bearerState(of: device, in: objects) {
         case .connected: return .awaitCharacteristics
-        case .disconnected: return .connectBearer
+        case .disconnected where bearerUsable: return .connectBearer
+        case .hidden, .disconnected:
+            return isConnected(device, in: objects) ? .connectDevice : .notConnected
         case .unknown:
             guard scanned else { return .scanForLE }
             return isConnected(device, in: objects) ? .connectDevice : .notConnected

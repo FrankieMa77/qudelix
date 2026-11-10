@@ -48,6 +48,7 @@ final class BluezTransport: QxLink {
     private var reconnectScheduled = false
     private var stopping = false
     private var weConnectedBearer = false
+    private var bearerConnectUnavailable = false
     private var bringUpPending = false
     private var storedFailure: String?
     private var storedNeedsAttention = false
@@ -75,7 +76,7 @@ final class BluezTransport: QxLink {
     }
 
     private func log(_ text: String) {
-        DebugLog.shared.log(BluezMask.text(text))
+        Trace.log(BluezMask.text(text))
     }
 
     var isConnected: Bool {
@@ -139,6 +140,7 @@ final class BluezTransport: QxLink {
         lock.lock()
         stopping = false
         bringUpPending = false
+        bearerConnectUnavailable = false
         lock.unlock()
         queue.async { [weak self] in self?.bringUp() }
     }
@@ -375,7 +377,8 @@ final class BluezTransport: QxLink {
                 stopDiscovery()
                 return nil
             }
-            let step = BluezLinkPlan.step(objects: objects, device: device, scanned: scanned)
+            let step = BluezLinkPlan.step(objects: objects, device: device, scanned: scanned,
+                                          bearerUsable: !bearerConnectUnavailable)
             log("BLE link step for \(device): \(step)")
             switch step {
             case .useCharacteristics:
@@ -399,6 +402,12 @@ final class BluezTransport: QxLink {
                     log("BLE LE bearer was already connected on \(device)")
                 } catch let error as DBusCallError where BluezLinkPlan.isBenign(error, "InProgress") {
                     log("BLE LE bearer connect already in progress on \(device)")
+                } catch let error as DBusCallError
+                            where BluezLinkPlan.isBenign(error, "UnknownMethod", "UnknownInterface") {
+                    bearerConnectUnavailable = true
+                    log("BLE this BlueZ has no Bearer.LE1.Connect (\(error.name)); "
+                        + "opening the LE link with Device1.Connect")
+                    continue
                 } catch {
                     return fail("\(error)")
                 }

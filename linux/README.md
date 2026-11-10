@@ -161,7 +161,7 @@ flags:
   --ble                     use the Bluetooth link
   --json                    print one JSON object instead of text
   --timeout <seconds>       how long to wait for the device (default 5, 40 for Bluetooth)
-  --verbose                 mirror the packet log to stderr
+  --verbose                 mirror the log (packets and Bluetooth steps) to stderr
   --help                    print this text
   --version                 print the version
 
@@ -226,6 +226,10 @@ control link can take up to 40 seconds (10 s scan, 15 s connect, 10 s for the GA
 plus the handshake); `--timeout` overrides that. Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output
 in a bug report; its Bluetooth section lists what BlueZ knows about the 5K without connecting
 to anything.
+
+With BlueZ older than 5.88 (unless `Experimental = true` is set in `/etc/bluetooth/main.conf`),
+the app opens the control link with a plain connect and leaves it open on exit. The audio
+connection is never touched.
 
 ## Uninstall
 
