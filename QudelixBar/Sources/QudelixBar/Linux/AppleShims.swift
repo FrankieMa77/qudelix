@@ -7,10 +7,6 @@ enum AppAssignments {}
 
 enum AudioOutputs {}
 
-enum ImpulseLimits {}
-
-enum IRLibrary {}
-
 @MainActor
 final class Notifier {
     static let shared = Notifier()

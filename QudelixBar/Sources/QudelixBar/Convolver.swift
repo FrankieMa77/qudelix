@@ -1,5 +1,3 @@
-import Accelerate
-import AVFoundation
 import Foundation
 
 struct ImpulseError: LocalizedError {
@@ -25,10 +23,6 @@ enum ImpulseLimits {
         var h = 1
         while h < maxHop, frames % (h * 2) == 0 { h *= 2 }
         return h >= minHop ? h : 0
-    }
-
-    static func log2Length(_ n: Int) -> vDSP_Length {
-        vDSP_Length(log2(Double(n)).rounded())
     }
 }
 
@@ -159,8 +153,7 @@ final class ConvolverState {
     let taps: Int
     let stereo: Bool
 
-    private let setup: FFTSetup
-    private let log2n: vDSP_Length
+    private let fft: PackedRealFFT
     private let hL, hR: UnsafeMutablePointer<Float>
     private let fdlL, fdlR: UnsafeMutablePointer<Float>
     private let curL, curR, prevL, prevR: UnsafeMutablePointer<Float>
@@ -169,7 +162,8 @@ final class ConvolverState {
     private let accLre, accLim, accRre, accRim: UnsafeMutablePointer<Float>
     private var fdlWrite = 0
 
-    init(impulse: ImpulseResponse, sampleRate: Double, blockFrames: Int) throws {
+    init(impulse: ImpulseResponse, sampleRate: Double, blockFrames: Int,
+         makeFFT: (Int) -> PackedRealFFT? = { RealFFTFactory.make(length: $0) }) throws {
         let rate = AudioOutputs.plausibleRate(sampleRate)
         let step = ImpulseLimits.hop(forBlock: blockFrames)
         guard step > 0 else {
@@ -207,13 +201,11 @@ final class ConvolverState {
         taps = length
         stereo = sources.count >= 2
 
-        guard let created = vDSP_create_fftsetup(ImpulseLimits.log2Length(fftSize),
-                                                 FFTRadix(kFFTRadix2)) else {
+        guard let created = makeFFT(fftSize) else {
             throw ImpulseError(message: "The system refused to build the "
                 + "transform this response needs.")
         }
-        setup = created
-        log2n = ImpulseLimits.log2Length(fftSize)
+        fft = created
 
         func alloc(_ n: Int) -> UnsafeMutablePointer<Float> {
             let p = UnsafeMutablePointer<Float>.allocate(capacity: n)
@@ -241,7 +233,6 @@ final class ConvolverState {
                   outL, outR, timeBuf, accLre, accLim, accRre, accRim] {
             p.deallocate()
         }
-        vDSP_destroy_fftsetup(setup)
     }
 
     private static func rateLabel(_ rate: Double) -> String {
@@ -312,12 +303,7 @@ final class ConvolverState {
                 }
             }
             let slot = destination + p * fftSize
-            var split = DSPSplitComplex(realp: slot, imagp: slot + hop)
-            timeBuf.withMemoryRebound(to: DSPComplex.self, capacity: hop) { c in
-                vDSP_ctoz(c, 2, &split, 1, vDSP_Length(hop))
-            }
-            vDSP_fft_zrip(setup, &split, 1, log2n,
-                          FFTDirection(kFFTDirection_Forward))
+            fft.forward(time: timeBuf, real: slot, imag: slot + hop)
             for k in 0..<(2 * hop) { slot[k] *= scale }
         }
     }
@@ -328,11 +314,7 @@ final class ConvolverState {
         timeBuf.update(from: previous, count: hop)
         (timeBuf + hop).update(from: current, count: hop)
         let slot = fdl + fdlWrite * fftSize
-        var split = DSPSplitComplex(realp: slot, imagp: slot + hop)
-        timeBuf.withMemoryRebound(to: DSPComplex.self, capacity: hop) { c in
-            vDSP_ctoz(c, 2, &split, 1, vDSP_Length(hop))
-        }
-        vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
+        fft.forward(time: timeBuf, real: slot, imag: slot + hop)
     }
 
     private func accumulate() {
@@ -370,14 +352,19 @@ final class ConvolverState {
     private func inverse(_ re: UnsafeMutablePointer<Float>,
                          _ im: UnsafeMutablePointer<Float>,
                          into destination: UnsafeMutablePointer<Float>) {
-        var split = DSPSplitComplex(realp: re, imagp: im)
-        vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Inverse))
-        timeBuf.withMemoryRebound(to: DSPComplex.self, capacity: hop) { c in
-            vDSP_ztoc(&split, 1, c, 2, vDSP_Length(hop))
-        }
+        fft.inverse(real: re, imag: im, time: timeBuf)
         destination.update(from: timeBuf + hop, count: hop)
     }
 }
+
+protocol ImpulseAudioSource {
+    var channelCount: Int { get }
+    var sampleRate: Double { get }
+    var frameCount: Int64 { get }
+    func readChannels() throws -> [[Float]]
+}
+
+enum ImpulseAudio {}
 
 struct ImpulseInfo: Equatable {
     var fileName: String
@@ -508,26 +495,19 @@ enum IRLibrary {
         }
         let hash = fingerprint(bytes)
 
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(forReading: url)
-        } catch {
-            throw ImpulseError(message: "macOS couldn't read that as audio. "
-                + "Impulse responses are WAV, AIFF or CAF files.")
-        }
-        let format = file.processingFormat
-        let channelCount = Int(format.channelCount)
+        let source = try ImpulseAudio.open(url: url, bytes: bytes)
+        let channelCount = source.channelCount
         guard channelCount == 1 || channelCount == 2 else {
             throw ImpulseError(message: "That file has \(channelCount) channels. "
                 + "An impulse response has to be mono — applied to both ears — "
                 + "or stereo, one response per side.")
         }
-        let sourceRate = format.sampleRate
+        let sourceRate = source.sampleRate
         guard AudioOutputs.isPlausibleRate(sourceRate) else {
             throw ImpulseError(message: "That file claims a sample rate no "
                 + "device could play.")
         }
-        let frames = file.length
+        let frames = source.frameCount
         guard frames > 0 else {
             throw ImpulseError(message: "That file has no audio in it.")
         }
@@ -539,21 +519,15 @@ enum IRLibrary {
                 + "recording — the longest this reads is %.0f seconds.",
                 duration, ImpulseLimits.maxSeconds))
         }
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format,
-                                            frameCapacity: AVAudioFrameCount(frames)),
-              (try? file.read(into: buffer)) != nil,
-              buffer.frameLength > 0,
-              let raw = buffer.floatChannelData else {
-            throw ImpulseError(message: "macOS read that file but produced no "
-                + "audio from it.")
+        var decoded = try source.readChannels()
+        guard decoded.count == channelCount, let read = decoded.first?.count, read > 0 else {
+            throw ImpulseError(message: "That file was read but produced no audio.")
         }
-        let read = Int(buffer.frameLength)
 
         var bad = 0
         for c in 0..<channelCount {
-            let p = raw[c]
-            for i in 0..<read where !p[i].isFinite {
-                p[i] = 0
+            for i in 0..<decoded[c].count where !decoded[c][i].isFinite {
+                decoded[c][i] = 0
                 bad += 1
             }
         }
@@ -564,14 +538,6 @@ enum IRLibrary {
                 Double(bad) / Double(total) * 100))
         }
 
-        var decoded: [[Float]] = []
-        for c in 0..<channelCount {
-            var samples = [Float](repeating: 0, count: read)
-            samples.withUnsafeMutableBufferPointer { dst in
-                dst.baseAddress!.update(from: raw[c], count: read)
-            }
-            decoded.append(samples)
-        }
         var peak: Float = 0
         for channel in decoded {
             for v in channel { peak = max(peak, abs(v)) }
