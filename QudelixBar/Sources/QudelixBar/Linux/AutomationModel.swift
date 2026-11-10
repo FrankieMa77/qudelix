@@ -174,7 +174,16 @@ package final class AutomationModel {
 
     var engine: EqAutomation { automation }
 
+    private var preview: AutomationState?
+
+    package func showPreview(_ preview: AutomationState) {
+        self.preview = preview
+        app.eq.setFollowing(preview.following)
+        refresh()
+    }
+
     private func computeState() -> AutomationState {
+        if let preview { return preview }
         var next = AutomationState()
         next.autoTrimOn = automation.autoTrimOn
         next.trimMode = AutomationTrimMode(rawValue: automation.autoTrimMode.rawValue) ?? .clarity
