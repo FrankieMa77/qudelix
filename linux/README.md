@@ -9,19 +9,24 @@ been run against a real 5K on Linux.
 
 ## Desktop app
 
-`qudelix-app` is the desktop version: a GTK 4 and libadwaita window with Device, EQ, Presets and
-Library pages, a battery graph and a top-bar tray menu with volume, mute, EQ and preset
-shortcuts. It does most of what the command line does and reads the same files. It does not
-have the AutoEq "Published preset" mode, the bass and tilt sliders, the source cutoff, the
-remembered AutoEq search, the requested-curve line on the EQ page or the EQ history list
-(undo and redo cover the current session); use `qudelix` for those.
+`qudelix-app` is the desktop version: a GTK 4 and libadwaita window with a sidebar of Device, EQ,
+Presets, Library, Tune, Stage and Level pages, a battery graph and a top-bar tray menu with
+volume, mute, EQ and preset shortcuts. It does most of what the command line does and reads the
+same files. It does not have the AutoEq "Published preset" mode, the bass and tilt sliders, the
+source cutoff, the remembered AutoEq search, Library import, paste and export, or the EQ history
+list (undo and redo cover the current session); use `qudelix` for those. What changed in each
+release is in [the changelog](https://github.com/FrankieMa77/qudelix/blob/main/linux/CHANGELOG.md).
+
+Stage, Level and the Tune tones need PipeWire. Without it the app still controls the 5K and shows
+"Needs PipeWire" on those pages. Stage works through a temporary "Qudelix Stage" output, and
+Auto-match USB rate in Level changes the sample rate of the whole audio graph while it is on.
 
 It needs Ubuntu 24.04 or later, or any distribution with GTK 4.14 and libadwaita 1.5. Install
 the command-line package and the app together; the app package depends on `qudelix`, which
 carries the udev rule:
 
 ```
-sudo apt install ./qudelix_<version>_amd64.deb ./qudelix-app_<version>_amd64.deb
+sudo apt install ./qudelix_0.7.0_amd64.deb ./qudelix-app_0.7.0_amd64.deb
 ```
 
 On Arch Linux install `qudelix-cli-bin` and `qudelix-app-bin` from the AUR
@@ -30,8 +35,8 @@ On Arch Linux install `qudelix-cli-bin` and `qudelix-app-bin` from the AUR
 unpack the tarball and run its installer:
 
 ```
-tar xzf qudelix-app-<version>-linux-x86_64.tar.gz
-cd qudelix-app-<version>-linux-x86_64
+tar xzf qudelix-app-0.7.0-linux-x86_64.tar.gz
+cd qudelix-app-0.7.0-linux-x86_64
 sudo ./install.sh
 ```
 
@@ -57,7 +62,7 @@ does not block `qudelix`. USB is the supported link; the Bluetooth link is untes
 Debian and Ubuntu (amd64):
 
 ```
-sudo apt install ./qudelix_<version>_amd64.deb
+sudo apt install ./qudelix_0.7.0_amd64.deb
 ```
 
 Arch Linux: install `qudelix-cli-bin` from the AUR
@@ -66,8 +71,8 @@ Arch Linux: install `qudelix-cli-bin` from the AUR
 Other distributions: unpack the tarball and run its installer.
 
 ```
-tar xzf qudelix-<version>-linux-x86_64.tar.gz
-cd qudelix-<version>-linux-x86_64
+tar xzf qudelix-0.7.0-linux-x86_64.tar.gz
+cd qudelix-0.7.0-linux-x86_64
 sudo ./install.sh
 ```
 

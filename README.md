@@ -164,22 +164,29 @@ from source sidesteps all of it.
 
 ## Linux
 
+Linux has its own releases and its own version line, starting at 0.7.0: tag
+`linux-v0.7.0`, titled "Qudelix for Linux". They are listed under
+[Linux releases](../../releases?q=linux), and what changed is in
+[linux/CHANGELOG.md](linux/CHANGELOG.md). The Mac app downloads stay at
+[Releases](../../releases/latest).
+
 `qudelix` is a command-line version of the app for Linux: status, volume, DAC
 filter, the parametric EQ, the 5K's 20 preset slots, a local preset library,
 AutoEq search and import, AI presets and an EQ history. `qudelix-app` is a
-desktop app (GTK 4 and libadwaita) with a window and a top-bar tray menu for
-most of the same things plus a battery graph; it leaves out a few command-line
-features, listed in [linux/README.md](linux/README.md). Neither has Soundstage or
-Auto-fit — those need the Mac's audio engine.
+desktop app (GTK 4 and libadwaita) with a window and a top-bar tray menu. It has
+Device, EQ, Presets, Library, Tune, Stage and Level pages, Auto-fit and
+Auto-trim, and a battery graph; it leaves out a few command-line features,
+listed in [linux/README.md](linux/README.md). Stage, Level and the Tune tones
+need PipeWire.
 
 - **Ubuntu 22.04 or later, Debian 12 or later (x86_64):** download
-  `qudelix_<version>_amd64.deb` from [Releases](../../releases) and run
-  `sudo apt install ./qudelix_<version>_amd64.deb`.
+  `qudelix_0.7.0_amd64.deb` from the [Linux releases](../../releases?q=linux)
+  and run `sudo apt install ./qudelix_0.7.0_amd64.deb`.
 - **Desktop app, Ubuntu 24.04 or later or any distribution with GTK 4.14 and
-  libadwaita 1.5:** also download `qudelix-app_<version>_amd64.deb` and install
-  both with `sudo apt install ./qudelix_<version>_amd64.deb ./qudelix-app_<version>_amd64.deb`.
-- **Other distributions:** download `qudelix-<version>-linux-x86_64.tar.gz`
-  (and `qudelix-app-<version>-linux-x86_64.tar.gz` for the app), unpack it and
+  libadwaita 1.5:** also download `qudelix-app_0.7.0_amd64.deb` and install
+  both with `sudo apt install ./qudelix_0.7.0_amd64.deb ./qudelix-app_0.7.0_amd64.deb`.
+- **Other distributions:** download `qudelix-0.7.0-linux-x86_64.tar.gz`
+  (and `qudelix-app-0.7.0-linux-x86_64.tar.gz` for the app), unpack it and
   run `sudo ./install.sh`.
 - **Arch Linux:** community packages on the AUR,
   [qudelix-cli-bin](https://aur.archlinux.org/packages/qudelix-cli-bin) and
