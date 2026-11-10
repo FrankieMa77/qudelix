@@ -49,6 +49,7 @@ final class BluezTransport: QxLink {
     private var stopping = false
     private var weConnectedBearer = false
     private var bearerConnectUnavailable = false
+    private var linkStale = false
     private var bringUpPending = false
     private var storedFailure: String?
     private var storedNeedsAttention = false
@@ -242,8 +243,14 @@ final class BluezTransport: QxLink {
         }
 
         let objects: [String: [String: [String: DBusValue]]]
+        let listingStarted = Date()
         do {
             objects = try connection.managedObjects(destination: Self.bus)
+            let listingSeconds = Date().timeIntervalSince(listingStarted)
+            if listingSeconds > 1 {
+                log(String(format: "BLE listing BlueZ objects took %.1f s (%d objects)",
+                           listingSeconds, objects.count))
+            }
         } catch {
             reportUnusable("Bluetooth is unavailable: BlueZ is not answering on the system bus "
                 + "(\(error)). Install and start bluetoothd, or use the USB link.")
@@ -263,7 +270,8 @@ final class BluezTransport: QxLink {
         log("BLE picked \(deviceAlias) at \(candidate)"
             + (connectedNow ? " (already connected, e.g. for audio)" : " (not connected)"))
 
-        guard let paths = establishLink(connection, device: candidate, connectedNow: connectedNow) else {
+        guard let paths = establishLink(connection, device: candidate, objects: objects,
+                                       connectedNow: connectedNow) else {
             scheduleReconnect()
             return
         }
@@ -271,10 +279,10 @@ final class BluezTransport: QxLink {
         let responsePath = paths.response
 
         do {
-            let notify = try acquire("AcquireNotify", path: responsePath, on: connection)
+            let notify = try acquireNotify(path: responsePath, on: connection)
             let write: (fd: Int32, mtu: UInt16)
             do {
-                write = try acquire("AcquireWrite", path: commandPath, on: connection)
+                write = try acquireWrite(path: commandPath, on: connection)
             } catch {
                 close(notify.fd)
                 throw error
@@ -292,6 +300,9 @@ final class BluezTransport: QxLink {
             announcedUnusable = false
             lock.unlock()
         } catch {
+            if let callError = error as? DBusCallError, BluezLinkPlan.isNotConnected(callError) {
+                linkStale = true
+            }
             let detail = "the Bluetooth channels could not be opened (\(error))"
             setFailure(BluezLinkFailure.text(alias: deviceAlias, connectedForAudio: connectedNow,
                                              detail: detail), needsAttention: connectedNow)
@@ -330,15 +341,10 @@ final class BluezTransport: QxLink {
     }
 
     private func establishLink(_ connection: DBusConnection, device: String,
+                               objects initial: [String: [String: [String: DBusValue]]],
                                connectedNow: Bool) -> (command: String, response: String)? {
         var scanned = false
-        var objects: [String: [String: [String: DBusValue]]]
-        do {
-            objects = try connection.managedObjects(destination: Self.bus)
-        } catch {
-            log("BLE cannot list the device's characteristics: \(error)")
-            return nil
-        }
+        var objects = initial
 
         func failWith(_ reason: String, needsAttention: Bool) -> (command: String, response: String)? {
             stopDiscovery()
@@ -355,16 +361,23 @@ final class BluezTransport: QxLink {
         func awaitCharacteristics() -> (command: String, response: String)? {
             stopDiscovery()
             var found: (command: String, response: String)?
+            var sawCharacteristics = false
             let appeared = waitUntil(Self.servicesResolvedTimeout) {
-                guard let latest = try? connection.managedObjects(destination: Self.bus),
-                      let paths = BluezLinkPlan.characteristics(under: device, in: latest) else {
+                guard let latest = try? connection.managedObjects(destination: Self.bus) else {
                     return false
                 }
+                if BluezLinkPlan.characteristics(under: device, in: latest) != nil {
+                    sawCharacteristics = true
+                }
+                guard let paths = BluezLinkPlan.ready(device, in: latest) else { return false }
                 found = paths
                 return true
             }
             guard appeared, let found else {
                 if isStopping { return nil }
+                if sawCharacteristics {
+                    return fail(BluezLinkFailure.servicesNotLoaded(seconds: Int(Self.servicesResolvedTimeout)))
+                }
                 return fail("the GAIA command and response characteristics did not appear "
                     + "within \(Int(Self.servicesResolvedTimeout)) s")
             }
@@ -378,12 +391,13 @@ final class BluezTransport: QxLink {
                 return nil
             }
             let step = BluezLinkPlan.step(objects: objects, device: device, scanned: scanned,
-                                          bearerUsable: !bearerConnectUnavailable)
+                                          bearerUsable: !bearerConnectUnavailable,
+                                          linkTrusted: !linkStale)
             log("BLE link step for \(device): \(step)")
             switch step {
             case .useCharacteristics:
                 stopDiscovery()
-                if let paths = BluezLinkPlan.characteristics(under: device, in: objects) {
+                if let paths = BluezLinkPlan.ready(device, in: objects) {
                     log("BLE GAIA characteristics already present under \(device)")
                     return paths
                 }
@@ -392,6 +406,7 @@ final class BluezTransport: QxLink {
                 return awaitCharacteristics()
             case .connectBearer:
                 stopDiscovery()
+                linkStale = false
                 do {
                     _ = try connection.call(destination: Self.bus, path: device,
                                             interface: Self.bearerInterface, method: "Connect",
@@ -433,6 +448,7 @@ final class BluezTransport: QxLink {
                 if let latest = try? connection.managedObjects(destination: Self.bus) { objects = latest }
             case .connectDevice:
                 stopDiscovery()
+                linkStale = false
                 do {
                     _ = try connection.call(destination: Self.bus, path: device,
                                             interface: Self.deviceInterface, method: "Connect",
@@ -450,6 +466,27 @@ final class BluezTransport: QxLink {
             }
         }
         return fail("the link steps did not converge")
+    }
+
+    private func acquireNotify(path: String,
+                               on connection: DBusConnection) throws -> (fd: Int32, mtu: UInt16) {
+        do {
+            return try acquire("AcquireNotify", path: path, on: connection)
+        } catch let error as DBusCallError where BluezLinkPlan.isNotifyHeld(error) {
+            _ = try? connection.call(destination: Self.bus, path: path,
+                                     interface: Self.characteristicInterface, method: "StopNotify")
+            log("BLE BlueZ still held the notify channel from an earlier attempt; released it")
+            return try acquire("AcquireNotify", path: path, on: connection)
+        }
+    }
+
+    private func acquireWrite(path: String,
+                              on connection: DBusConnection) throws -> (fd: Int32, mtu: UInt16) {
+        do {
+            return try acquire("AcquireWrite", path: path, on: connection)
+        } catch let error as DBusCallError where BluezLinkPlan.isWriteHeld(error) {
+            throw DBusCallError(name: "", message: BluezLinkFailure.writeChannelHeld)
+        }
     }
 
     private func acquire(_ method: String, path: String,

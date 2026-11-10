@@ -83,6 +83,29 @@ enum BluezLinkPlan {
         return (command, response)
     }
 
+    static func servicesResolved(_ device: String, in objects: Objects) -> Bool {
+        objects[device]?[deviceInterface]?["ServicesResolved"]?.boolValue ?? false
+    }
+
+    static func ready(_ device: String,
+                      in objects: Objects) -> (command: String, response: String)? {
+        guard servicesResolved(device, in: objects) else { return nil }
+        return characteristics(under: device, in: objects)
+    }
+
+    static func isNotConnected(_ error: DBusCallError) -> Bool {
+        isBenign(error, "NotConnected")
+            || (error.name.hasSuffix("Failed") && error.message.contains("Not connected"))
+    }
+
+    static func isNotifyHeld(_ error: DBusCallError) -> Bool {
+        error.name.hasSuffix("NotPermitted") && error.message.contains("Notify acquired")
+    }
+
+    static func isWriteHeld(_ error: DBusCallError) -> Bool {
+        error.name.hasSuffix("NotPermitted") && error.message.contains("Write acquired")
+    }
+
     static func bearerState(of device: String, in objects: Objects) -> BluezBearerState {
         guard let bearer = objects[device]?[leBearerInterface] else { return .unknown }
         guard let connected = bearer["Connected"]?.boolValue else { return .hidden }
@@ -90,8 +113,8 @@ enum BluezLinkPlan {
     }
 
     static func step(objects: Objects, device: String, scanned: Bool,
-                     bearerUsable: Bool = true) -> BluezLinkStep {
-        if characteristics(under: device, in: objects) != nil { return .useCharacteristics }
+                     bearerUsable: Bool = true, linkTrusted: Bool = true) -> BluezLinkStep {
+        if linkTrusted, ready(device, in: objects) != nil { return .useCharacteristics }
         switch bearerState(of: device, in: objects) {
         case .connected: return .awaitCharacteristics
         case .disconnected where bearerUsable: return .connectBearer

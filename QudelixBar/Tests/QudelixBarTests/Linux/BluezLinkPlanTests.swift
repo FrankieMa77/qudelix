@@ -24,8 +24,10 @@ final class BluezLinkPlanTests: XCTestCase {
     }
 
     private func scenario(connected: Bool, bearerState: BluezBearerState,
-                          characteristics: Bool = false) -> BluezPresence.Objects {
+                          characteristics: Bool = false,
+                          resolved: Bool? = nil) -> BluezPresence.Objects {
         var interfaces = device(name: "Qudelix-5K", uuids: audioUUIDs, connected: connected)
+        interfaces["org.bluez.Device1"]?["ServicesResolved"] = .boolean(resolved ?? characteristics)
         switch bearerState {
         case .unknown: break
         case .disconnected: interfaces["org.bluez.Bearer.LE1"] = bearer(connected: false)
@@ -83,6 +85,57 @@ final class BluezLinkPlanTests: XCTestCase {
             XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: false),
                            .useCharacteristics)
         }
+    }
+
+    func testCharacteristicsAreUsedOnlyOnceServicesAreResolved() {
+        let ready = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: true)
+        XCTAssertEqual(BluezLinkPlan.step(objects: ready, device: base, scanned: false), .useCharacteristics)
+        let stale = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: false)
+        XCTAssertEqual(BluezLinkPlan.step(objects: stale, device: base, scanned: false), .connectDevice)
+        let off = scenario(connected: false, bearerState: .hidden, characteristics: true, resolved: false)
+        XCTAssertEqual(BluezLinkPlan.step(objects: off, device: base, scanned: false), .notConnected)
+        let down = scenario(connected: true, bearerState: .disconnected, characteristics: true, resolved: false)
+        XCTAssertEqual(BluezLinkPlan.step(objects: down, device: base, scanned: false), .connectBearer)
+        let loading = scenario(connected: true, bearerState: .connected, characteristics: true, resolved: false)
+        XCTAssertEqual(BluezLinkPlan.step(objects: loading, device: base, scanned: false),
+                       .awaitCharacteristics)
+    }
+
+    func testAStaleLinkIsNeverTrustedEvenWhenServicesLookResolved() {
+        let ready = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: true)
+        XCTAssertEqual(BluezLinkPlan.step(objects: ready, device: base, scanned: false, linkTrusted: false),
+                       .connectDevice)
+        let down = scenario(connected: true, bearerState: .disconnected, characteristics: true, resolved: true)
+        XCTAssertEqual(BluezLinkPlan.step(objects: down, device: base, scanned: false, linkTrusted: false),
+                       .connectBearer)
+    }
+
+    func testReadinessNeedsBothTheCharacteristicsAndResolvedServices() {
+        let both = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: true)
+        XCTAssertEqual(BluezLinkPlan.ready(base, in: both)?.command, base + "/service0010/char0011")
+        XCTAssertEqual(BluezLinkPlan.ready(base, in: both)?.response, base + "/service0010/char0013")
+        XCTAssertTrue(BluezLinkPlan.servicesResolved(base, in: both))
+        let unresolved = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: false)
+        XCTAssertNil(BluezLinkPlan.ready(base, in: unresolved))
+        XCTAssertFalse(BluezLinkPlan.servicesResolved(base, in: unresolved))
+        let bare = scenario(connected: true, bearerState: .hidden, characteristics: false, resolved: true)
+        XCTAssertNil(BluezLinkPlan.ready(base, in: bare))
+        XCTAssertFalse(BluezLinkPlan.servicesResolved("/missing", in: both))
+    }
+
+    func testAcquireErrorsAreClassifiedByNameAndMessage() {
+        let notConnected = DBusCallError(name: "org.bluez.Error.Failed", message: "Not connected")
+        XCTAssertTrue(BluezLinkPlan.isNotConnected(notConnected))
+        XCTAssertTrue(BluezLinkPlan.isNotConnected(DBusCallError(name: "org.bluez.Error.NotConnected", message: "")))
+        XCTAssertFalse(BluezLinkPlan.isNotConnected(DBusCallError(name: "org.bluez.Error.Failed", message: "Busy")))
+        let notify = DBusCallError(name: "org.bluez.Error.NotPermitted", message: "Notify acquired")
+        let write = DBusCallError(name: "org.bluez.Error.NotPermitted", message: "Write acquired")
+        XCTAssertTrue(BluezLinkPlan.isNotifyHeld(notify))
+        XCTAssertFalse(BluezLinkPlan.isNotifyHeld(write))
+        XCTAssertTrue(BluezLinkPlan.isWriteHeld(write))
+        XCTAssertFalse(BluezLinkPlan.isWriteHeld(notify))
+        XCTAssertFalse(BluezLinkPlan.isNotifyHeld(DBusCallError(name: "org.bluez.Error.Failed",
+                                                                message: "Notify acquired")))
     }
 
     func testADisconnectedBearerGetsAnLEConnect() {

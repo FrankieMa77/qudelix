@@ -231,6 +231,9 @@ With BlueZ older than 5.88 (unless `Experimental = true` is set in `/etc/bluetoo
 the app opens the control link with a plain connect and leaves it open on exit. The audio
 connection is never touched.
 
+If `status` says BlueZ is still holding the 5K's control channel, restart the Bluetooth service
+(`sudo systemctl restart bluetooth`, or your init system's equivalent) and try again.
+
 ## Uninstall
 
 Debian and Ubuntu:

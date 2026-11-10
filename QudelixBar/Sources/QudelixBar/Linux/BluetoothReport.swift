@@ -139,6 +139,14 @@ enum BluezLinkFailure {
         "found \(alias), but it is not connected — connect it in your Bluetooth settings first"
     }
 
+    static let writeChannelHeld = "BlueZ is still holding the 5K's control channel from an earlier "
+        + "attempt; restart the Bluetooth service (for example: sudo systemctl restart bluetooth) "
+        + "and try again"
+
+    static func servicesNotLoaded(seconds: Int) -> String {
+        "the 5K's Bluetooth services did not finish loading within \(seconds) s"
+    }
+
     static func text(alias: String, connectedForAudio: Bool, detail: String) -> String {
         "found \(alias)" + (connectedForAudio ? " (connected for audio)" : "")
             + ", but its Bluetooth LE control link did not come up: \(detail)"
