@@ -260,6 +260,16 @@ enum ReferenceFollower {
         return (db * 10).rounded() / 10 + 0
     }
 
+    static func sameQuantized(_ a: [QxEqBandValue], _ b: [QxEqBandValue]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy { x, y in
+            var x = x, y = y
+            x.gain = quantized(x.gain)
+            y.gain = quantized(y.gain)
+            return x == y
+        }
+    }
+
     static func solve(base: [QxEqBandValue], basePreGain: Double,
                       reference: [QxEqBandValue], referencePreGain: Double,
                       trim: TrimGains?, iterations: Int, previousGains: [Double]? = nil,

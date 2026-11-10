@@ -145,8 +145,6 @@ final class QudelixController: ObservableObject {
         return true
     }
 
-    enum EqBaseEvent: Equatable { case slotLoad, fit, group, restore, undoRedo, reset }
-
     var baseProvider: (() -> (bands: [QxEqBandValue], preGain: Double)?)?
     var onReadback: (([QxEqBandValue], Double) -> Void)?
     var onBaseEvent: ((EqBaseEvent) -> Void)?
@@ -475,13 +473,7 @@ final class QudelixController: ObservableObject {
     }
 
     nonisolated static func sameQuantized(_ a: [QxEqBandValue], _ b: [QxEqBandValue]) -> Bool {
-        guard a.count == b.count else { return false }
-        return zip(a, b).allSatisfy { x, y in
-            var x = x, y = y
-            x.gain = ReferenceFollower.quantized(x.gain)
-            y.gain = ReferenceFollower.quantized(y.gain)
-            return x == y
-        }
+        ReferenceFollower.sameQuantized(a, b)
     }
 
     @discardableResult

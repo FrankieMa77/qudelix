@@ -113,7 +113,7 @@ final class EqAutomation: ObservableObject {
 
     var enableDetection: (() -> Void)?
 
-    private let controller: QudelixController
+    private let controller: EqAutomationHost
     private let url: URL
     private var trimController = TrimController()
     private var base: [QxEqBandValue]?
@@ -135,7 +135,7 @@ final class EqAutomation: ObservableObject {
     private var baselineDirty = false
     private var saveWork: DispatchWorkItem?
 
-    init(controller: QudelixController, url: URL = AutofitFile.url) {
+    init(controller: EqAutomationHost, url: URL = AutofitFile.url) {
         self.controller = controller
         self.url = url
         if let saved = AutofitFile.load(from: url) { adopt(saved) }
@@ -350,13 +350,14 @@ final class EqAutomation: ObservableObject {
         guard let base else { return true }
         if hasWritten {
             guard controller.canWriteNow, !controller.eqSettling else { return false }
-            controller.writeFollowed(bands: base, preGain: baseGain)
+            controller.writeFollowed(bands: base, preGain: baseGain,
+                                     persistToFlash: false, recordUndo: false)
             if blocking {
-                controller.flushEqSendsBlocking()
+                controller.flushEqSendsBlockingNow()
             } else {
                 controller.flushPendingEqSends()
             }
-            guard QudelixController.sameQuantized(controller.bands, base),
+            guard ReferenceFollower.sameQuantized(controller.bands, base),
                   ReferenceFollower.quantized(controller.preGain)
                     == EQHeadroom.clamp(ReferenceFollower.quantized(baseGain)) else { return false }
         }
@@ -410,7 +411,7 @@ final class EqAutomation: ObservableObject {
         if basePreGain != preGain { basePreGain = preGain }
     }
 
-    private func handle(_ event: QudelixController.EqBaseEvent) {
+    private func handle(_ event: EqBaseEvent) {
         switch event {
         case .reset, .group:
             clearFollowState()
@@ -469,7 +470,8 @@ final class EqAutomation: ObservableObject {
 
     private func reassert() {
         guard let last = lastWritten, blockReason() == nil else { return }
-        bandWrites += controller.writeFollowed(bands: last.bands, preGain: last.preGain)
+        bandWrites += controller.writeFollowed(bands: last.bands, preGain: last.preGain,
+                                               persistToFlash: false, recordUndo: false)
     }
 
     private func blockReason() -> String? {
@@ -554,7 +556,7 @@ final class EqAutomation: ObservableObject {
         if ReferenceFollower.sameLayout(bands, last.bands),
            zip(bands, last.bands).allSatisfy({ abs($0.gain - $1.gain) <= Self.echoToleranceDb }),
            abs(pre - last.preGain) <= Self.echoToleranceDb {
-            if !QudelixController.sameQuantized(bands, last.bands)
+            if !ReferenceFollower.sameQuantized(bands, last.bands)
                 || ReferenceFollower.quantized(pre) != ReferenceFollower.quantized(last.preGain) {
                 reassert()
             }
@@ -614,7 +616,8 @@ final class EqAutomation: ObservableObject {
     }
 
     private func write(_ result: ReferenceFollower.Result) {
-        let wrote = controller.writeFollowed(bands: result.bands, preGain: result.preGain)
+        let wrote = controller.writeFollowed(bands: result.bands, preGain: result.preGain,
+                                             persistToFlash: false, recordUndo: false)
         bandWrites += wrote
         hasWritten = true
         let held = Written(bands: controller.bands, preGain: controller.preGain, at: Date())

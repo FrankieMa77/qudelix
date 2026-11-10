@@ -156,7 +156,7 @@ enum AutomationReadout {
 
 extension AutomationReadout {
     @MainActor
-    static func inputs(_ automation: EqAutomation, _ controller: QudelixController) -> Inputs {
+    static func inputs(_ automation: EqAutomation, _ controller: EqAutomationHost) -> Inputs {
         Inputs(showReference: automation.showReference,
                source: automation.effectiveSource,
                reference: automation.currentReference,

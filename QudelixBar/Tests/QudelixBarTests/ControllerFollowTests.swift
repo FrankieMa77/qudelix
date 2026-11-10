@@ -169,7 +169,7 @@ final class ControllerFollowTests: XCTestCase {
 
     func testBaseEventsAreSignalled() async {
         let (rig, c) = await connected()
-        var events: [QudelixController.EqBaseEvent] = []
+        var events: [EqBaseEvent] = []
         c.onBaseEvent = { events.append($0) }
 
         c.loadPreset(1)
@@ -204,7 +204,7 @@ final class ControllerFollowTests: XCTestCase {
     func testARestoreIsSignalled() async {
         let rig = DeviceRig(seed: DeviceRig.snapshot("usb:Qudelix-5K USB DAC 96KHz",
                                                      bands: DeviceRig.curve(first: 3)))
-        var events: [QudelixController.EqBaseEvent] = []
+        var events: [EqBaseEvent] = []
         rig.controller.onBaseEvent = { events.append($0) }
         await rig.connect("Qudelix-5K USB DAC 96KHz", bands: DeviceRig.curve(first: -4))
         XCTAssertTrue(events.contains(.restore))
