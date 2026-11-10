@@ -33,6 +33,7 @@ package struct TuneSideState: Equatable {
     package var maxMovement = 0.0
     package var sameTrials = 0
     package var sameGuesses = 0
+    package var skippedTrials = 0
     package var inaudible: [String] = []
     package var rangeScale = 1.0
     package var verdict = TuneVerdict.usable
@@ -73,6 +74,7 @@ package struct TuneState: Equatable {
     package var blockers: [TuneMethod: String] = [:]
     package var busy: String?
     package var note: String?
+    package var trimNow: String?
 
     package init() {}
 }
@@ -97,6 +99,7 @@ package final class TuneModel {
     private var interruptionNote: String?
     private var shutDown = false
     package private(set) var state = TuneState()
+    private var preview: TuneState?
 
     package init(app: AppModel, routing: OutputRouting? = nil, backend: LinuxAudioBackend? = nil,
                  stage: StageModel? = nil, automation: AutomationModel? = nil) {
@@ -206,6 +209,7 @@ package final class TuneModel {
         side.maxMovement = blind.maxMovement
         side.sameTrials = blind.sameTrials
         side.sameGuesses = blind.sameGuesses
+        side.skippedTrials = blind.skippedTrials
         side.rangeScale = blind.rangeScale
         side.preferredEQ = blind.preferredEQ
         side.preferredFlat = blind.preferredFlat
@@ -280,6 +284,7 @@ package final class TuneModel {
         }
         next.busy = busyReason()
         next.note = interruptionNote
+        if let automation { next.trimNow = AutomationReadout.trimValues(automation.engine.trim) }
         return next
     }
 
@@ -290,6 +295,7 @@ package final class TuneModel {
     }
 
     private func refresh() {
+        guard preview == nil else { return }
         let next = computeState()
         guard next != state else { return }
         state = next
@@ -300,6 +306,12 @@ package final class TuneModel {
         if let text = blockerText(method) { return text }
         if let busy = busyReason() { return busy }
         return nil
+    }
+
+    package func showPreview(_ next: TuneState) {
+        preview = next
+        state = next
+        for observer in observers.values { observer(next) }
     }
 
     package func blocker(for method: TuneMethod) -> String? {
