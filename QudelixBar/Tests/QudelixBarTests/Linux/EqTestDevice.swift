@@ -10,6 +10,7 @@ final class EqTestDevice {
     var enabled = true
     var activeCall = false
     var graphic = false
+    var acceptsModeSwitch = true
     var names: [Int: String]
     var slots: [Int: (preGain: Double, bands: [QxEqBandValue])] = [:]
 
@@ -68,6 +69,10 @@ final class EqTestDevice {
             preGain = Double(Int16(bitPattern: UInt16(data[3]) << 8 | UInt16(data[4]))) / QxScale.gain
         case .setEqEnable:
             enabled = data.last != 0
+        case .setEqMode:
+            guard acceptsModeSwitch else { break }
+            group = data.first == 1 ? .b20 : .user
+            bands = group.defaultFreqs.map { QxEqBandValue(filter: .peak, freq: $0, gain: 0, q: 1) }
         case .loadEqPreset:
             let index = Int(data[0])
             slotIndex = index

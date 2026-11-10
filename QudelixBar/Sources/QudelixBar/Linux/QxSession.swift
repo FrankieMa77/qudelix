@@ -37,6 +37,7 @@ final class QxSession {
         .setVolume,
         .setDacFilter,
         .setEqEnable,
+        .setEqMode,
         .setEqType,
         .setEqPreGain,
         .setEqBandParam,
@@ -433,6 +434,22 @@ final class QxSession {
             self.answeredNames.remove(index)
             try self.transmit(.setEqPresetName, payload)
         }
+    }
+
+    func setEqMode(twentyBand: Bool, retryDelays: [TimeInterval] = [1, 2, 2]) async throws {
+        let desired: QxEqGroup = twentyBand ? .b20 : .user
+        try await perform { try self.transmit(.setEqMode, [twentyBand ? 1 : 0]) }
+        for (index, delay) in retryDelays.enumerated() {
+            do {
+                try await wait("the EQ mode switch", timeout: delay) { self.eqGroup == desired }
+                return
+            } catch QxSessionError.timedOut {
+                if index < retryDelays.count - 1 {
+                    try await perform { try self.transmit(.reqDevConfig, [QxConfigMask.sys]) }
+                }
+            }
+        }
+        throw QxSessionError.timedOut("the EQ mode switch")
     }
 
     func saveAll() async throws {

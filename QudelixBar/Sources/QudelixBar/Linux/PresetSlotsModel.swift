@@ -18,6 +18,13 @@ package struct PresetSlotsState: Equatable {
     package init() {}
 }
 
+package struct SlotOverwritePrompt: Equatable {
+    package var slot: Int
+    package var title: String
+    package var message: String
+    package var confirmLabel: String
+}
+
 @MainActor
 package final class PresetSlotsModel {
     package static let renameReadbackDelay: TimeInterval = 0.4
@@ -62,12 +69,42 @@ package final class PresetSlotsModel {
         names[index] != nil
     }
 
+    package static let customSettingNote = "Current EQ is a custom setting, not a saved slot."
+    package static let noActiveSlotHelp = "No slot is active \u{2014} load or save one first."
     package static let overwriteTitle = "Replace the preset in this slot?"
     package static let saveHereLabel = "Save here"
 
     package static func overwriteMessage(slot: Int, name: String) -> String {
         "Slot \(slot + 1), \u{201C}" + name + "\u{201D}, holds a preset on the "
             + "device. Writing replaces it, and the device keeps no copy."
+    }
+
+    package var activeSlotIndex: Int? { activeIndex }
+
+    package var canUpdateActive: Bool {
+        canWrite && activeIndex != nil && !host.eq.sessionActive && !host.eq.following
+    }
+
+    package func updateHelp() -> String {
+        if let busy = host.eq.writeRefusal(attempted: false), host.eq.state.ready { return busy }
+        guard let active = activeIndex else { return Self.noActiveSlotHelp }
+        return "Overwrite " + label(forSlot: active) + " with the current EQ"
+    }
+
+    package func updateActive() {
+        guard let active = activeIndex, !host.eq.following else { return }
+        save(slot: active)
+    }
+
+    package func requestSave(slot index: Int) -> SlotOverwritePrompt? {
+        guard (0..<Self.slotCount).contains(index) else { return nil }
+        guard needsOverwriteConfirmation(slot: index) else {
+            save(slot: index)
+            return nil
+        }
+        return SlotOverwritePrompt(slot: index, title: Self.overwriteTitle,
+                                   message: Self.overwriteMessage(slot: index, name: label(forSlot: index)),
+                                   confirmLabel: Self.saveHereLabel)
     }
 
     package func waitForIdle() async {
@@ -79,6 +116,8 @@ package final class PresetSlotsModel {
         let failure = "Could not load slot \(index + 1)."
         guard canWrite else { return refuse(failure) }
         guard !host.eq.sessionActive else { return host.notify(.failure, EqEditorModel.sessionRefusal) }
+        let wasActive = activeIndex == index
+        let before = (host.eq.liveBands, host.eq.livePreGain)
         host.eq.presetLoading(label(forSlot: index), slot: index)
         run(failure) { [weak self] session in
             guard let self else { return }
@@ -89,7 +128,8 @@ package final class PresetSlotsModel {
                 self.host.eq.adopt(preset, snapshot: snapshot)
                 self.activeIndex = index
                 self.publish()
-                self.host.notify(.success, "Loaded slot \(index + 1).")
+                let changed = before.0 != preset.bands || abs(before.1 - preset.preGain) > 0.001
+                self.host.notify(.success, Self.loadMessage(slot: index, wasActive: wasActive, changed: changed))
                 await self.host.refreshStatus()
             } catch {
                 DebugLog.shared.log("preset load failed: \(QudelixCLI.describe(error))")
@@ -97,6 +137,12 @@ package final class PresetSlotsModel {
                 self.fail(failure)
             }
         }
+    }
+
+    package static func loadMessage(slot index: Int, wasActive: Bool, changed: Bool) -> String {
+        guard wasActive else { return "Loaded slot \(index + 1)." }
+        return changed ? "Slot \(index + 1) reloaded \u{2014} unsaved changes discarded."
+            : "Slot \(index + 1) is already loaded \u{2014} nothing changed."
     }
 
     package func save(slot index: Int) {
@@ -122,6 +168,16 @@ package final class PresetSlotsModel {
                 return self.fail(failure)
             }
             guard saved else { return self.fail(failure) }
+            if let name = QudelixController.nameOnSave(source: self.host.eq.currentSourceName,
+                                                       existing: self.names[index],
+                                                       unchangedSinceSource: self.host.eq.curveMatchesSource) {
+                let stored = QxPacket.truncatingUTF8(QudelixController.displayName(name),
+                                                     to: QxPacket.maxPresetNameBytes)
+                if (try? await session.renamePreset(index: index, name: name)) != nil {
+                    self.names[index] = stored.isEmpty ? nil : stored
+                    self.scheduleReadback(index)
+                }
+            }
             try? await session.refreshStatus()
             self.host.notify(.success, "Saved to slot \(index + 1).")
             await self.host.refreshStatus()

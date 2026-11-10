@@ -6,6 +6,39 @@ package enum EqLoadState: Equatable {
     case failed
 }
 
+package struct EqHeadroomAdvice: Equatable {
+    package var peakBoost = 0.0
+    package var suggestion: Double?
+    package var shortfall = 0.0
+
+    package init() {}
+
+    init(_ advice: EQHeadroom.Advice) {
+        peakBoost = advice.peakBoost
+        suggestion = advice.suggestion
+        shortfall = advice.shortfall
+    }
+
+    package var text: String {
+        guard peakBoost >= 0.05 else { return "No band boost to offset." }
+        let boost = String(format: "Bands boost by up to %.1f dB", peakBoost)
+        if shortfall >= 0.05 {
+            return boost + String(format: " \u{2014} %.1f dB more than pre-gain can take back.", shortfall)
+        }
+        return suggestion == nil ? boost + "; pre-gain covers it." : boost + "."
+    }
+
+    package var buttonTitle: String? {
+        suggestion.map { String(format: "Set %.1f dB", $0) }
+    }
+}
+
+package struct EqDivergence: Equatable {
+    package var spans: [ClosedRange<Int>]
+    package var peak: Double
+    package var peakIndex: Int
+}
+
 package struct EqEditorState: Equatable {
     package var ready = false
     package var loadState = EqLoadState.loading
@@ -22,8 +55,24 @@ package struct EqEditorState: Equatable {
     package var readOnlyReason: String?
     package var undoLabel: String?
     package var redoLabel: String?
+    package var sourceName: String?
+    package var requested: [EqBand]?
+    package var comparable: [EqBand] = []
+    package var headroom = EqHeadroomAdvice()
+    package var activeSlot: Int?
+    package var isTwentyBand = false
+    package var modeChanging = false
+    package var canSwitchMode = false
 
     package init() {}
+
+    package func divergence(count: Int = 220) -> EqDivergence? {
+        guard let requested else { return nil }
+        let asked = EqCurveGeometry.response(bands: requested, count: count)
+        let applied = EqCurveGeometry.response(bands: comparable, count: count)
+        guard let reading = EQDivergence.reading(requested: asked, applied: applied) else { return nil }
+        return EqDivergence(spans: reading.spans, peak: reading.peak, peakIndex: reading.peakIndex)
+    }
 
     package var bandCount: Int { bands.count }
 
@@ -50,6 +99,13 @@ package final class EqEditorModel {
     package static let sessionRefusal = "A tuning session is running \u{2014} finish or stop it first."
     package static let followRefusal = "Auto-fit or Auto-trim is moving the gains \u{2014} "
         + "press Keep, or turn them off, to edit."
+
+    private struct SourceMemo {
+        var name: String?
+        var requested: ParametricEQFile?
+        var curve: [QxEqBandValue]?
+        var preGain: Double?
+    }
 
     private enum WriteKey: Hashable {
         case band(Int)
@@ -89,6 +145,15 @@ package final class EqEditorModel {
     private var readFailed = false
     private var recheck = false
     private var sourceName: String?
+    private var requested: ParametricEQFile?
+    private var sourceCurve: [QxEqBandValue]?
+    private var sourcePreGain: Double?
+    private var undoMemos: [SourceMemo] = []
+    private var redoMemos: [SourceMemo] = []
+    private var headroomMemo: (bands: [QxEqBandValue], preGain: Double, advice: EqHeadroomAdvice)?
+    private var modeSwitchPending = false
+    private var lastModeRequest = Date.distantPast
+    package var modeRetryDelays: [TimeInterval] = [1, 2, 2]
     private(set) var sessionActive = false
     private(set) var following = false
     private var flashHolds = 0
@@ -221,6 +286,9 @@ package final class EqEditorModel {
         checkpoint(undoLabel, discrete: true)
         muted = [:]
         sourceName = name
+        requested = file
+        sourceCurve = nil
+        sourcePreGain = nil
         let preamp = max(-12, min(12, fitted.preamp))
         var request = ParametricEQFile()
         request.preamp = preamp
@@ -240,6 +308,8 @@ package final class EqEditorModel {
                                                                 recording: nil)
                 let snapshot = await session.snapshot()
                 self.adoptDeviceState(applied, snapshot: snapshot)
+                self.sourceCurve = self.bands
+                self.sourcePreGain = self.preGain
                 self.publish()
                 self.host.eqHost.onBaseEvent?(.fit)
                 await self.host.refreshStatus()
@@ -249,6 +319,33 @@ package final class EqEditorModel {
             }
         }
         return EqImportResult(accepted: true, summary: summary)
+    }
+
+    @discardableResult
+    package func importFile(at url: URL) -> EqImportResult {
+        let name = SafeText.scrubbed(url.lastPathComponent, limit: 64)
+        guard let data = SafeFile.read(url, cap: CLI.maxImportBytes) else {
+            return reported(EqImportResult(accepted: false,
+                summary: "Couldn\u{2019}t read \(name) \u{2014} an EQ preset is a plain text file, and not a large one."))
+        }
+        guard let text = ParametricEQFile.decodeText(data) else {
+            return reported(EqImportResult(accepted: false, summary: "Could not read \(name) as text."))
+        }
+        return importText(text, named: url.deletingPathExtension().lastPathComponent, fileName: name)
+    }
+
+    @discardableResult
+    package func importText(_ text: String, named name: String, fileName: String? = nil) -> EqImportResult {
+        guard let parsed = ParametricEQFile.parse(text) else {
+            return reported(EqImportResult(accepted: false,
+                                           summary: "No filters found in \(fileName ?? name)."))
+        }
+        return reported(apply(parsed, named: name))
+    }
+
+    private func reported(_ result: EqImportResult) -> EqImportResult {
+        host.notify(result.accepted ? .success : .failure, result.summary)
+        return result
     }
 
     package func response(count: Int = 220) -> [Double] {
@@ -319,6 +416,7 @@ package final class EqEditorModel {
         checkpoint("flatten", discrete: true)
         suppressUndo = true
         defer { suppressUndo = false }
+        forgetSource()
         commitPreGain(0, persist: true, record: false, force: false)
         for index in bands.indices {
             var band = bands[index]
@@ -333,12 +431,48 @@ package final class EqEditorModel {
         checkpoint("reset band layout", discrete: true)
         suppressUndo = true
         defer { suppressUndo = false }
+        forgetSource()
         commitPreGain(0, persist: true, record: false, force: false)
         let defaults = group.defaultFreqs
         for index in bands.indices where defaults.indices.contains(index) {
             commitBand(index, QxEqBandValue(filter: .peak, freq: defaults[index], gain: 0, q: 1),
                        persist: true, record: false, force: false)
         }
+    }
+
+    private func forgetSource() {
+        sourceName = nil
+        requested = nil
+        sourceCurve = nil
+        sourcePreGain = nil
+    }
+
+    private var currentMemo: SourceMemo {
+        SourceMemo(name: sourceName, requested: requested, curve: sourceCurve, preGain: sourcePreGain)
+    }
+
+    private func restore(_ memo: SourceMemo) {
+        sourceName = memo.name
+        requested = memo.requested
+        sourceCurve = memo.curve
+        sourcePreGain = memo.preGain
+    }
+
+    package var curveMatchesSource: Bool {
+        guard let curve = sourceCurve, let gain = sourcePreGain,
+              curve.count == bands.count, abs(gain - preGain) < 0.06 else { return false }
+        for (a, b) in zip(curve, bands) {
+            if a.filter != b.filter || a.freq != b.freq { return false }
+            if abs(a.gain - b.gain) > 0.06 || abs(a.q - b.q) > 0.02 { return false }
+        }
+        return true
+    }
+
+    package var currentSourceName: String? { sourceName }
+
+    package func applySuggestedPreGain() {
+        guard !sessionActive, !following, let db = state.headroom.suggestion else { return }
+        setPreGain(db)
     }
 
     package func setEnabled(_ on: Bool) {
@@ -352,14 +486,23 @@ package final class EqEditorModel {
     private func step(undo: Bool) {
         guard canEdit else { return }
         guard let entry = undo ? undoStack.popLast() : redoStack.popLast() else { return }
+        let entryMemo = (undo ? undoMemos.popLast() : redoMemos.popLast()) ?? SourceMemo()
         let here = makeEntry(entry.label)
         if undo {
             redoStack.append(here)
-            if redoStack.count > Self.undoDepth { redoStack.removeFirst() }
+            redoMemos.append(currentMemo)
+            if redoStack.count > Self.undoDepth {
+                redoStack.removeFirst()
+                redoMemos.removeFirst()
+            }
             removeFromFile(entry)
         } else {
             undoStack.append(here)
-            if undoStack.count > Self.undoDepth { undoStack.removeFirst() }
+            undoMemos.append(currentMemo)
+            if undoStack.count > Self.undoDepth {
+                undoStack.removeFirst()
+                undoMemos.removeFirst()
+            }
             EqHistoryFile.append(here)
         }
         suppressUndo = true
@@ -369,6 +512,7 @@ package final class EqEditorModel {
             lastEditAt = .distantPast
         }
         let target = entry.snapshot
+        restore(entryMemo)
         muted = target.mutedBands
         if enabled != target.enabled {
             enabled = target.enabled
@@ -425,8 +569,13 @@ package final class EqEditorModel {
            top.snapshot.mutedBands == entry.snapshot.mutedBands,
            top.snapshot.enabled == entry.snapshot.enabled { return }
         undoStack.append(entry)
-        if undoStack.count > Self.undoDepth { undoStack.removeFirst() }
+        undoMemos.append(currentMemo)
+        if undoStack.count > Self.undoDepth {
+            undoStack.removeFirst()
+            undoMemos.removeFirst()
+        }
         redoStack.removeAll()
+        redoMemos.removeAll()
         EqHistoryFile.append(entry)
     }
 
@@ -511,7 +660,7 @@ package final class EqEditorModel {
         return false
     }
 
-    var isBusy: Bool { running || !pending.isEmpty || !operations.isEmpty }
+    var isBusy: Bool { running || !pending.isEmpty || !operations.isEmpty || modeSwitchPending }
 
     func followedDiff(_ target: [QxEqBandValue], preGain wanted: Double)
         -> (pre: Double, changed: [(Int, QxEqBandValue)]) {
@@ -600,7 +749,10 @@ package final class EqEditorModel {
         lastEditAt = .distantPast
         selected = nil
         muted = [:]
-        sourceName = nil
+        forgetSource()
+        undoMemos = []
+        redoMemos = []
+        modeSwitchPending = false
         group = snapshot.eqGroup
         identity = snapshot.deviceIdentity
         activeSlot = snapshot.activePresetIndex
@@ -646,7 +798,10 @@ package final class EqEditorModel {
         redoStack = []
         selected = nil
         muted = [:]
-        sourceName = nil
+        forgetSource()
+        undoMemos = []
+        redoMemos = []
+        modeSwitchPending = false
         publish()
     }
 
@@ -657,6 +812,8 @@ package final class EqEditorModel {
                 && ($0.snapshot.deviceIdentity == nil || $0.snapshot.deviceIdentity == identity)
         }
         undoStack = Array(entries.suffix(Self.undoDepth))
+        undoMemos = Array(repeating: SourceMemo(), count: undoStack.count)
+        redoMemos = Array(repeating: SourceMemo(), count: redoStack.count)
     }
 
     func statusChanged(_ snapshot: QxStatusSnapshot?) {
@@ -680,6 +837,7 @@ package final class EqEditorModel {
             } else {
                 if groupMoved {
                     group = snapshot.eqGroup
+                    forgetSource()
                     host.eqHost.onBaseEvent?(.group)
                 }
                 activeSlot = snapshot.activePresetIndex
@@ -743,13 +901,76 @@ package final class EqEditorModel {
     func presetLoading(_ label: String, slot: Int) {
         checkpoint("load " + label, discrete: true)
         muted = [:]
-        sourceName = nil
+        forgetSource()
         activeSlot = slot
         host.eqHost.onBaseEvent?(.slotLoad)
     }
 
     func checkpointForImport(_ label: String) {
         checkpoint(label, discrete: true)
+    }
+
+    private func headroom() -> EqHeadroomAdvice {
+        if let memo = headroomMemo, memo.preGain == preGain, memo.bands == bands { return memo.advice }
+        let advice = EqHeadroomAdvice(EQHeadroom.advice(for: bands, preGain: preGain))
+        headroomMemo = (bands, preGain, advice)
+        return advice
+    }
+
+    var canSwitchMode: Bool {
+        canWriteBands && !readOnly && !modeSwitchPending && !isFlashing
+    }
+
+    package func setEqMode(twentyBand: Bool) {
+        guard host.state.connection.isConnected, host.session != nil, ready else { return }
+        guard !sessionActive else { return host.notify(.failure, Self.sessionRefusal) }
+        guard !following else { return host.notify(.failure, Self.followRefusal) }
+        guard canSwitchMode else { return host.notify(.failure, "The 5K is busy \u{2014} try again in a moment.") }
+        let desired: QxEqGroup = twentyBand ? .b20 : .user
+        guard desired != group else { return }
+        let now = host.clock.now()
+        guard now.timeIntervalSince(lastModeRequest) > 0.3 else { return }
+        lastModeRequest = now
+        guard let session = host.session else { return }
+        modeSwitchPending = true
+        publish()
+        let delays = modeRetryDelays
+        let opened = generation
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard await self.prepareModeChange(session) else {
+                self.modeSwitchPending = false
+                self.publish()
+                return self.host.notify(.failure,
+                                        "Could not switch the EQ mode." + AppModel.retryAdvice)
+            }
+            guard self.generation == opened else { return }
+            self.enqueueOperation { [weak self] in
+                guard let self else { return }
+                defer {
+                    self.modeSwitchPending = false
+                    self.finishModeChange()
+                }
+                guard let session = self.host.session else { return }
+                do {
+                    DebugLog.shared.log("requesting EQ mode: \(twentyBand ? "20-band" : "10-band")")
+                    try await session.setEqMode(twentyBand: twentyBand, retryDelays: delays)
+                    let preset = try await session.readPreset()
+                    let snapshot = await session.snapshot()
+                    guard self.host.session === session else { return }
+                    self.muted = [:]
+                    self.forgetSource()
+                    self.adoptDeviceState(preset, snapshot: snapshot)
+                    self.seedHistory()
+                    self.host.eqHost.onBaseEvent?(.group)
+                    await self.host.refreshStatus()
+                } catch {
+                    DebugLog.shared.log("EQ mode switch failed: \(QudelixCLI.describe(error))")
+                    self.host.notify(.failure, "The 5K did not switch EQ mode." + AppModel.retryAdvice)
+                    self.reloadFromDevice()
+                }
+            }
+        }
     }
 
     private func publish() {
@@ -769,6 +990,18 @@ package final class EqEditorModel {
         next.readOnlyReason = sessionActive ? Self.sessionRefusal : (following ? Self.followRefusal : nil)
         next.undoLabel = undoStack.last?.label
         next.redoLabel = redoStack.last?.label
+        next.sourceName = sourceName
+        next.requested = requested.map { $0.bands.map(EqBand.init) }
+        var comparable = bands
+        for (index, shape) in muted where comparable.indices.contains(index) && comparable[index].filter == .bypass {
+            comparable[index].filter = shape
+        }
+        next.comparable = comparable.map(EqBand.init)
+        next.headroom = headroom()
+        next.activeSlot = activeSlot
+        next.isTwentyBand = group == .b20
+        next.modeChanging = modeChanging || modeSwitchPending
+        next.canSwitchMode = canSwitchMode
         guard next != state else { return }
         state = next
         for observer in observers.values { observer(next) }
