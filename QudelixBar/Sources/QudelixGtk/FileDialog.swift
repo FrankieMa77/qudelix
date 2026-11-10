@@ -19,6 +19,17 @@ package enum TextFileFilters {
     }
 }
 
+package enum WavFileFilters {
+    package static let specs: [FileFilterSpec] = [
+        FileFilterSpec(name: "WAV files", suffixes: ["wav", "wave"]),
+        FileFilterSpec(name: "All files", suffixes: [])
+    ]
+
+    package static func matches(_ fileName: String, _ spec: FileFilterSpec) -> Bool {
+        TextFileFilters.matches(fileName, spec)
+    }
+}
+
 private final class FileDialogCompletion {
     let handler: (String?) -> Void
     let dialog: UnsafeMutableRawPointer

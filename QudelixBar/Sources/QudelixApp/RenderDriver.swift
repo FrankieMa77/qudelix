@@ -137,3 +137,42 @@ final class EqRenderDriver {
         return state
     }
 }
+
+@MainActor
+final class AudioRenderDriver {
+    private let options: LaunchOptions
+    private let audio: AudioStack?
+    private let levelPage: LevelPage?
+    private var applied = false
+    private var dialogRequested = false
+
+    init(options: LaunchOptions, audio: AudioStack?, levelPage: LevelPage?) {
+        self.options = options
+        self.audio = audio
+        self.levelPage = levelPage
+    }
+
+    func ready() -> Bool {
+        guard let stage = audio?.stage else { return true }
+        if !applied {
+            applied = true
+            let stageScenario = options.stageDemo.flatMap(DemoStageScenario.init(rawValue:))
+            let levelScenario = options.levelDemo.flatMap(DemoLevelScenario.init(rawValue:))
+                ?? (stageScenario == .on ? .lossy : .empty)
+            let stageState = stageScenario.map(DemoAudioData.stage) ?? DemoAudioData.runningStage(for: levelScenario)
+            stage.showPreview(stageState, level: DemoAudioData.level(levelScenario))
+            return false
+        }
+        if options.dialog == "delete", let levelPage {
+            if levelPage.dialog == nil {
+                if !dialogRequested {
+                    dialogRequested = true
+                    _ = levelPage.presentDelete()
+                }
+                return false
+            }
+            return levelPage.dialog.map { gtk_widget_get_width($0.assumingMemoryBound(to: GtkWidget.self)) > 0 } ?? false
+        }
+        return true
+    }
+}

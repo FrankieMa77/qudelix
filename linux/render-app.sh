@@ -26,7 +26,7 @@ docker run --rm --init \
       shift 4
       local flag=""
       [ "$theme" = "dark" ] && flag="--dark"
-      xvfb-run -a -s "-screen 0 1280x1400x24" \
+      xvfb-run -a -s "-screen 0 1280x2800x24" \
         env GSK_RENDERER=cairo GDK_BACKEND=x11 GTK_A11Y=none \
         /build/debug/qudelix-app --render-page "$page" --render-out "/out/$name-$theme-$size.png" $flag --size "$size" "$@" \
         2>/dev/null
@@ -104,13 +104,14 @@ docker run --rm --init \
       flag=""
       [ "$theme" = "dark" ] && flag="--dark"
       for size in 900x640 360x640; do
-        xvfb-run -a -s "-screen 0 1280x1400x24" \
+        xvfb-run -a -s "-screen 0 1280x2800x24" \
           env XDG_CONFIG_HOME=/tmp/autostart-on GSK_RENDERER=cairo GDK_BACKEND=x11 GTK_A11Y=none \
           /build/debug/qudelix-app --render-page device --render-out "/out/app-menu-autostart-on-$theme-$size.png" $flag --size "$size" --demo --open-menu \
           2>/dev/null
       done
     done
     fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "u1" ]; then
     for theme in light dark; do
       render nav-wide device "$theme" 900x640 --demo
       render nav-narrow device "$theme" 360x640 --demo --sidebar
@@ -120,18 +121,40 @@ docker run --rm --init \
         render eq-following eq "$theme" "$size" --demo --follow
         render presets-custom presets "$theme" "$size" --demo --custom-eq
         render eq-no-audio eq "$theme" "$size" --demo --no-audio
-        render stage-placeholder stage "$theme" "$size" --demo
-        render level-no-audio level "$theme" "$size" --demo --no-audio
       done
       render eq-ghost-tall eq "$theme" 360x1700 --demo --ghost
       render eq-following-tall eq "$theme" 360x1700 --demo --follow
       render eq-ghost-wide eq "$theme" 900x1500 --demo --ghost
       render eq-following-wide eq "$theme" 900x1500 --demo --follow
     done
+    fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "u2" ]; then
+      for theme in light dark; do
+        for size in 900x640 360x640; do
+          render stage-on stage "$theme" "$size" --demo --stage-demo on
+          render stage-off stage "$theme" "$size" --demo --stage-demo off
+          render stage-failure stage "$theme" "$size" --demo --stage-demo failure
+          render stage-no-audio stage "$theme" "$size" --demo --no-audio
+          render level-live level "$theme" "$size" --demo --level-demo live
+          render level-lossy level "$theme" "$size" --demo --level-demo lossy
+          render level-idle level "$theme" "$size" --demo --level-demo idle
+          render level-empty level "$theme" "$size" --demo --level-demo empty
+          render level-no-audio level "$theme" "$size" --demo --no-audio
+        done
+        render stage-on-tall stage "$theme" 360x2600 --demo --stage-demo on
+        render stage-on-wide stage "$theme" 900x2200 --demo --stage-demo on
+        render stage-off-tall stage "$theme" 360x2200 --demo --stage-demo off
+        render level-live-tall level "$theme" 360x1900 --demo --level-demo live
+        render level-live-wide level "$theme" 900x1500 --demo --level-demo live
+        render level-stage-on-tall level "$theme" 360x1900 --demo --stage-demo on
+        render level-delete level "$theme" 900x640 --demo --level-demo live --dialog delete
+        render level-delete level "$theme" 360x640 --demo --level-demo live --dialog delete
+      done
+    fi
     /build/debug/qudelix-app --version
     /build/debug/qudelix-app --help
     dump_tray() {
-      xvfb-run -a -s "-screen 0 1280x1400x24" \
+      xvfb-run -a -s "-screen 0 1280x2800x24" \
         env GSK_RENDERER=cairo GDK_BACKEND=x11 GTK_A11Y=none \
         /build/debug/qudelix-app --dump-tray "/out/$1" "${@:2}" 2>/dev/null
     }

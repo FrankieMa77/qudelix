@@ -27,6 +27,8 @@ struct LaunchOptions {
     var follow = false
     var noAudio = false
     var customEq = false
+    var stageDemo: String?
+    var levelDemo: String?
     var version = false
     var help = false
     var trayDump: String?
@@ -112,6 +114,12 @@ struct LaunchOptions {
                 options.follow = true
             case "--custom-eq":
                 options.customEq = true
+            case "--stage-demo":
+                options.stageDemo = value
+                index += 1
+            case "--level-demo":
+                options.levelDemo = value
+                index += 1
             case "--no-audio":
                 options.noAudio = true
             case "--ai-draft":

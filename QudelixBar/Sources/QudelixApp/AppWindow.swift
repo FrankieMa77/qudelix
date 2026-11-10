@@ -9,6 +9,9 @@ enum AppWindow {
     private static var eqPage: EqPage?
     private static var presetsPage: PresetsPage?
     private static var libraryPage: LibraryPage?
+    private static var stagePage: StagePage?
+    private static var levelPage: LevelPage?
+    private static var audioDriver: AudioRenderDriver?
     private static var libraryDriver: LibraryRenderDriver?
     private static var eqDriver: EqRenderDriver?
     private static var audio: AudioStack?
@@ -68,11 +71,29 @@ enum AppWindow {
                 self.libraryPage = libraryPage
                 libraryDriver = LibraryRenderDriver(options: options, page: libraryPage)
                 content = libraryPage.widget
-            case .tune, .stage, .level:
+            case .stage:
+                if let stage = audio?.stage {
+                    let stagePage = StagePage(stage: stage)
+                    self.stagePage = stagePage
+                    content = stagePage.widget
+                } else {
+                    content = makePlaceholder(for: page, audio: audio)
+                }
+            case .level:
+                if let stage = audio?.stage {
+                    let levelPage = LevelPage(stage: stage, automation: audio?.automation)
+                    self.levelPage = levelPage
+                    content = levelPage.widget
+                } else {
+                    content = makePlaceholder(for: page, audio: audio)
+                }
+            case .tune:
                 content = makePlaceholder(for: page, audio: audio)
             }
             adw_view_stack_add_titled_with_icon(stack.opaque, content, page.rawValue, page.title, page.icon)
         }
+
+        audioDriver = AudioRenderDriver(options: options, audio: audio, levelPage: levelPage)
 
         let split = adw_navigation_split_view_new()!
         splitView = split.opaque
@@ -133,7 +154,7 @@ enum AppWindow {
                               ready: { Self.isReady(model, options: options) },
                               target: {
                                   (options.menuOpen ? AppMenu.popover : nil)
-                                      ?? presetsPage?.dialog ?? libraryPage?.dialog ?? window.raw
+                                      ?? presetsPage?.dialog ?? libraryPage?.dialog ?? levelPage?.dialog ?? window.raw
                               })
         } else {
             controller.attach(window: window.widget, application: application.raw)
@@ -162,6 +183,7 @@ enum AppWindow {
         let connection = model.state.connection
         if options.noDevice {
             guard connection == .searching else { return false }
+            if options.render?.page == .stage || options.render?.page == .level { return audioDriver?.ready() ?? true }
             return options.render?.page != .library || libraryDriver?.ready() ?? true
         }
         guard options.demo else { return true }
@@ -181,6 +203,7 @@ enum AppWindow {
             guard model.eq.state.selected == band else { return false }
         }
         if options.render?.page == .library { return libraryDriver?.ready() ?? true }
+        if options.render?.page == .stage || options.render?.page == .level { return audioDriver?.ready() ?? true }
         if options.render?.page == .eq, eqDriver?.ready() == false { return false }
         if options.menuOpen { return menuReady() }
         if options.dialog == "about" { return aboutReady() }

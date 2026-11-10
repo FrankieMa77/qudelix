@@ -17,3 +17,14 @@ final class FileDialogTests: XCTestCase {
         XCTAssertTrue(TextFileFilters.matches("anything.bin", all))
     }
 }
+
+final class WavFileFilterTests: XCTestCase {
+    func testWavFilterIsFirstAndMatchesBothSuffixesIgnoringCase() {
+        XCTAssertEqual(WavFileFilters.specs.map(\.name), ["WAV files", "All files"])
+        let wav = WavFileFilters.specs[0]
+        XCTAssertTrue(WavFileFilters.matches("Room.WAV", wav))
+        XCTAssertTrue(WavFileFilters.matches("hall.wave", wav))
+        XCTAssertFalse(WavFileFilters.matches("hall.flac", wav))
+        XCTAssertTrue(WavFileFilters.matches("hall.flac", WavFileFilters.specs[1]))
+    }
+}
