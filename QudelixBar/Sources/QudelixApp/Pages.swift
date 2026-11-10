@@ -1,4 +1,5 @@
 import CGtk
+import QudelixBar
 import QudelixGtk
 
 enum AppPage: String, CaseIterable {
@@ -6,39 +7,36 @@ enum AppPage: String, CaseIterable {
     case eq
     case presets
     case library
+    case tune
+    case stage
+    case level
 
-    var title: String {
-        switch self {
-        case .device: return "Device"
-        case .eq: return "EQ"
-        case .presets: return "Presets"
-        case .library: return "Library"
-        }
+    var entry: NavigationEntry {
+        NavigationPages.entry(for: rawValue) ?? NavigationPages.entries[0]
     }
 
-    var icon: String {
-        switch self {
-        case .device: return "audio-headphones-symbolic"
-        case .eq: return "media-playlist-shuffle-symbolic"
-        case .presets: return "view-list-symbolic"
-        case .library: return "folder-symbolic"
-        }
-    }
+    var title: String { entry.title }
+    var icon: String { entry.icon }
+    var summary: String { entry.summary }
 
-    var summary: String {
+    var needsAudio: Bool {
         switch self {
-        case .device: return "Connection, volume and output settings"
-        case .eq: return "Equalizer curve and band controls"
-        case .presets: return "Presets stored on the device"
-        case .library: return "Local presets, AutoEq and AI suggestions"
+        case .tune, .stage, .level: return true
+        default: return false
         }
     }
 }
 
-func makePlaceholder(for page: AppPage) -> UnsafeMutablePointer<GtkWidget> {
+@MainActor
+func makePlaceholder(for page: AppPage, audio: AudioStack?) -> UnsafeMutablePointer<GtkWidget> {
     let status = adw_status_page_new()!
     adw_status_page_set_title(status.opaque, page.title)
-    adw_status_page_set_description(status.opaque, page.summary)
-    adw_status_page_set_icon_name(status.opaque, page.icon)
+    if page.needsAudio, audio?.available != true {
+        adw_status_page_set_description(status.opaque, AudioStack.unavailableMessage)
+        adw_status_page_set_icon_name(status.opaque, "dialog-warning-symbolic")
+    } else {
+        adw_status_page_set_description(status.opaque, page.summary)
+        adw_status_page_set_icon_name(status.opaque, page.icon)
+    }
     return status.widget
 }

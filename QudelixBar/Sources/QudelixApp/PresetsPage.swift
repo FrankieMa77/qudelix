@@ -19,6 +19,8 @@ final class PresetsPage {
     private let stack: OpaquePointer
     private let placeholder = ConnectionStatusPage()
     private let group: UnsafeMutablePointer<GtkWidget>
+    private let note: UnsafeMutablePointer<GtkWidget>
+    private let loadFile: UnsafeMutablePointer<GtkWidget>
     private var rows: [SlotRow] = []
     private var state = PresetSlotsState()
     private(set) var dialog: UnsafeMutableRawPointer?
@@ -31,6 +33,14 @@ final class PresetsPage {
         adw_preferences_group_set_title(group.typed(AdwPreferencesGroup.self), "Presets on the device")
         adw_preferences_group_set_description(group.typed(AdwPreferencesGroup.self),
                                               "Loading a preset replaces the live EQ. Save writes the live EQ into a slot.")
+        note = Ui.actionRow(title: "", subtitle: PresetSlotsModel.customSettingNote)
+        adw_action_row_set_subtitle_lines(note.typed(AdwActionRow.self), 0)
+        gtk_widget_set_visible(note, 0)
+        adw_preferences_group_add(group.typed(AdwPreferencesGroup.self), note)
+        loadFile = Ui.button("Load from file\u{2026}")
+        gtk_widget_set_valign(loadFile, GTK_ALIGN_CENTER)
+        gtk_widget_set_tooltip_text(loadFile, "Apply an AutoEq or Equalizer APO parametric EQ text file to the live EQ. Save it to a slot afterwards to keep it.")
+        adw_preferences_group_set_header_suffix(group.typed(AdwPreferencesGroup.self), loadFile)
         let page = adw_preferences_page_new()!
         adw_preferences_page_add(page.typed(AdwPreferencesPage.self), group.typed(AdwPreferencesGroup.self))
 
@@ -40,6 +50,15 @@ final class PresetsPage {
 
         presets.addObserver { [weak self] state in onLive { self?.update(state) } }
         model.addObserver { [weak self] state in onLive { self?.connectionChanged(state) } }
+        let eq = model.eq
+        Signals.connect(loadFile, signal: "clicked") { [weak self] in
+            onMain { if let self { EqFileLoader.present(from: self.widget, eq: eq) } }
+        }
+        eq.addObserver { [weak self] state in onLive { self?.eqChanged(state) } }
+    }
+
+    private func eqChanged(_ next: EqEditorState) {
+        gtk_widget_set_sensitive(loadFile, next.canEdit ? 1 : 0)
     }
 
     private func connectionChanged(_ app: AppModelState) {
@@ -123,6 +142,7 @@ final class PresetsPage {
 
     private func update(_ next: PresetSlotsState) {
         state = next
+        gtk_widget_set_visible(note, next.ready && next.activeIndex == nil ? 1 : 0)
         if rows.isEmpty { buildRows() }
         if next.ready, model.state.connection.isConnected {
             gtk_stack_set_visible_child_name(stack, "content")
@@ -149,34 +169,29 @@ final class PresetsPage {
     }
 
     func requestSave(slot index: Int) {
-        guard presets.needsOverwriteConfirmation(slot: index) else {
-            presets.save(slot: index)
-            return
-        }
-        presentSaveConfirmation(slot: index)
+        guard let prompt = presets.requestSave(slot: index) else { return }
+        presentSaveConfirmation(prompt)
     }
 
     @discardableResult
-    func presentSaveConfirmation(slot index: Int) -> UnsafeMutableRawPointer? {
-        let name = presets.label(forSlot: index)
-        let dialog = adw_message_dialog_new(parentWindow, PresetSlotsModel.overwriteTitle,
-                                            PresetSlotsModel.overwriteMessage(slot: index, name: name))!
-        let dialogPointer = dialog.raw
-        let typed = dialog.typed(AdwMessageDialog.self)
-        adw_message_dialog_add_response(typed, "cancel", "Cancel")
-        adw_message_dialog_add_response(typed, "save", PresetSlotsModel.saveHereLabel)
-        adw_message_dialog_set_response_appearance(typed, "save", ADW_RESPONSE_DESTRUCTIVE)
-        adw_message_dialog_set_default_response(typed, "cancel")
-        adw_message_dialog_set_close_response(typed, "cancel")
-        Signals.onResponse(dialog) { [weak self] response in
+    func presentSaveConfirmation(slot index: Int) -> UnsafeMutableRawPointer {
+        let prompt = presets.overwritePrompt(slot: index)
+        return presentSaveConfirmation(prompt)
+    }
+
+    @discardableResult
+    func presentSaveConfirmation(_ prompt: SlotOverwritePrompt) -> UnsafeMutableRawPointer {
+        var opened: UnsafeMutableRawPointer?
+        let created = Ui.confirm(parent: parentWindow, title: prompt.title, message: prompt.message,
+                                 action: prompt.confirmLabel, destructive: true) { [weak self] confirmed in
             onMain {
-                if response == "save" { self?.presets.save(slot: index) }
-                if self?.dialog == dialogPointer { self?.dialog = nil }
+                if confirmed { self?.presets.save(slot: prompt.slot) }
+                if self?.dialog == opened { self?.dialog = nil }
             }
         }
-        self.dialog = dialog.raw
-        gtk_window_present(dialog.typed(GtkWindow.self))
-        return dialog.raw
+        opened = created
+        dialog = created
+        return created
     }
 
     @discardableResult

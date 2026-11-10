@@ -1,5 +1,6 @@
 import CGtk
 import Foundation
+import QudelixAudio
 import QudelixBar
 import QudelixGtk
 
@@ -18,17 +19,32 @@ let flags = options.render == nil && options.trayDump == nil ? G_APPLICATION_DEF
 let application = adw_application_new("io.github.FrankieMa77.Qudelix", flags)!
 
 let model: AppModel = MainActor.assumeIsolated {
-    if options.demo { return AppModel.demo(power: options.power) }
+    if options.demo { return AppModel.demo(power: options.power, activeSlot: options.customEq ? nil : 5) }
     if options.noDevice { return AppModel.noDevice() }
     return AppModel(makeLinks: { makeLinks(preferred: nil) }, batteryStore: .system)
 }
 
+let audio: AudioStack = MainActor.assumeIsolated {
+    let isolated = options.demo || options.noDevice || options.render != nil || options.trayDump != nil
+    var locations = AudioStackLocations.system
+    var backend: LinuxAudioBackend?
+    if isolated {
+        locations = .isolated(in: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("qudelix-render-\(UUID().uuidString)", isDirectory: true))
+        backend = options.noAudio ? nil : DemoAudioBackend()
+    } else {
+        backend = try? PipeWireAudioBackend()
+    }
+    return AudioStack(app: model, backend: backend, locations: locations)
+}
+
 Signals.connect(application, signal: "activate") {
     onMain {
+        audio.start()
         if let path = options.trayDump {
             TrayDump.run(model: model, path: path, application: application.raw, expectsDevice: options.demo)
         } else {
-            AppWindow.present(for: application, options: options, model: model)
+            AppWindow.present(for: application, options: options, model: model, audio: audio)
         }
     }
 }
@@ -37,7 +53,7 @@ Signals.connect(application, signal: "shutdown") {
     onMain {
         var finished = false
         Task { @MainActor in
-            await model.shutdown()
+            await audio.shutdown()
             finished = true
         }
         let deadline = Date().addingTimeInterval(3)

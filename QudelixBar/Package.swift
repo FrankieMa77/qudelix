@@ -189,7 +189,7 @@ if includesApp {
         ),
         .executableTarget(
             name: "QudelixApp",
-            dependencies: ["QudelixBar", "QudelixGtk", "CGtk"],
+            dependencies: ["QudelixBar", "QudelixGtk", "CGtk", "QudelixAudio"],
             path: "Sources/QudelixApp"
         ),
         .testTarget(

@@ -18,6 +18,21 @@ final class EqPage {
 
     private let model: AppModel
     private let eq: EqEditorModel
+    private let presets: PresetSlotsModel
+    private let audio: AudioStack?
+    private let panel: AutomationPanel
+    private let headroomLabel: UnsafeMutablePointer<GtkWidget>
+    private let headroomButton: UnsafeMutablePointer<GtkWidget>
+    private let bandsTen: UnsafeMutablePointer<GtkWidget>
+    private let bandsTwenty: UnsafeMutablePointer<GtkWidget>
+    private let loadButton: UnsafeMutablePointer<GtkWidget>
+    private let updateButton: UnsafeMutablePointer<GtkWidget>
+    private let saveButton: UnsafeMutablePointer<GtkWidget>
+    private let saveList: UnsafeMutablePointer<GtkWidget>
+    private let savePopover: UnsafeMutablePointer<GtkWidget>
+    private var saveItems: [UnsafeMutablePointer<GtkWidget>] = []
+    private var pendingTwenty: Bool?
+    private(set) var dialog: UnsafeMutableRawPointer?
     private let stack: OpaquePointer
     private let placeholder = ConnectionStatusPage()
     private let loading = ConnectionStatusPage()
@@ -41,11 +56,41 @@ final class EqPage {
     private var updating = false
     private var state = EqEditorState()
 
-    init(model: AppModel) {
+    init(model: AppModel, audio: AudioStack?) {
         self.model = model
+        self.audio = audio
         eq = model.eq
+        presets = model.presets
         stack = gtk_stack_new()!.opaque
         curve = EqCurveView(model: model.eq)
+        panel = AutomationPanel(automation: audio?.automation, available: audio?.available == true)
+
+        headroomLabel = Ui.label("")
+        headroomButton = Ui.button("Set")
+        gtk_widget_set_valign(headroomButton, GTK_ALIGN_CENTER)
+        gtk_widget_set_tooltip_text(headroomButton, "Attenuates ahead of the filters by as much as the bands boost, so the equalizer passes on no more level than it was given. Clipping already in the source is untouched.")
+        bandsTen = gtk_toggle_button_new_with_label("10")!
+        bandsTwenty = gtk_toggle_button_new_with_label("20")!
+        gtk_toggle_button_set_group(bandsTwenty.typed(GtkToggleButton.self), bandsTen.typed(GtkToggleButton.self))
+        Accessible.setLabel(bandsTen, "10 EQ bands")
+        Accessible.setLabel(bandsTwenty, "20 EQ bands")
+        let bandsTooltip = "EQ bands. The two modes keep separate presets, so switching changes the active curve."
+        gtk_widget_set_tooltip_text(bandsTen, bandsTooltip)
+        gtk_widget_set_tooltip_text(bandsTwenty, bandsTooltip)
+        loadButton = Ui.button("Load from file\u{2026}")
+        gtk_widget_set_tooltip_text(loadButton, "Apply an AutoEq or Equalizer APO parametric EQ text file to the live EQ. Save it to a slot afterwards to keep it.")
+        updateButton = Ui.button("Update")
+        saveButton = gtk_menu_button_new()!
+        gtk_menu_button_set_label(saveButton.opaque, "Save to slot\u{2026}")
+        saveList = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2)!
+        savePopover = gtk_popover_new()!
+        let saveScroller = gtk_scrolled_window_new()!
+        gtk_scrolled_window_set_policy(saveScroller.opaque, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+        gtk_scrolled_window_set_propagate_natural_height(saveScroller.opaque, 1)
+        gtk_scrolled_window_set_max_content_height(saveScroller.opaque, 320)
+        gtk_scrolled_window_set_child(saveScroller.opaque, saveList)
+        gtk_popover_set_child(savePopover.typed(GtkPopover.self), saveScroller)
+        gtk_menu_button_set_popover(saveButton.opaque, savePopover)
 
         banner = adw_banner_new("The equalizer is off. Your edits are kept and are heard once it is on.")!
         adw_banner_set_button_label(banner.opaque, "Turn on")
@@ -88,7 +133,11 @@ final class EqPage {
         let built = Self.buildEditor(banner: banner, curve: curve.area, readout: readout, refusal: refusal,
                                      undo: undoButton, redo: redoButton, flatten: flattenButton,
                                      reset: resetButton, preGainRow: preGainRow,
-                                     preGainScale: preGainScale, bandsGroup: bandsGroup)
+                                     preGainScale: preGainScale, bandsGroup: bandsGroup,
+                                     modeSwitch: [bandsTen, bandsTwenty],
+                                     headroom: [headroomLabel, headroomButton],
+                                     actions: (load: loadButton, update: updateButton, save: saveButton),
+                                     automation: panel.widget)
         editor = built.outer
         scroller = built.scroller
         scrollContent = built.content
@@ -104,6 +153,12 @@ final class EqPage {
         connectControls()
         eq.addObserver { [weak self] state in onLive { self?.update(state) } }
         model.addObserver { [weak self] state in onLive { self?.connectionChanged(state) } }
+        presets.addObserver { [weak self] state in onLive { self?.presetsChanged(state) } }
+        if let automation = audio?.automation {
+            automation.addObserver { [weak self] state in onLive { self?.automationChanged(state) } }
+        } else {
+            panel.update(AutomationState())
+        }
     }
 
     private static func iconButton(_ icon: String, _ tooltip: String, label: String) -> UnsafeMutablePointer<GtkWidget> {
@@ -123,7 +178,13 @@ final class EqPage {
                                     reset: UnsafeMutablePointer<GtkWidget>,
                                     preGainRow: UnsafeMutablePointer<GtkWidget>,
                                     preGainScale: UnsafeMutablePointer<GtkWidget>,
-                                    bandsGroup: UnsafeMutablePointer<GtkWidget>)
+                                    bandsGroup: UnsafeMutablePointer<GtkWidget>,
+                                    modeSwitch: [UnsafeMutablePointer<GtkWidget>],
+                                    headroom: [UnsafeMutablePointer<GtkWidget>],
+                                    actions: (load: UnsafeMutablePointer<GtkWidget>,
+                                              update: UnsafeMutablePointer<GtkWidget>,
+                                              save: UnsafeMutablePointer<GtkWidget>),
+                                    automation: UnsafeMutablePointer<GtkWidget>)
         -> (outer: UnsafeMutablePointer<GtkWidget>, scroller: UnsafeMutablePointer<GtkWidget>,
             content: UnsafeMutablePointer<GtkWidget>) {
         let content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12)!
@@ -145,11 +206,32 @@ final class EqPage {
         gtk_box_append(toolbarBox, spacer)
         gtk_box_append(toolbarBox, flatten)
         gtk_box_append(toolbarBox, reset)
+        let modes = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)!
+        gtk_widget_add_css_class(modes, "linked")
+        gtk_widget_set_valign(modes, GTK_ALIGN_CENTER)
+        for button in modeSwitch { gtk_box_append(modes.typed(GtkBox.self), button) }
         gtk_box_append(box, toolbar)
         gtk_box_append(box, refusal)
 
         gtk_box_append(box, curve)
         gtk_box_append(box, readout)
+
+        let headroomRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)!
+        for part in headroom { gtk_box_append(headroomRow.typed(GtkBox.self), part) }
+        gtk_box_append(box, headroomRow)
+
+        let actionRow = gtk_flow_box_new()!
+        gtk_flow_box_set_selection_mode(actionRow.opaque, GTK_SELECTION_NONE)
+        gtk_flow_box_set_homogeneous(actionRow.opaque, 0)
+        gtk_flow_box_set_max_children_per_line(actionRow.opaque, 4)
+        gtk_flow_box_set_column_spacing(actionRow.opaque, 6)
+        gtk_flow_box_set_row_spacing(actionRow.opaque, 6)
+        gtk_flow_box_set_activate_on_single_click(actionRow.opaque, 0)
+        for button in [actions.load, modes, actions.update, actions.save] {
+            gtk_flow_box_append(actionRow.opaque, button)
+            if let wrapper = gtk_widget_get_parent(button) { gtk_widget_set_focusable(wrapper, 0) }
+        }
+        gtk_box_append(box, actionRow)
 
         let preGroup = adw_preferences_group_new()!
         adw_preferences_row_set_title(preGainRow.typed(AdwPreferencesRow.self), "Pre-gain")
@@ -164,6 +246,7 @@ final class EqPage {
         adw_action_row_add_suffix(preGainRow.typed(AdwActionRow.self), preGainScale)
         adw_preferences_group_add(preGroup.typed(AdwPreferencesGroup.self), preGainRow)
         gtk_box_append(box, preGroup)
+        gtk_box_append(box, automation)
 
         adw_preferences_group_set_title(bandsGroup.typed(AdwPreferencesGroup.self), "Bands")
         gtk_box_append(box, bandsGroup)
@@ -191,12 +274,100 @@ final class EqPage {
         Signals.connect(redoButton, signal: "clicked") { onMain { eq.redo() } }
         Signals.connect(flattenButton, signal: "clicked") { onMain { eq.flatten() } }
         Signals.connect(resetButton, signal: "clicked") { onMain { eq.resetLayout() } }
+        Signals.connect(headroomButton, signal: "clicked") { onMain { eq.applySuggestedPreGain() } }
+        for (button, twenty) in [(bandsTen, false), (bandsTwenty, true)] {
+            Signals.onToggled(button) { [weak self] on in
+                onMain {
+                    guard let self, !self.updating, on else { return }
+                    self.pendingTwenty = twenty
+                    eq.setEqMode(twentyBand: twenty)
+                    self.syncModeSwitch(eq.state)
+                }
+            }
+        }
+        Signals.connect(loadButton, signal: "clicked") { [weak self] in
+            onMain { if let self { EqFileLoader.present(from: self.widget, eq: eq) } }
+        }
+        Signals.connect(updateButton, signal: "clicked") { [weak self] in onMain { self?.presets.updateActive() } }
         Signals.onValueChanged(preGainScale) { [weak self] value in
             onMain {
                 guard let self, !self.updating else { return }
                 eq.setPreGain(value)
             }
         }
+    }
+
+    private var automationState = AutomationState()
+
+    private func automationChanged(_ next: AutomationState) {
+        automationState = next
+        panel.update(next)
+        curve.setLines(reference: next.referenceLine, trim: next.trimLine)
+        update(state)
+    }
+
+    private func presetsChanged(_ next: PresetSlotsState) {
+        if saveItems.count != next.slots.count { rebuildSaveItems(count: next.slots.count) }
+        for slot in next.slots where saveItems.indices.contains(slot.index) {
+            if let label = gtk_button_get_child(saveItems[slot.index].typed(GtkButton.self)) {
+                gtk_label_set_text(label.opaque, "\(slot.number) \u{00B7} \(slot.label)")
+            }
+            Accessible.setLabel(saveItems[slot.index], "Save to slot \(slot.number), \(slot.label)")
+        }
+        refreshActions()
+    }
+
+    private func rebuildSaveItems(count: Int) {
+        for item in saveItems { gtk_box_remove(saveList.typed(GtkBox.self), item) }
+        saveItems = []
+        for index in 0..<count {
+            let item = Ui.menuItem("\(index + 1)")
+            gtk_box_append(saveList.typed(GtkBox.self), item)
+            saveItems.append(item)
+            Signals.connect(item, signal: "clicked") { [weak self] in
+                onMain {
+                    guard let self else { return }
+                    gtk_popover_popdown(self.savePopover.typed(GtkPopover.self))
+                    if let prompt = self.presets.requestSave(slot: index) { self.presentOverwrite(prompt) }
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func presentOverwrite(_ prompt: SlotOverwritePrompt) -> UnsafeMutableRawPointer {
+        var opened: UnsafeMutableRawPointer?
+        let created = Ui.confirm(parent: Ui.parentWindow(of: widget), title: prompt.title,
+                                 message: prompt.message, action: prompt.confirmLabel,
+                                 destructive: true) { [weak self] confirmed in
+            onMain {
+                if confirmed { self?.presets.save(slot: prompt.slot) }
+                if self?.dialog == opened { self?.dialog = nil }
+            }
+        }
+        opened = created
+        dialog = created
+        return created
+    }
+
+    private func refreshActions() {
+        let editable = state.canEdit
+        let following = state.readOnlyReason != nil
+        gtk_widget_set_sensitive(loadButton, editable ? 1 : 0)
+        gtk_widget_set_sensitive(updateButton, presets.canUpdateActive ? 1 : 0)
+        gtk_widget_set_tooltip_text(updateButton, presets.updateHelp())
+        gtk_widget_set_sensitive(saveButton, presets.canWrite && !following ? 1 : 0)
+    }
+
+    private func syncModeSwitch(_ next: EqEditorState) {
+        let wasUpdating = updating
+        updating = true
+        defer { updating = wasUpdating }
+        if !next.modeChanging { pendingTwenty = nil }
+        let twenty = next.modeChanging ? (pendingTwenty ?? next.isTwentyBand) : next.isTwentyBand
+        gtk_toggle_button_set_active((twenty ? bandsTwenty : bandsTen).typed(GtkToggleButton.self), 1)
+        gtk_widget_set_sensitive(bandsTen, next.canSwitchMode ? 1 : 0)
+        gtk_widget_set_sensitive(bandsTwenty, next.canSwitchMode ? 1 : 0)
     }
 
     func showForRender(_ load: EqLoadState) {
@@ -361,9 +532,19 @@ final class EqPage {
         adw_banner_set_revealed(banner.opaque, next.ready && !next.enabled ? 1 : 0)
 
         let editable = next.canEdit
-        let blocked = next.ready && !editable ? eq.writeRefusal(attempted: false) : nil
+        var blocked = next.ready && !editable ? eq.writeRefusal(attempted: false) : nil
+        if next.ready, !editable, next.readOnlyReason != nil {
+            blocked = automationState.following ? AutomationState.readOnlyHelp : next.readOnlyReason
+        }
         gtk_label_set_text(refusal.opaque, blocked ?? "")
         gtk_widget_set_visible(refusal, blocked == nil ? 0 : 1)
+        gtk_label_set_text(headroomLabel.opaque, next.headroom.text)
+        let title = next.headroom.buttonTitle
+        gtk_widget_set_visible(headroomLabel, next.ready && editable ? 1 : 0)
+        gtk_widget_set_visible(headroomButton, next.ready && editable && title != nil ? 1 : 0)
+        if let title { gtk_button_set_label(headroomButton.typed(GtkButton.self), title) }
+        syncModeSwitch(next)
+        refreshActions()
         for control in [flattenButton, resetButton, preGainScale] {
             gtk_widget_set_sensitive(control, editable ? 1 : 0)
         }

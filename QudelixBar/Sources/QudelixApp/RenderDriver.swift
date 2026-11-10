@@ -69,3 +69,71 @@ final class LibraryRenderDriver {
         return true
     }
 }
+
+@MainActor
+final class EqRenderDriver {
+    private static let boosted = """
+        Preamp: -6 dB
+        Filter 1: ON LSC Fc 105 Hz Gain 17 dB Q 0.7
+        Filter 2: ON PK Fc 250 Hz Gain -4.5 dB Q 1.1
+        Filter 3: ON PK Fc 3000 Hz Gain 5 dB Q 2.0
+        Filter 4: ON HSC Fc 9000 Hz Gain -14 dB Q 0.7
+        """
+
+    private let options: LaunchOptions
+    private let model: AppModel
+    private let audio: AudioStack?
+    private var imported = false
+    private var previewed = false
+
+    init(options: LaunchOptions, model: AppModel, audio: AudioStack?) {
+        self.options = options
+        self.model = model
+        self.audio = audio
+    }
+
+    func ready() -> Bool {
+        if options.ghost {
+            if !imported {
+                imported = true
+                model.eq.importText(Self.boosted, named: "Sennheiser HD 650")
+                return false
+            }
+            guard model.eq.state.divergence() != nil else { return false }
+        }
+        if options.follow, let automation = audio?.automation {
+            if !previewed {
+                previewed = true
+                automation.showPreview(Self.followingState())
+                return false
+            }
+            return model.eq.state.readOnlyReason != nil
+        }
+        return true
+    }
+
+    static func followingState() -> AutomationState {
+        var state = AutomationState()
+        state.autoFit = true
+        state.autoTrimOn = true
+        state.trimMode = .clarity
+        state.source = .catalog
+        state.effectiveSource = .catalog
+        state.hasReference = true
+        state.referenceActive = true
+        state.following = true
+        state.deviationDb = 0.6
+        state.referenceTexts = ["Sennheiser HD 650 \u{00B7} oratory1990", "Sennheiser HD 650"]
+        state.followNote = "Following the reference \u{2014} within 0.6 dB"
+        state.trimTexts = ["bass +0.5 \u{00B7} tilt +0.3 dB/oct \u{00B7} presence +0.8 \u{00B7} air +0.0"]
+        state.balanceText = "balance: a touch bright"
+        state.referenceLine = AutomationLine(
+            bands: [EqBand(filter: .lowShelf, freq: 105, gain: 6, q: 0.7),
+                    EqBand(filter: .peak, freq: 2800, gain: 4, q: 1.4),
+                    EqBand(filter: .highShelf, freq: 9000, gain: -5, q: 0.7)], offsetDb: 0)
+        state.trimLine = AutomationLine(
+            bands: [EqBand(filter: .peak, freq: 120, gain: 0.5, q: 0.8),
+                    EqBand(filter: .peak, freq: 3500, gain: 0.8, q: 1.0)], offsetDb: 0)
+        return state
+    }
+}

@@ -4,7 +4,7 @@ import QudelixGtk
 
 @MainActor
 final class SplitLayout {
-    static let narrowBreakpoint = "max-width: 700sp"
+    static let narrowBreakpoint = "max-width: 800sp"
 
     let widget: Widget
     private let body: Widget

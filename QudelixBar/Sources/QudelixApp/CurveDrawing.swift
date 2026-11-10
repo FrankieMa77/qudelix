@@ -26,6 +26,9 @@ struct CurveDrawing {
     var dragging: Int?
     var hovered: Int?
     var requested: [EqBand]?
+    var divergence: ((Int) -> EqDivergence?)?
+    var referenceLine: AutomationLine?
+    var trimLine: AutomationLine?
     private(set) var range = 9.0
 
     init(area: UnsafeMutablePointer<GtkWidget>, bands: [EqBand], enabled: Bool = true, selected: Int? = nil,
@@ -89,6 +92,8 @@ struct CurveDrawing {
                               green: Float(Double(card.green) * blend + Double(window.green) * (1 - blend)),
                               blue: Float(Double(card.blue) * blend + Double(window.blue) * (1 - blend)),
                               alpha: 1)
+        let success = color("success_color", fallback: GdkRGBA(red: 0.2, green: 0.64, blue: 0.3, alpha: 1))
+        let warning = color("warning_color", fallback: GdkRGBA(red: 0.9, green: 0.55, blue: 0.1, alpha: 1))
         let enabled = enabled
 
         rounded(cr, 0.5, 0.5, w - 1, h - 1, 8)
@@ -101,7 +106,14 @@ struct CurveDrawing {
         let plotH = CurvePlot.height(h)
         let sampleCount = max(Int(plotW / 2), 64)
         let values = EqCurveGeometry.response(bands: bands, count: sampleCount)
-        range = EqCurveGeometry.plotRange(for: values)
+        let gap = divergence?(sampleCount)
+        let ghost = divergence == nil ? requested : (gap == nil ? nil : requested)
+        let asked = ghost.map { EqCurveGeometry.response(bands: $0, count: sampleCount) }
+        let reference = referenceLine?.response(count: sampleCount)
+        let trimmed = trimLine?.response(count: sampleCount)
+        var extent = values
+        for extra in [asked, reference, trimmed] { if let extra { extent += extra } }
+        range = EqCurveGeometry.plotRange(for: extent)
         func yPos(_ db: Double) -> Double {
             EqCurveGeometry.yPosition(gain: db, range: range, height: plotH)
         }
@@ -147,14 +159,68 @@ struct CurveDrawing {
         if enabled { setColor(cr, accent, 1) } else { setColor(cr, foreground, 0.5) }
         cairo_stroke(cr)
 
-        if let requested {
-            let asked = EqCurveGeometry.response(bands: requested, count: sampleCount)
+        if let asked {
+            if let gap {
+                for span in gap.spans where span.upperBound < values.count && span.upperBound < asked.count {
+                    cairo_new_path(cr)
+                    cairo_move_to(cr, Double(span.lowerBound) * step, yPos(asked[span.lowerBound]))
+                    for index in span.dropFirst() { cairo_line_to(cr, Double(index) * step, yPos(asked[index])) }
+                    for index in span.reversed() { cairo_line_to(cr, Double(index) * step, yPos(values[index])) }
+                    cairo_close_path(cr)
+                    setColor(cr, foreground, 0.18)
+                    cairo_fill(cr)
+                }
+            }
             cairo_save(cr)
             var dashes: [Double] = [3, 2.5]
             cairo_set_dash(cr, &dashes, 2, 0)
             cairo_set_line_width(cr, 1)
             setColor(cr, foreground, 0.55)
             for (index, db) in asked.enumerated() {
+                if index == 0 { cairo_move_to(cr, 0, yPos(db)) } else { cairo_line_to(cr, Double(index) * step, yPos(db)) }
+            }
+            cairo_stroke(cr)
+            cairo_restore(cr)
+            if let gap, abs(gap.peak) >= 1, gap.peakIndex < asked.count, gap.peakIndex < values.count {
+                let px = Double(gap.peakIndex) * step
+                let applied = yPos(values[gap.peakIndex])
+                let wanted = yPos(asked[gap.peakIndex])
+                cairo_new_path(cr)
+                cairo_move_to(cr, px, applied)
+                cairo_line_to(cr, px, wanted)
+                setColor(cr, foreground, 0.5)
+                cairo_set_line_width(cr, 0.8)
+                cairo_stroke(cr)
+                let leftOfTick = px > plotW * 0.62
+                cairo_set_font_size(cr, 9)
+                setColor(cr, foreground, 0.7)
+                label(cr, String(format: "%.1f dB", abs(gap.peak)), x: px + (leftOfTick ? -4 : 4),
+                      y: (applied + wanted) / 2 + 3, align: leftOfTick ? .right : .left)
+                cairo_set_font_size(cr, 10)
+            }
+        }
+
+        if let reference {
+            cairo_save(cr)
+            var dashes: [Double] = [4, 3]
+            cairo_set_dash(cr, &dashes, 2, 0)
+            cairo_set_line_width(cr, 1.4)
+            setColor(cr, success, enabled ? 0.9 : 0.5)
+            for (index, db) in reference.enumerated() {
+                if index == 0 { cairo_move_to(cr, 0, yPos(db)) } else { cairo_line_to(cr, Double(index) * step, yPos(db)) }
+            }
+            cairo_stroke(cr)
+            cairo_restore(cr)
+        }
+
+        if let trimmed {
+            cairo_save(cr)
+            var dashes: [Double] = [1, 3]
+            cairo_set_dash(cr, &dashes, 2, 0)
+            cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND)
+            cairo_set_line_width(cr, 1.6)
+            setColor(cr, warning, enabled ? 0.95 : 0.5)
+            for (index, db) in trimmed.enumerated() {
                 if index == 0 { cairo_move_to(cr, 0, yPos(db)) } else { cairo_line_to(cr, Double(index) * step, yPos(db)) }
             }
             cairo_stroke(cr)

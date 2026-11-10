@@ -3,7 +3,7 @@ set -euo pipefail
 
 SRC="${QUDELIX_SRC:-$HOME/qudelix-port}"
 OUT="${1:-$HOME/qudelix-renders}"
-IMAGE="${QUDELIX_APP_IMAGE:-qudelix-app-img}"
+IMAGE="${QUDELIX_APP_IMAGE:-qudelix-app-build}"
 VOLUME="${QUDELIX_APP_VOLUME:-qudelix-app-render}"
 
 mkdir -p "$OUT"
@@ -12,6 +12,7 @@ docker run --rm --init \
   -e QUDELIX_APP=1 \
   -e HOST_UID="$(id -u)" \
   -e HOST_GID="$(id -g)" \
+  -e RENDER_SET="${RENDER_SET:-all}" \
   -v "$SRC:/src" \
   -v "$OUT:/out" \
   -v "$VOLUME:/build" \
@@ -30,7 +31,8 @@ docker run --rm --init \
         /build/debug/qudelix-app --render-page "$page" --render-out "/out/$name-$theme-$size.png" $flag --size "$size" "$@" \
         2>/dev/null
     }
-    for page in device eq presets library; do
+    if [ "$RENDER_SET" = "all" ]; then
+    for page in device eq presets library tune stage level; do
       for theme in light dark; do
         render "$page" "$page" "$theme" 900x640 --no-device
       done
@@ -107,6 +109,24 @@ docker run --rm --init \
           /build/debug/qudelix-app --render-page device --render-out "/out/app-menu-autostart-on-$theme-$size.png" $flag --size "$size" --demo --open-menu \
           2>/dev/null
       done
+    done
+    fi
+    for theme in light dark; do
+      render nav-wide device "$theme" 900x640 --demo
+      render nav-narrow device "$theme" 360x640 --demo --sidebar
+      render nav-narrow-content eq "$theme" 360x640 --demo
+      for size in 900x640 360x640; do
+        render eq-ghost eq "$theme" "$size" --demo --ghost
+        render eq-following eq "$theme" "$size" --demo --follow
+        render presets-custom presets "$theme" "$size" --demo --custom-eq
+        render eq-no-audio eq "$theme" "$size" --demo --no-audio
+        render stage-placeholder stage "$theme" "$size" --demo
+        render level-no-audio level "$theme" "$size" --demo --no-audio
+      done
+      render eq-ghost-tall eq "$theme" 360x1700 --demo --ghost
+      render eq-following-tall eq "$theme" 360x1700 --demo --follow
+      render eq-ghost-wide eq "$theme" 900x1500 --demo --ghost
+      render eq-following-wide eq "$theme" 900x1500 --demo --follow
     done
     /build/debug/qudelix-app --version
     /build/debug/qudelix-app --help

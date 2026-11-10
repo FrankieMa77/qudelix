@@ -10,6 +10,14 @@ enum AppWindow {
     private static var presetsPage: PresetsPage?
     private static var libraryPage: LibraryPage?
     private static var libraryDriver: LibraryRenderDriver?
+    private static var eqDriver: EqRenderDriver?
+    private static var audio: AudioStack?
+    private static var splitView: OpaquePointer?
+    private static var contentPage: UnsafeMutablePointer<AdwNavigationPage>?
+    private static var contentTitle: OpaquePointer?
+    private static var sidebarList: UnsafeMutablePointer<GtkWidget>?
+    private static var sidebarRows: [UnsafeMutablePointer<GtkWidget>] = []
+    private static var selectingRow = false
     private static let controller = WindowController()
     private static var tray: TrayService?
     private static var menuOpened = false
@@ -21,7 +29,8 @@ enum AppWindow {
     private static var noticeObserver: Int?
     private(set) static var mainWindow: UnsafeMutablePointer<GtkWidget>?
 
-    static func present(for application: some GPointer, options: LaunchOptions, model: AppModel) {
+    static func present(for application: some GPointer, options: LaunchOptions, model: AppModel, audio: AudioStack?) {
+        self.audio = audio
         if let existing = gtk_application_get_windows(application.raw.assumingMemoryBound(to: GtkApplication.self)),
            existing.pointee.data != nil {
             controller.show()
@@ -46,8 +55,9 @@ enum AppWindow {
                 self.devicePage = devicePage
                 content = devicePage.widget
             case .eq:
-                let eqPage = EqPage(model: model)
+                let eqPage = EqPage(model: model, audio: audio)
                 self.eqPage = eqPage
+                eqDriver = EqRenderDriver(options: options, model: model, audio: audio)
                 content = eqPage.widget
             case .presets:
                 let presetsPage = PresetsPage(model: model)
@@ -58,33 +68,45 @@ enum AppWindow {
                 self.libraryPage = libraryPage
                 libraryDriver = LibraryRenderDriver(options: options, page: libraryPage)
                 content = libraryPage.widget
+            case .tune, .stage, .level:
+                content = makePlaceholder(for: page, audio: audio)
             }
             adw_view_stack_add_titled_with_icon(stack.opaque, content, page.rawValue, page.title, page.icon)
         }
 
-        let switcher = adw_view_switcher_new()!
-        adw_view_switcher_set_stack(switcher.opaque, stack.opaque)
-        adw_view_switcher_set_policy(switcher.opaque, ADW_VIEW_SWITCHER_POLICY_WIDE)
+        let split = adw_navigation_split_view_new()!
+        splitView = split.opaque
+        adw_navigation_split_view_set_min_sidebar_width(split.opaque, 190)
+        adw_navigation_split_view_set_max_sidebar_width(split.opaque, 240)
+        adw_navigation_split_view_set_sidebar_width_fraction(split.opaque, 0.22)
 
-        let windowTitle = adw_window_title_new("Qudelix", nil)!
-        gtk_widget_set_visible(windowTitle.widget, 0)
-        let titleBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)!
-        gtk_box_append(titleBox.typed(GtkBox.self), switcher.widget)
-        gtk_box_append(titleBox.typed(GtkBox.self), windowTitle.widget)
+        let sidebarTitle = adw_window_title_new("Qudelix", nil)!
+        let sidebarHeader = adw_header_bar_new()!
+        adw_header_bar_set_title_widget(sidebarHeader.opaque, sidebarTitle.widget)
+        adw_header_bar_pack_end(sidebarHeader.opaque, AppMenu.makeButton())
+        let list = makeSidebar()
+        let listScroller = gtk_scrolled_window_new()!
+        gtk_scrolled_window_set_policy(listScroller.opaque, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+        gtk_scrolled_window_set_child(listScroller.opaque, list)
+        let sidebarToolbar = adw_toolbar_view_new()!
+        adw_toolbar_view_add_top_bar(sidebarToolbar.opaque, sidebarHeader.widget)
+        adw_toolbar_view_set_content(sidebarToolbar.opaque, listScroller.widget)
+        let sidebarPage = adw_navigation_page_new(sidebarToolbar.widget, "Qudelix")!
+        adw_navigation_split_view_set_sidebar(split.opaque, sidebarPage)
 
-        let header = adw_header_bar_new()!
-        adw_header_bar_set_title_widget(header.opaque, titleBox)
-        adw_header_bar_pack_end(header.opaque, AppMenu.makeButton())
+        let titleWidget = adw_window_title_new(AppPage.device.title, nil)!
+        contentTitle = titleWidget.opaque
+        let contentHeader = adw_header_bar_new()!
+        adw_header_bar_set_title_widget(contentHeader.opaque, titleWidget.widget)
+        let contentToolbar = adw_toolbar_view_new()!
+        adw_toolbar_view_add_top_bar(contentToolbar.opaque, contentHeader.widget)
+        adw_toolbar_view_set_content(contentToolbar.opaque, stack.widget)
+        let page = adw_navigation_page_new(contentToolbar.widget, AppPage.device.title)!
+        contentPage = page
+        adw_navigation_split_view_set_content(split.opaque, page)
 
-        let bar = adw_view_switcher_bar_new()!
-        adw_view_switcher_bar_set_stack(bar.opaque, stack.opaque)
-
-        let toolbar = adw_toolbar_view_new()!
-        adw_toolbar_view_add_top_bar(toolbar.opaque, header.widget)
-        adw_toolbar_view_add_bottom_bar(toolbar.opaque, bar.widget)
-        adw_toolbar_view_set_content(toolbar.opaque, stack.widget)
         let overlay = adw_toast_overlay_new()!
-        adw_toast_overlay_set_child(overlay.opaque, toolbar.widget)
+        adw_toast_overlay_set_child(overlay.opaque, split.widget)
         adw_application_window_set_content(window.raw.assumingMemoryBound(to: AdwApplicationWindow.self), overlay.widget)
         toasts = overlay.widget
         noticeObserver = model.addNoticeObserver { notice in
@@ -95,11 +117,12 @@ enum AppWindow {
         Signals.connect(window, signal: "destroy") { UiLifetime.windowDestroyed = true }
 
         installLibraryBreakpoint(window: window)
-        installNarrowBreakpoint(window: window, switcher: switcher, title: windowTitle.widget, bar: bar)
+        installNarrowBreakpoint(window: window, split: split)
         installShortcuts(application: application, window: window, stack: stack.opaque, model: model)
+        installNavigation(application: application, stack: stack.opaque)
 
         if let request = options.render {
-            adw_view_stack_set_visible_child_name(stack.opaque, request.page.rawValue)
+            navigate(to: request.page, showContent: !options.sidebar && !options.menuOpen)
         }
 
         mainWindow = window.widget
@@ -158,6 +181,7 @@ enum AppWindow {
             guard model.eq.state.selected == band else { return false }
         }
         if options.render?.page == .library { return libraryDriver?.ready() ?? true }
+        if options.render?.page == .eq, eqDriver?.ready() == false { return false }
         if options.menuOpen { return menuReady() }
         if options.dialog == "about" { return aboutReady() }
         if let kind = options.dialog {
@@ -195,6 +219,98 @@ enum AppWindow {
         g_value_init(&disabled, g_type_from_name("gboolean"))
         g_value_set_boolean(&disabled, 0)
         g_object_set_property(settings.object, "gtk-enable-animations", &disabled)
+    }
+
+    private static func makeSidebar() -> UnsafeMutablePointer<GtkWidget> {
+        let list = gtk_list_box_new()!
+        sidebarList = list
+        gtk_list_box_set_selection_mode(list.opaque, GTK_SELECTION_SINGLE)
+        gtk_widget_add_css_class(list, "navigation-sidebar")
+        Accessible.setLabel(list, "Pages")
+        sidebarRows = []
+        for page in AppPage.allCases {
+            let row = gtk_list_box_row_new()!
+            let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12)!
+            gtk_widget_set_margin_top(box, 6)
+            gtk_widget_set_margin_bottom(box, 6)
+            let icon = gtk_image_new_from_icon_name(page.icon)!
+            let label = gtk_label_new(page.title)!
+            gtk_label_set_xalign(label.opaque, 0)
+            gtk_widget_set_hexpand(label, 1)
+            gtk_box_append(box.typed(GtkBox.self), icon)
+            gtk_box_append(box.typed(GtkBox.self), label)
+            gtk_list_box_row_set_child(row.typed(GtkListBoxRow.self), box)
+            Accessible.setLabel(row, page.title)
+            gtk_widget_set_tooltip_text(row, page.summary)
+            gtk_list_box_append(list.opaque, row)
+            sidebarRows.append(row)
+        }
+        Signals.connect(list, signal: "row-selected") { _ in
+            onMain {
+                guard !selectingRow, let list = sidebarList,
+                      let row = gtk_list_box_get_selected_row(list.opaque) else { return }
+                let index = Int(gtk_list_box_row_get_index(row))
+                guard AppPage.allCases.indices.contains(index) else { return }
+                navigate(to: AppPage.allCases[index], showContent: true)
+            }
+        }
+        Signals.connect(list, signal: "row-activated") { _ in
+            onMain {
+                guard let splitView else { return }
+                adw_navigation_split_view_set_show_content(splitView, 1)
+            }
+        }
+        return list
+    }
+
+    static func navigate(to page: AppPage, showContent: Bool) {
+        guard let stackWidget else { return }
+        adw_view_stack_set_visible_child_name(stackWidget, page.rawValue)
+        if let contentTitle { adw_window_title_set_title(contentTitle, page.title) }
+        if let contentPage { adw_navigation_page_set_title(contentPage, page.title) }
+        if showContent, let splitView { adw_navigation_split_view_set_show_content(splitView, 1) }
+        if let list = sidebarList, let index = AppPage.allCases.firstIndex(of: page), sidebarRows.indices.contains(index),
+           let current = gtk_list_box_get_selected_row(list.opaque), Int(gtk_list_box_row_get_index(current)) != index {
+            selectingRow = true
+            gtk_list_box_select_row(list.opaque, sidebarRows[index].typed(GtkListBoxRow.self))
+            selectingRow = false
+        } else if let list = sidebarList, gtk_list_box_get_selected_row(list.opaque) == nil,
+                  let index = AppPage.allCases.firstIndex(of: page), sidebarRows.indices.contains(index) {
+            selectingRow = true
+            gtk_list_box_select_row(list.opaque, sidebarRows[index].typed(GtkListBoxRow.self))
+            selectingRow = false
+        }
+    }
+
+    private static func installNavigation(application: some GPointer, stack: OpaquePointer) {
+        let app = application.raw.assumingMemoryBound(to: GtkApplication.self)
+        for (index, page) in AppPage.allCases.enumerated() {
+            let action = g_simple_action_new(NavigationPages.actionName(for: page.rawValue), nil)!
+            Signals.onActivate(action) { onMain { navigate(to: page, showContent: true) } }
+            g_action_map_add_action(application.opaque, action.opaque)
+            if let accelerator = NavigationPages.accelerator(at: index) {
+                accelerator.withCString { value in
+                    var accelerators: [UnsafePointer<CChar>?] = [value, nil]
+                    gtk_application_set_accels_for_action(app, "app.\(NavigationPages.actionName(for: page.rawValue))", &accelerators)
+                }
+            }
+        }
+        for (name, offset, accelerator) in [("page-next", 1, "<Primary>Page_Down"), ("page-previous", -1, "<Primary>Page_Up")] {
+            let action = g_simple_action_new(name, nil)!
+            Signals.onActivate(action) {
+                onMain {
+                    let current = adw_view_stack_get_visible_child_name(stack).map { String(cString: $0) } ?? ""
+                    guard let id = NavigationPages.neighbour(of: current, offset: offset),
+                          let page = AppPage(rawValue: id) else { return }
+                    navigate(to: page, showContent: true)
+                }
+            }
+            g_action_map_add_action(application.opaque, action.opaque)
+            accelerator.withCString { value in
+                var accelerators: [UnsafePointer<CChar>?] = [value, nil]
+                gtk_application_set_accels_for_action(app, "app.\(name)", &accelerators)
+            }
+        }
     }
 
     private static func installShortcuts(application: some GPointer, window: some GPointer,
@@ -253,19 +369,13 @@ enum AppWindow {
         adw_application_window_add_breakpoint(window.raw.assumingMemoryBound(to: AdwApplicationWindow.self), breakpoint)
     }
 
-    private static func installNarrowBreakpoint(window: some GPointer, switcher: some GPointer,
-                                                title: UnsafeMutablePointer<GtkWidget>, bar: some GPointer) {
+    private static func installNarrowBreakpoint(window: some GPointer, split: some GPointer) {
         guard let condition = adw_breakpoint_condition_parse("max-width: 550sp") else { return }
         let breakpoint = adw_breakpoint_new(condition)!
-        var hidden = GValue()
-        g_value_init(&hidden, g_type_from_name("gboolean"))
-        g_value_set_boolean(&hidden, 0)
-        var revealed = GValue()
-        g_value_init(&revealed, g_type_from_name("gboolean"))
-        g_value_set_boolean(&revealed, 1)
-        adw_breakpoint_add_setter(breakpoint, switcher.object, "visible", &hidden)
-        adw_breakpoint_add_setter(breakpoint, bar.object, "reveal", &revealed)
-        adw_breakpoint_add_setter(breakpoint, title.object, "visible", &revealed)
+        var collapsed = GValue()
+        g_value_init(&collapsed, g_type_from_name("gboolean"))
+        g_value_set_boolean(&collapsed, 1)
+        adw_breakpoint_add_setter(breakpoint, split.object, "collapsed", &collapsed)
         for layout in libraryPage?.layouts ?? [] { layout.addNarrowSetters(to: breakpoint) }
         adw_application_window_add_breakpoint(window.raw.assumingMemoryBound(to: AdwApplicationWindow.self), breakpoint)
     }

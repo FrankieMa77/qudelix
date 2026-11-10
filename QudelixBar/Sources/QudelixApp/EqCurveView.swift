@@ -20,6 +20,9 @@ final class EqCurveView {
 
     var onSettled: ((Int) -> Void)?
 
+    private var referenceLine: AutomationLine?
+    private var trimLine: AutomationLine?
+
     private static let grabRadius = 20.0
 
     init(model: EqEditorModel) {
@@ -36,12 +39,22 @@ final class EqCurveView {
         install()
     }
 
+    func setLines(reference: AutomationLine?, trim: AutomationLine?) {
+        guard reference != referenceLine || trim != trimLine else { return }
+        referenceLine = reference
+        trimLine = trim
+        gtk_widget_queue_draw(area)
+    }
+
     func update(_ state: EqEditorState) {
         self.state = state
         let selected = state.selected.flatMap { state.bands.indices.contains($0) ? $0 : nil }
         var description = "\(state.bandCount) bands, \(state.enabled ? "equalizer on" : "equalizer off")"
         if let selected {
             description += ". Band \(selected + 1) selected: \(state.bands[selected].filter.label), \(state.bands[selected].summary)"
+        }
+        if let gap = state.divergence() {
+            description += String(format: ". The requested curve differs by up to %.1f dB", abs(gap.peak))
         }
         Accessible.setDescription(area, description)
         if let hovered, !state.bands.indices.contains(hovered) { self.hovered = nil }
@@ -131,7 +144,12 @@ final class EqCurveView {
         width = CurvePlot.width(w)
         height = CurvePlot.height(h)
         var drawing = CurveDrawing(area: area, bands: state.bands, enabled: state.enabled,
-                                   selected: state.selected, dragging: dragging, hovered: hovered)
+                                   selected: state.selected, dragging: dragging, hovered: hovered,
+                                   requested: state.requested)
+        let current = state
+        drawing.divergence = { count in current.divergence(count: count) }
+        drawing.referenceLine = referenceLine
+        drawing.trimLine = trimLine
         drawing.draw(cr, w, h)
         range = drawing.range
     }

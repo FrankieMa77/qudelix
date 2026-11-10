@@ -22,6 +22,11 @@ struct LaunchOptions {
     var menuOpen = false
     var toast: String?
     var eqState: String?
+    var sidebar = false
+    var ghost = false
+    var follow = false
+    var noAudio = false
+    var customEq = false
     var version = false
     var help = false
     var trayDump: String?
@@ -99,6 +104,16 @@ struct LaunchOptions {
             case "--dump-tray":
                 options.trayDump = value
                 index += 1
+            case "--sidebar":
+                options.sidebar = true
+            case "--ghost":
+                options.ghost = true
+            case "--follow":
+                options.follow = true
+            case "--custom-eq":
+                options.customEq = true
+            case "--no-audio":
+                options.noAudio = true
             case "--ai-draft":
                 options.aiDraft = true
             case "--size":
