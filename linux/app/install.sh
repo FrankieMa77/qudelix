@@ -52,6 +52,7 @@ printf 'installed %s\n' "$RULES_DIR/70-qudelix.rules"
 printf '\nReconnect the Qudelix 5K so the rule applies, then start Qudelix from the application menu.\n'
 printf 'The app needs GTK 4.14 or newer and libadwaita 1.5 or newer.\n'
 printf 'The top-bar icon needs a StatusNotifier host (see README.md).\n'
+printf 'Stage, Level and the Tune tones need PipeWire (see README.md).\n'
 if getent group plugdev >/dev/null 2>&1; then
     printf 'If the device is present but not readable, add your user to the plugdev group,\n'
     printf 'log out and back in, then reconnect the 5K:\n'

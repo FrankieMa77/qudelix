@@ -763,29 +763,27 @@ final class CLITests: XCTestCase {
         XCTAssertFalse(CLI.needsDevice(.version))
     }
 
-    func testVersionMatchesTheAppBuildScript() throws {
+    func testVersionMatchesTheLinuxVersionFile() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let script = try String(contentsOf: root.appendingPathComponent("build-app.sh"),
-                                encoding: .utf8)
-        let line = try XCTUnwrap(script.split(separator: "\n")
-            .first { $0.hasPrefix("VERSION=") })
-        XCTAssertEqual(String(line.dropFirst("VERSION=\"".count).dropLast()), CLI.version)
+            .deletingLastPathComponent()
+        let file = try String(contentsOf: root.appendingPathComponent("linux/VERSION"),
+                              encoding: .utf8)
+        XCTAssertEqual(file.trimmingCharacters(in: .whitespacesAndNewlines), CLI.version)
     }
 
-    func testTheMetainfoReleaseMatchesTheAppBuildScript() throws {
+    func testTheMetainfoReleaseMatchesTheLinuxVersionFile() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let script = try String(contentsOf: root.appendingPathComponent("build-app.sh"),
-                                encoding: .utf8)
-        let line = try XCTUnwrap(script.split(separator: "\n").first { $0.hasPrefix("VERSION=") })
-        let version = String(line.dropFirst("VERSION=\"".count).dropLast())
+        let version = try String(contentsOf: root.deletingLastPathComponent()
+            .appendingPathComponent("linux/VERSION"), encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let metainfo = try String(
             contentsOf: root.deletingLastPathComponent()
                 .appendingPathComponent("linux/app/io.github.FrankieMa77.Qudelix.metainfo.xml"),

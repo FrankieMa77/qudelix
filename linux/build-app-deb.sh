@@ -14,9 +14,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-VERSION="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$REPO_ROOT/QudelixBar/build-app.sh" | head -1)"
+VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/linux/VERSION")"
 if [[ -z "$VERSION" ]]; then
-  echo "build-app-deb.sh: no VERSION in QudelixBar/build-app.sh" >&2
+  echo "build-app-deb.sh: no version in linux/VERSION" >&2
   exit 1
 fi
 ARCH="$(dpkg --print-architecture)"
@@ -48,13 +48,13 @@ if [[ -z "$SHLIBS" ]]; then
 fi
 SHLIBS="$(printf '%s' "$SHLIBS" | tr ',' '\n' | sed 's/^ *//' | grep -Ev '^(libgtk-4-1|libadwaita-1-0)( |$)' | paste -sd, - | sed 's/,/, /g')"
 SHLIBS="$SHLIBS, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5)"
-DEPENDS="qudelix (>= $VERSION), $SHLIBS"
+DEPENDS="qudelix (>= 1:$VERSION), $SHLIBS"
 
 INSTALLED_KB="$(du -sk "$PKG" | cut -f1)"
 
 cat > "$PKG/DEBIAN/control" <<EOT
 Package: qudelix-app
-Version: $VERSION
+Version: 1:$VERSION
 Architecture: $ARCH
 Maintainer: FrankieMa77 <55186546+FrankieMa77@users.noreply.github.com>
 Installed-Size: $INSTALLED_KB

@@ -13,9 +13,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-VERSION="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$REPO_ROOT/QudelixBar/build-app.sh" | head -1)"
+VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/linux/VERSION")"
 if [[ -z "$VERSION" ]]; then
-  echo "build-tarball.sh: no VERSION in QudelixBar/build-app.sh" >&2
+  echo "build-tarball.sh: no version in linux/VERSION" >&2
   exit 1
 fi
 NAME="qudelix-${VERSION}-linux-$(uname -m)"

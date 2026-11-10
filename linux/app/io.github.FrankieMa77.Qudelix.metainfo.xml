@@ -34,9 +34,10 @@
     <category>Settings</category>
   </categories>
   <releases>
-    <release version="1.6.3" date="2026-11-10"/>
-    <release version="1.6.2" date="2026-11-10"/>
-    <release version="1.6.1" date="2026-11-09"/>
-    <release version="1.6.0" date="2026-11-09"/>
+    <release version="0.7.0" date="2026-11-11">
+      <description>
+        <p>New Stage, Level and Tune pages, Auto-fit and Auto-trim, a sidebar, more on the EQ and Presets pages, loading presets from a file, and Bluetooth fixes. Stage, Level and the Tune tones need PipeWire.</p>
+      </description>
+    </release>
   </releases>
 </component>

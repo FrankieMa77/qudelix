@@ -13,9 +13,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-VERSION="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$REPO_ROOT/QudelixBar/build-app.sh" | head -1)"
+VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/linux/VERSION")"
 if [[ -z "$VERSION" ]]; then
-  echo "build-deb.sh: no VERSION in QudelixBar/build-app.sh" >&2
+  echo "build-deb.sh: no version in linux/VERSION" >&2
   exit 1
 fi
 ARCH="$(dpkg --print-architecture)"
@@ -35,7 +35,7 @@ INSTALLED_KB="$(du -sk "$PKG" | cut -f1)"
 
 cat > "$PKG/DEBIAN/control" <<EOT
 Package: qudelix
-Version: $VERSION
+Version: 1:$VERSION
 Architecture: $ARCH
 Maintainer: FrankieMa77 <55186546+FrankieMa77@users.noreply.github.com>
 Installed-Size: $INSTALLED_KB
