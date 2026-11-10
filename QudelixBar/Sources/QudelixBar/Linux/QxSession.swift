@@ -151,7 +151,7 @@ final class QxSession {
         throw QxSessionError.timedOut("the handshake reply")
     }
 
-    func close() {
+    func close(waitForLink: Bool = false) {
         queue.sync {
             guard !self.closed else { return }
             self.closed = true
@@ -159,8 +159,14 @@ final class QxSession {
             for continuation in self.streams.values { continuation.finish() }
             self.streams.removeAll()
         }
-        link.stop()
+        if waitForLink {
+            link.stopAndWait(timeout: Self.linkStopWait)
+        } else {
+            link.stop()
+        }
     }
+
+    static let linkStopWait: TimeInterval = 2
 
     var isConnected: Bool { link.isConnected }
 

@@ -259,9 +259,9 @@ final class CLITests: XCTestCase {
                        "BlueZ is not on the system bus")
     }
 
-    func testBluetoothGetsThirtySecondsUnlessTimeoutIsGiven() {
+    func testBluetoothGetsFortySecondsUnlessTimeoutIsGiven() {
         XCTAssertEqual(QxLinkTimeouts.appearance(kind: .usb, explicit: nil, fallback: 5), 5)
-        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: nil, fallback: 5), 30)
+        XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: nil, fallback: 5), 40)
         XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: 12, fallback: 12), 12)
         XCTAssertEqual(QxLinkTimeouts.appearance(kind: .usb, explicit: 12, fallback: 12), 12)
         XCTAssertEqual(QxLinkTimeouts.appearance(kind: .bluetooth, explicit: nil, fallback: 3,
@@ -280,6 +280,19 @@ final class CLITests: XCTestCase {
                                                      reason: nil), waiting.description)
         XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .bluetooth, sawUsbNode: false,
                                                      reason: ""), waiting.description)
+    }
+
+    func testTheCLIWaitsForTheLinkToStopBeforeItReturns() async {
+        let failing = FakeLink(kind: .bluetooth)
+        failing.onSend = { _, _ in }
+        _ = await QudelixCLI.run(arguments: ["--timeout", "0.2", "status"], makeLinks: { _ in [failing] })
+        XCTAssertEqual(failing.stopWaits, [QxSession.linkStopWait])
+        let working = QxFixtures.answeringLink()
+        working.autoConnectOnStart = true
+        let exit = await QudelixCLI.run(arguments: ["--timeout", "2", "status"], makeLinks: { _ in [working] })
+        XCTAssertEqual(exit, CLIExit.ok)
+        XCTAssertEqual(working.stopWaits, [QxSession.linkStopWait])
+        XCTAssertLessThanOrEqual(QxSession.linkStopWait, 2)
     }
 
     func testProbeCarriesTheBluetoothSection() throws {

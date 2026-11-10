@@ -51,7 +51,7 @@ package struct AppDeviceProbe: Sendable {
         let report = Probe.report(.system())
         let usb = report.nodes.contains { $0.isQudelix }
         let present = BluezPresence.resolve(usb: usb, pinned: BluezTransport.pinnedDevicePath() != nil,
-                                            bluez: { BluezPresence.system().qudelixKnown() })
+                                            bluez: { BluezPresence.system().qudelixPresent() })
         return AppDeviceProbe(present: present, advice: Probe.permissionAdvice(report))
     }
 }
@@ -389,7 +389,8 @@ package final class AppModel {
 
         var connected: QxSession?
         var failures: [Error] = []
-        var reasons: [String] = []
+        var attention: String?
+        var bluetoothFailed = false
         for link in links {
             let candidate = QxSession(link: link, timeout: connectTimeout)
             do {
@@ -400,7 +401,10 @@ package final class AppModel {
                 break
             } catch {
                 failures.append(error)
-                if let reason = link.failureReason { reasons.append(reason) }
+                if link.kind == .bluetooth {
+                    bluetoothFailed = true
+                    if link.failureNeedsAttention, let reason = link.failureReason { attention = reason }
+                }
                 candidate.close()
             }
         }
@@ -412,11 +416,10 @@ package final class AppModel {
                 return
             }
             let missing = failures.allSatisfy { QudelixCLI.isMissingTransport($0) }
-            let lastReason = reasons.last
-            if missing { failureStreak = 0 } else { backOff() }
+            if missing, !bluetoothFailed { failureStreak = 0 } else { backOff() }
             publish {
                 $0.status = nil
-                if missing, let reason = lastReason {
+                if missing, let reason = attention {
                     $0.connection = .error(reason)
                 } else if missing {
                     $0.connection = .searching

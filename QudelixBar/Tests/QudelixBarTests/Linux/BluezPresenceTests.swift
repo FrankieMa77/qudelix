@@ -4,8 +4,9 @@ import XCTest
 final class BluezPresenceTests: XCTestCase {
     private struct Down: Error {}
 
-    private func device(uuids: [String], paired: Bool = true) -> [String: [String: DBusValue]] {
-        ["org.bluez.Device1": ["UUIDs": DBusValue.strings(uuids), "Paired": .boolean(paired)]]
+    private func device(uuids: [String], paired: Bool = true, connected: Bool = true) -> [String: [String: DBusValue]] {
+        ["org.bluez.Device1": ["UUIDs": DBusValue.strings(uuids), "Paired": .boolean(paired),
+                              "Connected": .boolean(connected)]]
     }
 
     private func presence(owner: Bool = true, objects: BluezPresence.Objects? = nil,
@@ -24,14 +25,24 @@ final class BluezPresenceTests: XCTestCase {
             "/org/bluez/hci0/dev_other": device(uuids: ["0000110a-0000-1000-8000-00805f9b34fb"]),
             "/org/bluez/hci0/dev_5K": device(uuids: [GaiaFraming.serviceUUID.uppercased()]),
         ]
-        XCTAssertTrue(presence(objects: objects).qudelixKnown())
+        XCTAssertTrue(presence(objects: objects).qudelixPresent())
     }
 
-    func testAKnownButUnpairedQudelixCountsLikeTheTransportRule() {
+    func testAConnectedButUnpairedQudelixCountsLikeTheTransportRule() {
         let objects: BluezPresence.Objects = [
             "/org/bluez/hci0/dev_5K": device(uuids: [GaiaFraming.serviceUUID], paired: false),
         ]
-        XCTAssertTrue(presence(objects: objects).qudelixKnown())
+        XCTAssertTrue(presence(objects: objects).qudelixPresent())
+    }
+
+    func testAPairedQudelixThatIsOffIsNotPresent() {
+        let objects: BluezPresence.Objects = [
+            "/org/bluez/hci0/dev_5K": device(uuids: [GaiaFraming.serviceUUID], connected: false),
+        ]
+        XCTAssertFalse(presence(objects: objects).qudelixPresent())
+        var advertising = objects
+        advertising["/org/bluez/hci0/dev_5K"]?["org.bluez.Device1"]?["RSSI"] = .int16(-55)
+        XCTAssertTrue(presence(objects: advertising).qudelixPresent())
     }
 
     func testOtherDevicesAndMissingPropertiesAreNotPresent() {
@@ -41,21 +52,21 @@ final class BluezPresenceTests: XCTestCase {
             "/org/bluez/hci0/dev_b": ["org.bluez.Device1": [:]],
             "/org/bluez/hci0/dev_c": ["org.bluez.Battery1": ["UUIDs": DBusValue.strings([GaiaFraming.serviceUUID])]],
         ]
-        XCTAssertFalse(presence(objects: objects).qudelixKnown())
-        XCTAssertFalse(presence(objects: [:]).qudelixKnown())
+        XCTAssertFalse(presence(objects: objects).qudelixPresent())
+        XCTAssertFalse(presence(objects: [:]).qudelixPresent())
     }
 
     func testAbsentBluezStaysSilentAndNeverListsObjects() {
         var calls = 0
         let result = presence(owner: false, objects: [
             "/org/bluez/hci0/dev_5K": device(uuids: [GaiaFraming.serviceUUID]),
-        ], asked: { calls += 1 }).qudelixKnown()
+        ], asked: { calls += 1 }).qudelixPresent()
         XCTAssertFalse(result)
         XCTAssertEqual(calls, 1)
     }
 
     func testABusErrorMeansNotPresent() {
-        XCTAssertFalse(presence(objects: nil).qudelixKnown())
+        XCTAssertFalse(presence(objects: nil).qudelixPresent())
     }
 
     func testUsbOrPinnedDecideWithoutAskingBluez() {

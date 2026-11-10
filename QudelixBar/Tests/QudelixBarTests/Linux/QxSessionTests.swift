@@ -32,7 +32,16 @@ final class FakeLink: QxLink {
         if autoConnectOnStart { bringUp() }
     }
 
+    var failureReason: String?
+    var failureNeedsAttention = false
+    private(set) var stopWaits: [TimeInterval] = []
+
     func stop() { stopped = true }
+
+    func stopAndWait(timeout: TimeInterval) {
+        stopWaits.append(timeout)
+        stopped = true
+    }
 
     func send(_ cmd: QxCmd, _ data: [UInt8]) {
         lock.lock()

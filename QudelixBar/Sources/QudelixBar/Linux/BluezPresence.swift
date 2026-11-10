@@ -7,10 +7,10 @@ struct BluezPresence {
     var nameHasOwner: () -> Bool
     var managedObjects: () throws -> Objects
 
-    func qudelixKnown() -> Bool {
+    func qudelixPresent() -> Bool {
         guard nameHasOwner() else { return false }
         guard let objects = try? managedObjects() else { return false }
-        return objects.values.contains { BluezTransport.looksLikeQudelix($0) }
+        return objects.values.contains { BluezLinkPlan.isPresent($0) }
     }
 
     static func resolve(usb: Bool, pinned: Bool, bluez: () -> Bool) -> Bool {

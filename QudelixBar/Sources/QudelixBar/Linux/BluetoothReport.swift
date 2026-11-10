@@ -133,6 +133,10 @@ enum BluetoothProbe {
 }
 
 enum BluezLinkFailure {
+    static func notConnected(alias: String) -> String {
+        "found \(alias), but it is not connected — connect it in your Bluetooth settings first"
+    }
+
     static func text(alias: String, connectedForAudio: Bool, detail: String) -> String {
         "found \(alias)" + (connectedForAudio ? " (connected for audio)" : "")
             + ", but its Bluetooth LE control link did not come up: \(detail)"

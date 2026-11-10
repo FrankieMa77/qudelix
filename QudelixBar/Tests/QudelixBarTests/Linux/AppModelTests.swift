@@ -527,4 +527,68 @@ final class AppModelTests: XCTestCase {
         await model.shutdown()
         XCTAssertFalse(link.sentCommands.contains(.saveAll))
     }
+
+    private func settle() async {
+        try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    @MainActor
+    private func bluetoothModel(attention: Bool, built: @escaping () -> Void) -> AppModel {
+        let url = lockURL
+        let model = AppModel(makeLinks: {
+                                 built()
+                                 let link = FakeLink(kind: .bluetooth)
+                                 link.onSend = { _, _ in }
+                                 link.failureReason = "found Qudelix-5K, but it is not connected"
+                                 link.failureNeedsAttention = attention
+                                 return [link]
+                             },
+                             acquireLock: { QxInstanceLock.acquire(at: url) },
+                             lockProblem: { QxInstanceLock.unavailability(at: url) },
+                             probeDevice: { AppDeviceProbe(present: true) },
+                             clock: clock,
+                             retryInterval: 2,
+                             connectTimeout: 2,
+                             bluetoothConnectTimeout: 0.05)
+        model.addObserver { [weak self] state in self?.states.append(state.connection) }
+        return model
+    }
+
+    @MainActor
+    func testABluetoothAttemptThatSawNothingStaysSearchingAndBacksOff() async {
+        var attempts = 0
+        let model = bluetoothModel(attention: false, built: { attempts += 1 })
+        model.start()
+        await until("first attempt") { attempts == 1 }
+        await until("searching") { model.state.connection == .searching }
+        await settle()
+        clock.advance(2)
+        await until("second attempt") { attempts == 2 }
+        await settle()
+        clock.advance(2)
+        await settle()
+        XCTAssertEqual(attempts, 2)
+        clock.advance(2)
+        await until("third attempt") { attempts == 3 }
+        XCTAssertFalse(states.contains { if case .error = $0 { return true } else { return false } })
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testABluetoothFailureOnAnAudioConnectedDeviceShowsTheReasonAndBacksOff() async {
+        var attempts = 0
+        let model = bluetoothModel(attention: true, built: { attempts += 1 })
+        model.start()
+        await until("error") {
+            model.state.connection == .error("found Qudelix-5K, but it is not connected")
+        }
+        await settle()
+        clock.advance(2)
+        await until("second attempt") { attempts == 2 }
+        await settle()
+        clock.advance(2)
+        await settle()
+        XCTAssertEqual(attempts, 2)
+        await model.shutdown()
+    }
 }

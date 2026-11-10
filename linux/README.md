@@ -160,7 +160,7 @@ flags:
   --usb                     use the USB link
   --ble                     use the Bluetooth link
   --json                    print one JSON object instead of text
-  --timeout <seconds>       how long to wait for the device (default 5, 30 for Bluetooth)
+  --timeout <seconds>       how long to wait for the device (default 5, 40 for Bluetooth)
   --verbose                 mirror the packet log to stderr
   --help                    print this text
   --version                 print the version
@@ -220,8 +220,10 @@ test has been run against a real Qudelix 5K over Bluetooth. Use `--usb` for ever
 has to work today.
 
 Connect the 5K in your system Bluetooth settings first. Connected as headphones is fine: the
-audio connection is left alone and the app opens only the Bluetooth LE control link next to it.
-Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output
+app never opens or closes the audio connection and opens only the Bluetooth LE control link
+next to it. If the 5K is not connected, the app does not connect it for you. Opening the
+control link can take up to 40 seconds (10 s scan, 15 s connect, 10 s for the GATT services,
+plus the handshake); `--timeout` overrides that. Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output
 in a bug report; its Bluetooth section lists what BlueZ knows about the 5K without connecting
 to anything.
 

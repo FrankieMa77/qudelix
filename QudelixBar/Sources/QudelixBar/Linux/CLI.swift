@@ -86,7 +86,7 @@ enum CLI {
       --usb                     use the USB link
       --ble                     use the Bluetooth link
       --json                    print one JSON object instead of text
-      --timeout <seconds>       how long to wait for the device (default 5, 30 for Bluetooth)
+      --timeout <seconds>       how long to wait for the device (default 5, 40 for Bluetooth)
       --verbose                 mirror the packet log to stderr
       --help                    print this text
       --version                 print the version
@@ -420,7 +420,7 @@ package enum QudelixCLI {
                 break
             } catch {
                 failures.append((link.kind, error, link.failureReason))
-                session.close()
+                session.close(waitForLink: true)
             }
         }
         guard let session = connected else {
@@ -441,7 +441,7 @@ package enum QudelixCLI {
             return failures.allSatisfy { isMissingTransport($0.error) }
                 ? CLIExit.noTransport : CLIExit.deviceError
         }
-        defer { session.close() }
+        defer { session.close(waitForLink: true) }
 
         do {
             try await execute(invocation, session)

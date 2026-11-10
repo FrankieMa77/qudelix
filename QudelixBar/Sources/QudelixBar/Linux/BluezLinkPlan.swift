@@ -7,13 +7,12 @@ enum BluezLinkStep: Equatable {
     case connectBearer
     case scanForLE
     case connectDevice
-    case noLEAdvertisement
+    case notConnected
 }
 
 enum BluezStopAction: Equatable {
     case none
     case disconnectBearer
-    case disconnectDevice
 }
 
 enum BluezLinkPlan {
@@ -25,6 +24,12 @@ enum BluezLinkPlan {
     static let characteristicInterface = "org.bluez.GattCharacteristic1"
     static let nameMarker = "qudelix"
     static let scanSeconds: TimeInterval = 10
+    static let connectCallSeconds: TimeInterval = 15
+    static let characteristicsSeconds: TimeInterval = 10
+    static let handshakeAllowanceSeconds: TimeInterval = 5
+    static let appearanceSeconds: TimeInterval =
+        scanSeconds + connectCallSeconds + characteristicsSeconds + handshakeAllowanceSeconds
+    static let presenceProperty = "RSSI"
 
     static func looksLikeQudelix(_ interfaces: [String: [String: DBusValue]]) -> Bool {
         guard let device = interfaces[deviceInterface] else { return false }
@@ -37,6 +42,13 @@ enum BluezLinkPlan {
         return ["Name", "Alias"].contains { key in
             (properties[key]?.stringValue ?? "").lowercased().contains(nameMarker)
         }
+    }
+
+    static func isPresent(_ interfaces: [String: [String: DBusValue]]) -> Bool {
+        guard looksLikeQudelix(interfaces), let device = interfaces[deviceInterface] else { return false }
+        if device["Connected"]?.boolValue == true { return true }
+        if interfaces[leBearerInterface]?["Connected"]?.boolValue == true { return true }
+        return device[presenceProperty] != nil
     }
 
     static func isConnected(_ path: String, in objects: Objects) -> Bool {
@@ -76,22 +88,23 @@ enum BluezLinkPlan {
         return bearer["Connected"]?.boolValue == true ? .connected : .disconnected
     }
 
-    static func step(objects: Objects, device: String, scanned: Bool, seen: Bool) -> BluezLinkStep {
+    static func step(objects: Objects, device: String, scanned: Bool) -> BluezLinkStep {
         if characteristics(under: device, in: objects) != nil { return .useCharacteristics }
         switch bearerState(of: device, in: objects) {
         case .connected: return .awaitCharacteristics
         case .disconnected: return .connectBearer
         case .unknown:
             guard scanned else { return .scanForLE }
-            return seen || isConnected(device, in: objects) ? .connectDevice : .noLEAdvertisement
+            return isConnected(device, in: objects) ? .connectDevice : .notConnected
         }
     }
 
-    static func stopAction(deviceConnectedWhenFound: Bool, calledDeviceConnect: Bool,
-                           calledBearerConnect: Bool) -> BluezStopAction {
-        if calledDeviceConnect, !deviceConnectedWhenFound { return .disconnectDevice }
-        if calledBearerConnect { return .disconnectBearer }
-        return .none
+    static func stopAction(calledBearerConnect: Bool) -> BluezStopAction {
+        calledBearerConnect ? .disconnectBearer : .none
+    }
+
+    static func isBenign(_ error: DBusCallError, _ names: String...) -> Bool {
+        names.contains { error.name.hasSuffix($0) }
     }
 
     static func report(onBus: Bool, objects: Objects) -> BluetoothReport {

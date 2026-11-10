@@ -14,17 +14,21 @@ package protocol QxLink: AnyObject {
     var onLinkBusy: ((String) -> Void)? { get set }
     var onPacket: (([UInt8]) -> Void)? { get set }
     var failureReason: String? { get }
+    var failureNeedsAttention: Bool { get }
     func start()
     func stop()
+    func stopAndWait(timeout: TimeInterval)
     func send(_ cmd: QxCmd, _ data: [UInt8])
 }
 
 package extension QxLink {
     var failureReason: String? { nil }
+    var failureNeedsAttention: Bool { false }
+    func stopAndWait(timeout: TimeInterval) { stop() }
 }
 
 package enum QxLinkTimeouts {
-    package static let bluetoothAppearance: TimeInterval = 30
+    package static let bluetoothAppearance: TimeInterval = 40
 
     static func appearance(kind: QxLinkKind, explicit: TimeInterval?, fallback: TimeInterval,
                            bluetooth: TimeInterval = QxLinkTimeouts.bluetoothAppearance) -> TimeInterval {
