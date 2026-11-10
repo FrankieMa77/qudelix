@@ -134,6 +134,17 @@ enum BluetoothProbe {
     private static func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
 }
 
+enum BluezDropKind: Equatable {
+    case bearer
+    case device
+}
+
+struct BluezDrop: Equatable {
+    let kind: BluezDropKind
+    let name: String
+    let message: String
+}
+
 enum BluezLinkFailure {
     static func notConnected(alias: String) -> String {
         "found \(alias), but it is not connected — connect it in your Bluetooth settings first"
@@ -145,6 +156,30 @@ enum BluezLinkFailure {
 
     static func servicesNotLoaded(seconds: Int) -> String {
         "the 5K's Bluetooth services did not finish loading within \(seconds) s"
+    }
+
+    static func dropReason(name: String, message: String) -> String {
+        switch name.split(separator: ".").last.map(String.init) ?? name {
+        case "Timeout": return "connection timeout"
+        case "Remote": return "the 5K closed it"
+        case "Local": return "this computer closed it"
+        case "Authentication": return "authentication failure"
+        case "Suspend": return "this computer was going to sleep"
+        default: return message.isEmpty ? "no reason given" : message
+        }
+    }
+
+    static func dropSentence(_ drop: BluezDrop) -> String {
+        let reason = dropReason(name: drop.name, message: drop.message)
+        switch drop.kind {
+        case .bearer: return "the LE link dropped (\(reason))"
+        case .device: return "the 5K disconnected (\(reason))"
+        }
+    }
+
+    static func detail(_ detail: String, drop: BluezDrop?) -> String {
+        guard let drop else { return detail }
+        return detail + "; " + dropSentence(drop)
     }
 
     static func text(alias: String, connectedForAudio: Bool, detail: String) -> String {

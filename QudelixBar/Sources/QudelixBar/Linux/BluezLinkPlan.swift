@@ -93,6 +93,18 @@ enum BluezLinkPlan {
         return characteristics(under: device, in: objects)
     }
 
+    static func parseDrop(interface: String, path: String, arguments: [DBusValue],
+                          devicePath: String?) -> BluezDrop? {
+        guard let devicePath, path == devicePath, arguments.count >= 2,
+              let name = arguments[0].stringValue,
+              let message = arguments[1].stringValue else { return nil }
+        switch interface {
+        case leBearerInterface: return BluezDrop(kind: .bearer, name: name, message: message)
+        case "org.bluez.Device1": return BluezDrop(kind: .device, name: name, message: message)
+        default: return nil
+        }
+    }
+
     static func isNotConnected(_ error: DBusCallError) -> Bool {
         isBenign(error, "NotConnected")
             || (error.name.hasSuffix("Failed") && error.message.contains("Not connected"))

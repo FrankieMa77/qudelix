@@ -50,6 +50,7 @@ final class BluezTransport: QxLink {
     private var weConnectedBearer = false
     private var bearerConnectUnavailable = false
     private var linkStale = false
+    private var lastDrop: BluezDrop?
     private var bringUpPending = false
     private var storedFailure: String?
     private var storedNeedsAttention = false
@@ -159,6 +160,7 @@ final class BluezTransport: QxLink {
     private func stop(completion: (() -> Void)?) {
         lock.lock()
         stopping = true
+        lastDrop = nil
         let gate = resolvedGate
         lock.unlock()
         gate?.signal()
@@ -297,13 +299,18 @@ final class BluezTransport: QxLink {
             sawGoodReply = false
             consecutiveTxErrors = 0
             reconnectDelay = Self.minReconnectDelay
+            lastDrop = nil
             announcedUnusable = false
             lock.unlock()
         } catch {
             if let callError = error as? DBusCallError, BluezLinkPlan.isNotConnected(callError) {
                 linkStale = true
             }
-            let detail = "the Bluetooth channels could not be opened (\(error))"
+            lock.lock()
+            let drop = lastDrop
+            lock.unlock()
+            let detail = BluezLinkFailure.detail("the Bluetooth channels could not be opened (\(error))",
+                                                 drop: drop)
             setFailure(BluezLinkFailure.text(alias: deviceAlias, connectedForAudio: connectedNow,
                                              detail: detail), needsAttention: connectedNow)
             log("BLE cannot open the GAIA channels: \(error)")
@@ -327,6 +334,10 @@ final class BluezTransport: QxLink {
             + "interface='\(Self.propertiesInterface)',member='PropertiesChanged'")
         try? connection.addMatch("type='signal',sender='\(Self.bus)',"
             + "interface='\(Self.objectManagerInterface)',member='InterfacesAdded'")
+        try? connection.addMatch("type='signal',sender='\(Self.bus)',"
+            + "interface='\(Self.bearerInterface)',member='Disconnected'")
+        try? connection.addMatch("type='signal',sender='\(Self.bus)',"
+            + "interface='\(Self.deviceInterface)',member='Disconnected'")
         connection.startSignalPump()
         self.connection = connection
         return connection
@@ -354,8 +365,12 @@ final class BluezTransport: QxLink {
         }
 
         func fail(_ detail: String) -> (command: String, response: String)? {
-            failWith(BluezLinkFailure.text(alias: deviceAlias, connectedForAudio: connectedNow,
-                                           detail: detail), needsAttention: connectedNow)
+            lock.lock()
+            let drop = lastDrop
+            lock.unlock()
+            return failWith(BluezLinkFailure.text(alias: deviceAlias, connectedForAudio: connectedNow,
+                                                  detail: BluezLinkFailure.detail(detail, drop: drop)),
+                            needsAttention: connectedNow)
         }
 
         func awaitCharacteristics() -> (command: String, response: String)? {
@@ -731,6 +746,21 @@ final class BluezTransport: QxLink {
                   let device = interfaces[Self.deviceInterface]?.dictionaryValue,
                   BluezLinkPlan.looksLikeQudelix(properties: device) else { return }
             requestBringUp()
+        case "Disconnected":
+            guard let drop = BluezLinkPlan.parseDrop(interface: signal.interface, path: signal.path,
+                                                     arguments: signal.arguments,
+                                                     devicePath: devicePath) else { return }
+            lock.lock()
+            let skip = stopping
+            if !skip { lastDrop = drop }
+            lock.unlock()
+            guard !skip else { return }
+            switch drop.kind {
+            case .bearer:
+                log("BLE LE link dropped on \(signal.path): \(drop.message) (\(drop.name))")
+            case .device:
+                log("BLE \(signal.path) disconnected: \(drop.message) (\(drop.name))")
+            }
         default:
             return
         }

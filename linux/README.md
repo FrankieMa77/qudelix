@@ -234,6 +234,9 @@ connection is never touched.
 If `status` says BlueZ is still holding the 5K's control channel, restart the Bluetooth service
 (`sudo systemctl restart bluetooth`, or your init system's equivalent) and try again.
 
+With `--verbose`, the log also says why the LE link dropped when BlueZ reports it (timeout, closed
+by the 5K, closed by this computer, authentication failure).
+
 ## Uninstall
 
 Debian and Ubuntu:
