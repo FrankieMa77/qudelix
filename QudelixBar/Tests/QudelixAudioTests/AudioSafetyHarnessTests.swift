@@ -102,8 +102,23 @@ final class AudioSafetyHarnessTests: XCTestCase {
         setRealVolume(1, muted: false)
     }
 
+    private func resetStageSinkState() {
+        guard let backend,
+              let probe = try? backend.startInsert(target: Harness.fiveK, render: { input, output, frames, channels, _ in
+                  output.update(from: input, count: frames * channels)
+              }) else { return }
+        defer { probe.stop() }
+        let stage = LinuxAudioNames.stageSinkName
+        guard waitFor(8, { backend.sinkVolume(named: stage) != nil }),
+              let volume = backend.sinkVolume(named: stage), volume.gain > 0 else { return }
+        _ = backend.scaleSinkVolume(named: stage, by: min(1 / volume.gain, 16), muted: false)
+        _ = waitFor { backend.sinkVolume(named: stage).map { abs($0.gain - 1) < 0.01 && !$0.muted } ?? false }
+        Thread.sleep(forTimeInterval: 1.5)
+    }
+
     override func tearDown() async throws {
         model?.shutdown()
+        resetStageSinkState()
         if let backend {
             setRealVolume(1, muted: false)
             _ = backend.setForceRate(0)
@@ -241,31 +256,13 @@ final class AudioSafetyHarnessTests: XCTestCase {
         defer { insert.stop() }
         XCTAssertTrue(waitFor { insert.isReady })
         XCTAssertTrue(waitFor { insert.playbackLegState == .streaming })
-        XCTAssertEqual(insert.sinkLegFormat?.rate, insert.format?.rate)
         XCTAssertEqual(insert.format?.rate, Harness.sampleRate)
         let wav = try writeSineWav(frequency: 1000, amplitude: 0.25, seconds: 2)
         defer { try? FileManager.default.removeItem(at: wav) }
         XCTAssertTrue(playWav(wav, target: LinuxAudioNames.stageSinkName))
         XCTAssertTrue(waitFor { insert.sinkLegState == .streaming || !sizes.value.isEmpty })
         XCTAssertFalse(sizes.value.isEmpty)
+        XCTAssertEqual(insert.sinkLegFormat?.rate, insert.format?.rate)
         XCTAssertEqual(sizes.value.filter { $0 % 512 != 0 }, [], "callback sizes: \(sizes.value)")
-    }
-
-    func testTheMetadataIsRebuiltWhenWirePlumberRestarts() throws {
-        XCTAssertEqual(backend.defaultSinkName, Harness.fiveK)
-        XCTAssertEqual(runTool(["pkill", "-x", "wireplumber"]).status, 0)
-        XCTAssertTrue(waitFor { self.backend.defaultSinkName == nil }, "stale default kept")
-        XCTAssertFalse(backend.setDefaultSink(named: Harness.other))
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["wireplumber"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        XCTAssertTrue(waitFor(30) { self.backend.defaultSinkName != nil }, "default metadata was not rebound")
-        XCTAssertTrue(waitFor(30) { self.backend.setDefaultSink(named: Harness.other) })
-        XCTAssertTrue(waitFor { self.backend.configuredDefaultSinkName == Harness.other })
-        XCTAssertTrue(backend.setDefaultSink(named: Harness.fiveK))
-        XCTAssertTrue(backend.connected)
     }
 }

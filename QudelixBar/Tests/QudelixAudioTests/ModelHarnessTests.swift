@@ -161,9 +161,11 @@ final class ModelHarnessTests: XCTestCase {
         model.setStage(StageSettings(), editedFor: model.outputKey)
         XCTAssertTrue(pump { self.backend.configuredDefaultSinkName == Harness.fiveK })
         XCTAssertTrue(pump { !self.backend.sinks.contains { $0.isStageSink } })
-        XCTAssertEqual(backend.defaultSinkName, Harness.fiveK)
+        XCTAssertTrue(pump { self.backend.defaultSinkName == Harness.fiveK })
         XCTAssertNotEqual(model.state.mode, .insert)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("routing.json").path))
+        XCTAssertTrue(pump {
+            !FileManager.default.fileExists(atPath: self.directory.appendingPathComponent("routing.json").path)
+        })
     }
 
     private func lowpassedNoise(cutoffHz: Double, rate: Double, rms: Float) -> [Float] {

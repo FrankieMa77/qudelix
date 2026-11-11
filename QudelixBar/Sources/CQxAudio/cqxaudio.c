@@ -28,6 +28,12 @@
 #define QX_DEFAULT_CLOCK_RATE 48000
 #define QX_QUANTUM_FRAMES 512
 
+enum {
+    KIND_MONITOR = 0,
+    KIND_INSERT = 1,
+    KIND_TONE = 2
+};
+
 typedef struct {
     int used;
     QxSinkInfo info;
@@ -63,6 +69,7 @@ typedef struct {
 struct QxStream {
     QxAudio *audio;
     int kind;
+    char virtual_name[QX_NAME_MAX];
     QxLeg legs[2];
     atomic_int state[2];
     atomic_uint rate[2];
@@ -729,6 +736,25 @@ int qx_audio_scale_sink_volume(QxAudio *audio, const char *node_name, float scal
             float values[QX_MAX_CHANNELS];
             for (uint32_t c = 0; c < slot->channel_count; c++)
                 values[c] = slot->channel_values[c] * scale;
+            QxStream *own = NULL;
+            for (int s = 0; s < QX_MAX_STREAMS; s++) {
+                QxStream *candidate = audio->streams[s];
+                if (candidate != NULL && candidate->kind == KIND_INSERT && candidate->legs[0].stream != NULL
+                    && strcmp(candidate->virtual_name, node_name) == 0) {
+                    own = candidate;
+                    break;
+                }
+            }
+            if (own != NULL) {
+                float mute_value = mute > 0 ? 1.0f : 0.0f;
+                if (mute >= 0)
+                    result = pw_stream_set_control(own->legs[0].stream, SPA_PROP_channelVolumes, slot->channel_count,
+                                                   values, SPA_PROP_mute, 1, &mute_value, 0);
+                else
+                    result = pw_stream_set_control(own->legs[0].stream, SPA_PROP_channelVolumes, slot->channel_count,
+                                                   values, 0);
+                break;
+            }
             uint8_t buffer[512];
             struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof buffer);
             struct spa_pod *pod;
@@ -749,12 +775,6 @@ int qx_audio_scale_sink_volume(QxAudio *audio, const char *node_name, float scal
     pw_thread_loop_unlock(audio->loop);
     return result;
 }
-
-enum {
-    KIND_MONITOR = 0,
-    KIND_INSERT = 1,
-    KIND_TONE = 2
-};
 
 static void leg_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state, const char *error)
 {
@@ -1073,6 +1093,7 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
     }
     stream->render_fn = fn;
     stream->user = user;
+    copy_string(stream->virtual_name, sizeof stream->virtual_name, virtual_name);
     char latency[32];
     latency_text(audio, latency, sizeof latency);
     struct pw_properties *sink_props = pw_properties_new(
