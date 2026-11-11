@@ -82,6 +82,30 @@ private final class PipeWireStream: AudioStreamHandle {
         return rate > 0 && channels > 0 ? AudioStreamFormat(rate: rate, channels: channels) : nil
     }
 
+    var sinkLegFormat: AudioStreamFormat? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let stream else { return nil }
+        let rate = Int(qx_stream_leg_rate(stream, 0))
+        return rate > 0 ? AudioStreamFormat(rate: rate, channels: 2) : nil
+    }
+
+    var sinkLegState: AudioLegState { legState(0) }
+
+    var playbackLegState: AudioLegState { legState(1) }
+
+    private func legState(_ leg: Int32) -> AudioLegState {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let stream else { return .failed }
+        switch qx_stream_leg_state(stream, leg) {
+        case Int32(QX_STREAM_STREAMING): return .streaming
+        case Int32(QX_STREAM_READY): return .ready
+        case Int32(QX_STREAM_FAILED): return .failed
+        default: return .connecting
+        }
+    }
+
     var underruns: UInt64 {
         lock.lock()
         defer { lock.unlock() }
@@ -182,6 +206,14 @@ package final class PipeWireAudioBackend: LinuxAudioBackend {
 
     package var configuredDefaultSinkName: String? { defaultSink(configured: true) }
 
+    package var connected: Bool {
+        lock.lock()
+        let audio = self.audio
+        lock.unlock()
+        guard let audio else { return false }
+        return qx_audio_connected(audio) != 0
+    }
+
     package var forceRate: Int {
         guard let audio else { return 0 }
         return Int(qx_audio_get_force_rate(audio))
@@ -192,6 +224,12 @@ package final class PipeWireAudioBackend: LinuxAudioBackend {
         var volume = QxSinkVolume()
         guard qx_audio_get_sink_volume(audio, name, &volume) != 0 else { return nil }
         return AudioSinkVolume(volume: volume.volume, channelVolume: volume.channel_volume, muted: volume.muted != 0)
+    }
+
+    package func scaleSinkVolume(named name: String, by factor: Float, muted: Bool?) -> Bool {
+        guard let audio else { return false }
+        let mute: Int32 = muted.map { $0 ? 1 : 0 } ?? -1
+        return qx_audio_scale_sink_volume(audio, name, factor, mute) >= 0
     }
 
     package func setDefaultSink(named name: String?) -> Bool {

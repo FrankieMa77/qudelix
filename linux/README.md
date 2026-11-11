@@ -20,6 +20,7 @@ release is in [the changelog](https://github.com/FrankieMa77/qudelix/blob/main/l
 Stage, Level and the Tune tones need PipeWire. Without it the app still controls the 5K and shows
 "Needs PipeWire" on those pages. Stage works through a temporary "Qudelix Stage" output, and
 Auto-match USB rate in Level changes the sample rate of the whole audio graph while it is on.
+Apps that choose an output themselves bypass Stage.
 
 It needs Ubuntu 24.04 or later, or any distribution with GTK 4.14 and libadwaita 1.5. Install
 the command-line package and the app together; the app package depends on `qudelix`, which

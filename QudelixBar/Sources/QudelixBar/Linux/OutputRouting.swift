@@ -3,10 +3,17 @@ import Foundation
 package struct RoutingMemory: Codable, Equatable {
     package var target: String
     package var previousConfigured: String?
+    package var stageGain: Float?
+    package var stageMuted: Bool?
+    package var handedOver: Bool?
 
-    package init(target: String, previousConfigured: String?) {
+    package init(target: String, previousConfigured: String?,
+                 stageGain: Float? = nil, stageMuted: Bool? = nil, handedOver: Bool? = nil) {
         self.target = target
         self.previousConfigured = previousConfigured
+        self.stageGain = stageGain
+        self.stageMuted = stageMuted
+        self.handedOver = handedOver
     }
 }
 
@@ -15,6 +22,7 @@ package struct RoutingSnapshot: Equatable {
     package var stageSinkPresent = false
     package var defaultName: String?
     package var configuredName: String?
+    package var connected = true
 
     package init() {}
 }
@@ -25,6 +33,17 @@ package final class OutputRouting {
 
     package static let restoreRetry: TimeInterval = 3
     package static let memoryCap = 16_384
+    package static let maxVolumeFactor: Float = 16
+    package static let restoreCheckDelay: TimeInterval = 3
+    package static let volumeSaveGap: TimeInterval = 0.1
+    package static let volumeLazySaveGap: TimeInterval = 1
+    package static let restoreFailedNotice =
+        "Couldn\u{2019}t put your default output back \u{2014} choose it in Sound settings."
+    package static let recordFailedNotice =
+        "Couldn\u{2019}t write Qudelix\u{2019}s recovery record, so Stage can\u{2019}t run safely. "
+        + "Check that its data folder is writable."
+    package static let volumeHandoverFailedNotice =
+        "Couldn\u{2019}t carry the Stage volume over to your output \u{2014} check your volume before playing."
 
     nonisolated package static func defaultMemoryURL() -> URL {
         StageStateFile.directory.appendingPathComponent("routing.json")
@@ -42,7 +61,11 @@ package final class OutputRouting {
     private var activationConfirmed = false
     private var started = false
     private var lastRestore: Date?
+    private var restoreCheckAt: Date?
+    private var memoryDirty = false
+    private var lastMemorySave = Date.distantPast
     private var snapshot = RoutingSnapshot()
+    package private(set) var notice: String?
     private var observers: [Int: () -> Void] = [:]
     private var nextObserverID = 0
 
@@ -97,6 +120,9 @@ package final class OutputRouting {
     package var configuredName: String? { snapshot.configuredName }
     package var isStageDefault: Bool { snapshot.defaultName == LinuxAudioNames.stageSinkName }
     package var rememberedTarget: String? { memory?.target }
+    package var connected: Bool { snapshot.connected }
+    package var rememberedStageGain: Float? { memory?.stageGain }
+    package var rememberedStageMuted: Bool? { memory?.stageMuted }
 
     package var realOutput: AudioSink? {
         guard let name = snapshot.defaultName else { return nil }
@@ -125,8 +151,17 @@ package final class OutputRouting {
         return db.isFinite ? db : nil
     }
 
+    package var stageVolumeKnown: Bool {
+        backend.sinkVolume(named: LinuxAudioNames.stageSinkName) != nil
+    }
+
+    package func stageVolumeDb() -> Double? {
+        sinkVolumeDb(named: LinuxAudioNames.stageSinkName)
+    }
+
     package func refresh() {
         var next = RoutingSnapshot()
+        next.connected = backend.connected
         let all = backend.sinks
         next.sinks = all.filter { !$0.isStageSink }
         next.stageSinkPresent = all.contains { $0.isStageSink }
@@ -135,29 +170,52 @@ package final class OutputRouting {
         let changed = next != snapshot
         snapshot = next
         if insertHeld, next.defaultName == LinuxAudioNames.stageSinkName { activationConfirmed = true }
+        observeStageVolume()
         settleMemory()
+        checkRestoreOutcome()
         restoreStaleDefault()
         if changed {
             for observer in observers.values { observer() }
         }
     }
 
-    package func prepareInsert(target: String) {
+    @discardableResult
+    package func prepareInsert(target: String) -> Bool {
         refresh()
         insertHeld = true
         activationRequested = false
         activationConfirmed = false
+        lastRestore = nil
+        restoreCheckAt = nil
         let stale = snapshot.configuredName == LinuxAudioNames.stageSinkName
         let previous = stale ? memory?.previousConfigured : snapshot.configuredName
-        memory = RoutingMemory(target: target, previousConfigured: previous)
-        saveMemory()
+        memory = RoutingMemory(target: target, previousConfigured: previous, stageGain: 1, stageMuted: false)
+        guard saveMemory() else {
+            memory = nil
+            insertHeld = false
+            publishNotice(Self.recordFailedNotice)
+            return false
+        }
+        publishNotice(nil)
+        return true
     }
 
     @discardableResult
     package func activateStage() -> Bool {
         guard insertHeld else { return false }
+        resetStageVolume()
         activationRequested = true
         return backend.setDefaultSink(named: LinuxAudioNames.stageSinkName)
+    }
+
+    private func resetStageVolume() {
+        let stage = LinuxAudioNames.stageSinkName
+        guard let volume = backend.sinkVolume(named: stage) else { return }
+        let gain = volume.gain
+        guard gain.isFinite, gain > 0 else { return }
+        if abs(gain - 1) > 0.001 || volume.muted {
+            _ = backend.scaleSinkVolume(named: stage, by: min(1 / gain, Self.maxVolumeFactor), muted: false)
+        }
     }
 
     package func endInsert() {
@@ -171,19 +229,103 @@ package final class OutputRouting {
         activationRequested = false
         activationConfirmed = false
         if staged {
-            requestRestore()
+            if !restoredRecently { requestRestore() }
         } else {
             clearMemory()
         }
     }
 
+    private var restoredRecently: Bool {
+        guard let last = lastRestore else { return false }
+        return clock.now().timeIntervalSince(last) < Self.restoreRetry
+    }
+
     private func requestRestore() {
+        guard backend.connected else { return }
+        handOverVolume()
         lastRestore = clock.now()
         let previous = memory?.previousConfigured
         let usable = previous.flatMap { name in
             snapshot.sinks.contains { $0.name == name } ? name : nil
         }
-        _ = backend.setDefaultSink(named: usable)
+        if backend.setDefaultSink(named: usable) {
+            restoreCheckAt = clock.now().addingTimeInterval(Self.restoreCheckDelay)
+        } else {
+            restoreCheckAt = nil
+            DebugLog.shared.log("restoring the default output failed")
+            publishNotice(Self.restoreFailedNotice)
+        }
+    }
+
+    private func handOverVolume() {
+        guard var current = memory, current.handedOver != true else { return }
+        let stage = LinuxAudioNames.stageSinkName
+        let live = backend.sinkVolume(named: stage)
+        guard let gain = live?.gain ?? current.stageGain, gain.isFinite else { return }
+        let muted = live?.muted ?? current.stageMuted ?? false
+        guard snapshot.sinks.contains(where: { $0.name == current.target }) else { return }
+        let factor = min(max(gain, 0), 1)
+        var delivered = true
+        if factor < 0.9999 || muted {
+            delivered = backend.scaleSinkVolume(named: current.target, by: factor, muted: muted ? true : nil)
+        }
+        if delivered {
+            current.handedOver = true
+            memory = current
+            saveMemory()
+        } else {
+            DebugLog.shared.log("carrying the Stage volume over to the output failed")
+            publishNotice(Self.volumeHandoverFailedNotice)
+        }
+    }
+
+    private func observeStageVolume() {
+        guard insertHeld, snapshot.stageSinkPresent, var current = memory,
+              let volume = backend.sinkVolume(named: LinuxAudioNames.stageSinkName) else {
+            flushDirtyMemory()
+            return
+        }
+        let gain = volume.gain
+        guard gain.isFinite else { return }
+        let gainChanged = current.stageGain.map { abs($0 - gain) > 0.0005 } ?? true
+        let muteChanged = current.stageMuted != volume.muted
+        if gainChanged || muteChanged {
+            let quieter = (current.stageGain.map { gain < $0 } ?? true) || (volume.muted && current.stageMuted != true)
+            current.stageGain = gain
+            current.stageMuted = volume.muted
+            memory = current
+            memoryDirty = true
+            let gap = clock.now().timeIntervalSince(lastMemorySave)
+            if quieter ? gap >= Self.volumeSaveGap : gap >= Self.volumeLazySaveGap {
+                saveMemory()
+            }
+        } else {
+            flushDirtyMemory()
+        }
+    }
+
+    private func flushDirtyMemory() {
+        guard memoryDirty, clock.now().timeIntervalSince(lastMemorySave) >= Self.volumeLazySaveGap else { return }
+        saveMemory()
+    }
+
+    private func checkRestoreOutcome() {
+        guard let due = restoreCheckAt, clock.now() >= due else { return }
+        restoreCheckAt = nil
+        let stillStaged = snapshot.defaultName == LinuxAudioNames.stageSinkName
+            || snapshot.configuredName == LinuxAudioNames.stageSinkName
+        if stillStaged {
+            DebugLog.shared.log("the default output still names Stage after the restore")
+            publishNotice(Self.restoreFailedNotice)
+        } else if notice == Self.restoreFailedNotice {
+            publishNotice(nil)
+        }
+    }
+
+    private func publishNotice(_ text: String?) {
+        guard notice != text else { return }
+        notice = text
+        for observer in observers.values { observer() }
     }
 
     private func restoreStaleDefault() {
@@ -203,13 +345,20 @@ package final class OutputRouting {
 
     private func clearMemory() {
         memory = nil
+        memoryDirty = false
         if let memoryURL { try? FileManager.default.removeItem(at: memoryURL) }
     }
 
-    private func saveMemory() {
-        guard let memoryURL, let memory else { return }
-        guard let data = try? JSONEncoder().encode(memory) else { return }
-        _ = SafeFile.writeAtomic(data, to: memoryURL)
+    @discardableResult
+    private func saveMemory() -> Bool {
+        guard let memoryURL, let memory else { return true }
+        guard let data = try? JSONEncoder().encode(memory) else { return false }
+        let written = SafeFile.writeAtomic(data, to: memoryURL)
+        if written {
+            memoryDirty = false
+            lastMemorySave = clock.now()
+        }
+        return written
     }
 
     private func loadMemory() -> RoutingMemory? {

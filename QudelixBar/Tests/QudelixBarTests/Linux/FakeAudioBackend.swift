@@ -6,6 +6,9 @@ final class FakeAudioStream: AudioStreamHandle {
     var isStreaming = true
     var hasFailed = false
     var format: AudioStreamFormat? = AudioStreamFormat(rate: 48000, channels: 2)
+    var sinkLegFormat: AudioStreamFormat? = AudioStreamFormat(rate: 48000, channels: 2)
+    var sinkLegState = AudioLegState.streaming
+    var playbackLegState = AudioLegState.streaming
     var underruns: UInt64 = 0
     var overruns: UInt64 = 0
     private(set) var stopped = false
@@ -26,6 +29,7 @@ final class FakeAudioBackend: LinuxAudioBackend {
     var configuredDefaultSinkName: String?
     var forceRate = 0
     var volumes: [String: AudioSinkVolume] = [:]
+    var connected = true
     var changeHandler: (() -> Void)?
     var failStreams = false
     var acceptDefaultChange = true
@@ -36,6 +40,11 @@ final class FakeAudioBackend: LinuxAudioBackend {
     private(set) var pendingDefault: String??
     private(set) var setDefaultCalls: [String?] = []
     private(set) var forceRateCalls: [Int] = []
+    private(set) var scaleCalls: [(name: String, factor: Float, muted: Bool?)] = []
+    private(set) var events: [String] = []
+    var sinkLegRate: Int?
+    var acceptScale = true
+    var stageVolumeOnCreate = AudioSinkVolume(volume: 1, channelVolume: 1, muted: false)
     private(set) var monitors: [(sink: String, block: AudioCaptureBlock, stream: FakeAudioStream)] = []
     private(set) var inserts: [(target: String, render: AudioRenderBlock, stream: FakeAudioStream)] = []
     private(set) var tones: [(sink: String, render: AudioToneBlock, stream: FakeAudioStream)] = []
@@ -45,8 +54,21 @@ final class FakeAudioBackend: LinuxAudioBackend {
         volumes[name]
     }
 
+    func scaleSinkVolume(named name: String, by factor: Float, muted: Bool?) -> Bool {
+        scaleCalls.append((name, factor, muted))
+        events.append("scale:\(name)")
+        guard acceptScale, connected, var current = volumes[name] else { return false }
+        current.channelVolume *= factor
+        if let muted { current.muted = muted }
+        volumes[name] = current
+        changeHandler?()
+        return true
+    }
+
     func setDefaultSink(named name: String?) -> Bool {
         setDefaultCalls.append(name)
+        events.append("default:\(name ?? "-")")
+        guard connected else { return false }
         guard acceptDefaultChange else { return false }
         if deferDefaultChange {
             pendingDefault = .some(name)
@@ -87,13 +109,16 @@ final class FakeAudioBackend: LinuxAudioBackend {
         if failStreams { throw AudioBackendError.streamFailed }
         let stream = FakeAudioStream()
         stream.format = streamFormat
+        stream.sinkLegFormat = sinkLegRate.map { AudioStreamFormat(rate: $0, channels: 2) } ?? streamFormat
         inserts.append((target, render, stream))
         if autoStageSink {
+            volumes[LinuxAudioNames.stageSinkName] = stageVolumeOnCreate
             sinks.append(AudioSink(id: 900, name: LinuxAudioNames.stageSinkName,
                                    description: LinuxAudioNames.stageSinkDescription))
             changeHandler?()
             stream.onStop = { [weak self] in
                 self?.sinks.removeAll { $0.isStageSink }
+                self?.volumes[LinuxAudioNames.stageSinkName] = nil
                 self?.changeHandler?()
             }
         }

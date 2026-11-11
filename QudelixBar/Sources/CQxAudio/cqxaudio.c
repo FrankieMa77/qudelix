@@ -23,12 +23,18 @@
 #define QX_RING_CHANNELS 2
 #define QX_SCRATCH_FRAMES 8192
 #define QX_SYNC_TIMEOUT_SECONDS 4
+#define QX_WRITE_TIMEOUT_SECONDS 1
+#define QX_MAX_CHANNELS 8
+#define QX_DEFAULT_CLOCK_RATE 48000
+#define QX_QUANTUM_FRAMES 512
 
 typedef struct {
     int used;
     QxSinkInfo info;
     int device_id;
     QxSinkVolume volume;
+    float channel_values[QX_MAX_CHANNELS];
+    uint32_t channel_count;
     struct pw_node *node;
     struct spa_hook listener;
     QxAudio *audio;
@@ -89,8 +95,11 @@ struct QxAudio {
     QxDeviceSlot devices[QX_MAX_SINKS];
     struct pw_metadata *default_metadata;
     struct spa_hook default_listener;
+    uint32_t default_metadata_id;
     struct pw_metadata *settings_metadata;
     struct spa_hook settings_listener;
+    uint32_t settings_metadata_id;
+    int clock_rate;
     char default_effective[QX_NAME_MAX];
     char default_configured[QX_NAME_MAX];
     int force_rate;
@@ -140,6 +149,7 @@ static void core_error(void *data, uint32_t id, int seq, int res, const char *me
     if (id == PW_ID_CORE && (res == -EPIPE || res == -ECONNRESET)) {
         audio->lost = 1;
         pw_thread_loop_signal(audio->loop, false);
+        notify(audio);
     }
 }
 
@@ -149,7 +159,7 @@ static const struct pw_core_events core_events = {
     .error = core_error,
 };
 
-static int roundtrip(QxAudio *audio)
+static int roundtrip_within(QxAudio *audio, int seconds)
 {
     audio->done = 0;
     audio->pending = pw_core_sync(audio->core, PW_ID_CORE, audio->pending);
@@ -159,11 +169,21 @@ static int roundtrip(QxAudio *audio)
             return -1;
         if (pw_thread_loop_timed_wait(audio->loop, 1) != 0) {
             waited++;
-            if (waited >= QX_SYNC_TIMEOUT_SECONDS)
+            if (waited >= seconds)
                 return -1;
         }
     }
     return 0;
+}
+
+static int roundtrip(QxAudio *audio)
+{
+    return roundtrip_within(audio, QX_SYNC_TIMEOUT_SECONDS);
+}
+
+static int roundtrip_write(QxAudio *audio)
+{
+    return roundtrip_within(audio, QX_WRITE_TIMEOUT_SECONDS);
 }
 
 static int json_name(const char *value, char *out, size_t length)
@@ -219,8 +239,12 @@ static int settings_property(void *data, uint32_t subject, const char *key, cons
         return 0;
     if (key == NULL) {
         audio->force_rate = 0;
+        audio->clock_rate = 0;
     } else if (strcmp(key, "clock.force-rate") == 0) {
         audio->force_rate = value == NULL ? 0 : atoi(value);
+    } else if (strcmp(key, "clock.rate") == 0) {
+        audio->clock_rate = value == NULL ? 0 : atoi(value);
+        return 0;
     } else {
         return 0;
     }
@@ -265,6 +289,9 @@ static void sink_param(void *data, int seq, uint32_t id, uint32_t index, uint32_
             for (uint32_t i = 0; i < count; i++)
                 sum += values[i];
             mean = sum / (float)count;
+            slot->channel_count = count < QX_MAX_CHANNELS ? count : QX_MAX_CHANNELS;
+            for (uint32_t i = 0; i < slot->channel_count; i++)
+                slot->channel_values[i] = values[i];
         }
     }
     slot->volume.valid = 1;
@@ -396,10 +423,12 @@ static void registry_global(void *data, uint32_t id, uint32_t permissions, const
             return;
         if (strcmp(name, "default") == 0 && audio->default_metadata == NULL) {
             audio->default_metadata = pw_registry_bind(audio->registry, id, type, PW_VERSION_METADATA, 0);
+            audio->default_metadata_id = id;
             if (audio->default_metadata != NULL)
                 pw_metadata_add_listener(audio->default_metadata, &audio->default_listener, &default_events, audio);
         } else if (strcmp(name, "settings") == 0 && audio->settings_metadata == NULL) {
             audio->settings_metadata = pw_registry_bind(audio->registry, id, type, PW_VERSION_METADATA, 0);
+            audio->settings_metadata_id = id;
             if (audio->settings_metadata != NULL)
                 pw_metadata_add_listener(audio->settings_metadata, &audio->settings_listener, &settings_events, audio);
         }
@@ -409,6 +438,24 @@ static void registry_global(void *data, uint32_t id, uint32_t permissions, const
 static void registry_global_remove(void *data, uint32_t id)
 {
     QxAudio *audio = data;
+    if (audio->default_metadata != NULL && audio->default_metadata_id == id) {
+        spa_hook_remove(&audio->default_listener);
+        pw_proxy_destroy((struct pw_proxy *)audio->default_metadata);
+        audio->default_metadata = NULL;
+        audio->default_effective[0] = 0;
+        audio->default_configured[0] = 0;
+        notify(audio);
+        return;
+    }
+    if (audio->settings_metadata != NULL && audio->settings_metadata_id == id) {
+        spa_hook_remove(&audio->settings_listener);
+        pw_proxy_destroy((struct pw_proxy *)audio->settings_metadata);
+        audio->settings_metadata = NULL;
+        audio->force_rate = 0;
+        audio->clock_rate = 0;
+        notify(audio);
+        return;
+    }
     for (int i = 0; i < QX_MAX_SINKS; i++) {
         QxSinkSlot *slot = &audio->sinks[i];
         if (slot->used && slot->info.id == id) {
@@ -608,7 +655,7 @@ int qx_audio_set_default_sink(QxAudio *audio, const char *name)
         return -EINVAL;
     pw_thread_loop_lock(audio->loop);
     int result = -ENOTCONN;
-    if (audio->default_metadata != NULL) {
+    if (audio->default_metadata != NULL && !audio->lost) {
         if (name == NULL) {
             result = pw_metadata_set_property(audio->default_metadata, 0, "default.configured.audio.sink", NULL, NULL);
         } else {
@@ -618,7 +665,7 @@ int qx_audio_set_default_sink(QxAudio *audio, const char *name)
                                               "Spa:String:JSON", json);
         }
         if (result >= 0)
-            result = roundtrip(audio);
+            result = roundtrip_write(audio);
     }
     pw_thread_loop_unlock(audio->loop);
     return result;
@@ -638,12 +685,12 @@ int qx_audio_set_force_rate(QxAudio *audio, int rate)
         return -EINVAL;
     pw_thread_loop_lock(audio->loop);
     int result = -ENOTCONN;
-    if (audio->settings_metadata != NULL) {
+    if (audio->settings_metadata != NULL && !audio->lost) {
         char text[16];
         snprintf(text, sizeof text, "%d", rate);
         result = pw_metadata_set_property(audio->settings_metadata, 0, "clock.force-rate", "Spa:String:JSON", text);
         if (result >= 0)
-            result = roundtrip(audio);
+            result = roundtrip_write(audio);
     }
     pw_thread_loop_unlock(audio->loop);
     return result;
@@ -663,6 +710,44 @@ int qx_audio_get_sink_volume(QxAudio *audio, const char *node_name, QxSinkVolume
     }
     pw_thread_loop_unlock(audio->loop);
     return found;
+}
+
+int qx_audio_scale_sink_volume(QxAudio *audio, const char *node_name, float scale, int mute)
+{
+    if (!(scale >= 0.0f) || scale > 16.0f)
+        return -EINVAL;
+    pw_thread_loop_lock(audio->loop);
+    int result = -ENOTCONN;
+    if (!audio->lost) {
+        result = -ENOENT;
+        for (int i = 0; i < QX_MAX_SINKS; i++) {
+            QxSinkSlot *slot = &audio->sinks[i];
+            if (!slot->used || strcmp(slot->info.name, node_name) != 0)
+                continue;
+            if (slot->node == NULL || !slot->volume.valid || slot->channel_count == 0)
+                break;
+            float values[QX_MAX_CHANNELS];
+            for (uint32_t c = 0; c < slot->channel_count; c++)
+                values[c] = slot->channel_values[c] * scale;
+            uint8_t buffer[512];
+            struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof buffer);
+            struct spa_pod *pod;
+            if (mute >= 0) {
+                pod = spa_pod_builder_add_object(&builder, SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+                    SPA_PROP_channelVolumes, SPA_POD_Array(sizeof(float), SPA_TYPE_Float, slot->channel_count, values),
+                    SPA_PROP_mute, SPA_POD_Bool(mute != 0));
+            } else {
+                pod = spa_pod_builder_add_object(&builder, SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+                    SPA_PROP_channelVolumes, SPA_POD_Array(sizeof(float), SPA_TYPE_Float, slot->channel_count, values));
+            }
+            result = pw_node_set_param(slot->node, SPA_PARAM_Props, 0, pod);
+            if (result >= 0)
+                result = roundtrip_write(audio);
+            break;
+        }
+    }
+    pw_thread_loop_unlock(audio->loop);
+    return result;
 }
 
 enum {
@@ -933,6 +1018,14 @@ static int register_stream(QxAudio *audio, QxStream *stream)
     return 0;
 }
 
+static void latency_text(QxAudio *audio, char *out, size_t length)
+{
+    int rate = audio->force_rate > 0 ? audio->force_rate : audio->clock_rate;
+    if (rate <= 0)
+        rate = QX_DEFAULT_CLOCK_RATE;
+    snprintf(out, length, "%d/%d", QX_QUANTUM_FRAMES, rate);
+}
+
 static QxStream *finish_start(QxAudio *audio, QxStream *stream, int result)
 {
     if (result < 0 || !register_stream(audio, stream)) {
@@ -945,7 +1038,7 @@ static QxStream *finish_start(QxAudio *audio, QxStream *stream, int result)
 QxStream *qx_audio_start_monitor(QxAudio *audio, const char *sink_name, QxCaptureFn fn, void *user)
 {
     pw_thread_loop_lock(audio->loop);
-    QxStream *stream = stream_alloc(audio, KIND_MONITOR);
+    QxStream *stream = audio->lost ? NULL : stream_alloc(audio, KIND_MONITOR);
     if (stream == NULL) {
         pw_thread_loop_unlock(audio->loop);
         return NULL;
@@ -973,13 +1066,15 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
                                 const char *target_sink, QxRenderFn fn, void *user)
 {
     pw_thread_loop_lock(audio->loop);
-    QxStream *stream = stream_alloc(audio, KIND_INSERT);
+    QxStream *stream = audio->lost ? NULL : stream_alloc(audio, KIND_INSERT);
     if (stream == NULL) {
         pw_thread_loop_unlock(audio->loop);
         return NULL;
     }
     stream->render_fn = fn;
     stream->user = user;
+    char latency[32];
+    latency_text(audio, latency, sizeof latency);
     struct pw_properties *sink_props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",
@@ -987,6 +1082,7 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
         PW_KEY_NODE_NAME, virtual_name,
         PW_KEY_NODE_DESCRIPTION, virtual_description,
         PW_KEY_NODE_VIRTUAL, "true",
+        PW_KEY_NODE_LATENCY, latency,
         NULL);
     int result = connect_leg(stream, 0, sink_props, &sink_leg_events, PW_DIRECTION_INPUT,
                              PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
@@ -998,6 +1094,7 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
             PW_KEY_NODE_NAME, "qudelix_stage_output",
             PW_KEY_NODE_DESCRIPTION, "Qudelix Stage Output",
             PW_KEY_TARGET_OBJECT, target_sink,
+            PW_KEY_NODE_LATENCY, latency,
             "node.dont-fallback", "true",
             "node.dont-reconnect", "true",
             NULL);
@@ -1012,7 +1109,7 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
 QxStream *qx_audio_start_tone(QxAudio *audio, const char *sink_name, QxToneFn fn, void *user)
 {
     pw_thread_loop_lock(audio->loop);
-    QxStream *stream = stream_alloc(audio, KIND_TONE);
+    QxStream *stream = audio->lost ? NULL : stream_alloc(audio, KIND_TONE);
     if (stream == NULL) {
         pw_thread_loop_unlock(audio->loop);
         return NULL;
@@ -1050,6 +1147,20 @@ int qx_stream_state(QxStream *stream)
             state = QX_STREAM_READY;
     }
     return state;
+}
+
+int qx_stream_leg_state(QxStream *stream, int leg)
+{
+    if (leg < 0 || leg > 1)
+        return QX_STREAM_CONNECTING;
+    return atomic_load(&stream->state[leg]);
+}
+
+uint32_t qx_stream_leg_rate(QxStream *stream, int leg)
+{
+    if (leg < 0 || leg > 1)
+        return 0;
+    return atomic_load(&stream->rate[leg]);
 }
 
 uint32_t qx_stream_rate(QxStream *stream)

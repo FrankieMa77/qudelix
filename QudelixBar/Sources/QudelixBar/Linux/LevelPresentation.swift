@@ -69,6 +69,17 @@ package enum LevelPresentation {
         stage.failure?.message
     }
 
+    package static func notices(stage: StageModelState, level: LevelModelState) -> [StageNotice] {
+        var shown: [StageNotice] = []
+        if let notice = stage.settingsNotice { shown.append(StageNotice(text: notice, caution: true)) }
+        if let failure = failureNotice(stage) { shown.append(StageNotice(text: failure, caution: true)) }
+        if let notice = stage.audioNotice { shown.append(StageNotice(text: notice, caution: true)) }
+        if let rate = level.foreignForceRate {
+            shown.append(StageNotice(text: LevelModel.foreignRateNotice(rate), caution: false))
+        }
+        return shown
+    }
+
     package static func outputLevelText(stage: StageModelState, level: LevelModelState) -> String {
         guard stage.running else { return "off" }
         guard let db = level.currentLevelDb else { return "silent" }

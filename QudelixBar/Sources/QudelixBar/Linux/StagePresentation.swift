@@ -276,11 +276,18 @@ package enum StagePresentation {
         return StageNotice(text: state.status, caution: false)
     }
 
+    package static let impulseWaitingText =
+        "The impulse response is waiting for a compatible audio buffer size, so it isn\u{2019}t in the sound yet."
+
     package static func notices(_ state: StageModelState) -> [StageNotice] {
         var result: [StageNotice] = []
         if let notice = state.settingsNotice { result.append(StageNotice(text: notice, caution: true)) }
         if let status = statusNotice(state) { result.append(status) }
         if let problem = state.impulseProblem { result.append(StageNotice(text: problem, caution: true)) }
+        if let notice = state.audioNotice { result.append(StageNotice(text: notice, caution: true)) }
+        if state.settings.enabled, state.settings.hasImpulse, state.impulseWaiting {
+            result.append(StageNotice(text: impulseWaitingText, caution: false))
+        }
         if state.settings.enabled, let corr = state.sourceCorrelation, corr > 0.985 {
             result.append(StageNotice(text: mono, caution: true))
         }

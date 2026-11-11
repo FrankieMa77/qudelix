@@ -57,6 +57,7 @@ package struct LevelModelState: Equatable {
     package var balance: BalanceFeatures?
     package var autoSetRate: Double?
     package var manualRate: Double?
+    package var foreignForceRate: Int?
 
     package init() {}
 
@@ -87,6 +88,34 @@ struct LevelTick {
     var callHold: Bool
 }
 
+struct ForceRateMarker {
+    static let cap = 256
+
+    let url: URL?
+
+    func load() -> Int? {
+        guard let url, let data = SafeFile.read(url, cap: Self.cap),
+              let saved = try? JSONDecoder().decode(Saved.self, from: data), saved.rate > 0 else { return nil }
+        return saved.rate
+    }
+
+    @discardableResult
+    func save(_ rate: Int) -> Bool {
+        guard let url else { return true }
+        guard let data = try? JSONEncoder().encode(Saved(rate: rate)) else { return false }
+        return SafeFile.writeAtomic(data, to: url)
+    }
+
+    func clear() {
+        guard let url else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private struct Saved: Codable {
+        var rate: Int
+    }
+}
+
 @MainActor
 package final class LevelModel {
     package static let maxCalibratedDevices = 64
@@ -96,6 +125,10 @@ package final class LevelModel {
         + "when you turn it off and when the app quits."
     package static let defaultAvailableRates: [Double] = [44100, 48000, 88200, 96000, 176400, 192000]
     package static let forceDeadline: TimeInterval = 5
+    package static func foreignRateNotice(_ rate: Int) -> String {
+        String(format: "Another program has fixed the audio graph at %g kHz; Auto-match waits.",
+               Double(rate) / 1000)
+    }
     private static let balanceAnchorCoefficient = 1 - exp(-3.0 / 30)
 
     package private(set) var state = LevelModelState()
@@ -113,6 +146,7 @@ package final class LevelModel {
     private let clock: AppClock
     private let analyzer: QualityAnalyzer
     private let availableRates: [Double]
+    private let marker: ForceRateMarker
     private var observers: [Int: (LevelModelState) -> Void] = [:]
     private var nextObserverID = 0
     private var notified: LevelModelState?
@@ -143,7 +177,9 @@ package final class LevelModel {
          clock: AppClock,
          seed: LevelSeed = LevelSeed(),
          kernel: SpectrumKernel? = nil,
-         availableRates: [Double] = LevelModel.defaultAvailableRates) {
+         availableRates: [Double] = LevelModel.defaultAvailableRates,
+         markerURL: URL? = nil) {
+        self.marker = ForceRateMarker(url: markerURL)
         self.backend = backend
         self.routing = routing
         self.clock = clock
@@ -434,6 +470,10 @@ package final class LevelModel {
             "stream quality %@ — forcing the graph rate to %g kHz",
             qualityVerdictLive?.isLosslessClass == true ? "lossless-class" : "lossy",
             target / 1000))
+        guard marker.save(Int(target)) else {
+            DebugLog.shared.log("could not record the graph rate change; not applying it")
+            return
+        }
         if backend.setForceRate(Int(target)) {
             forcedTarget = Int(target)
             forceRequestedAt = now
@@ -442,7 +482,28 @@ package final class LevelModel {
         }
     }
 
+    func recoverForce() {
+        guard let recorded = marker.load() else { return }
+        if backend.forceRate == recorded {
+            guard backend.setForceRate(0) else { return }
+            DebugLog.shared.log("cleared a graph rate left over from an earlier run")
+        }
+        marker.clear()
+    }
+
+    func backendLost() {
+        guard forcedTarget != nil else { return }
+        forgetForce()
+    }
+
+    private func updateForeignRate() {
+        let rate = backend.forceRate
+        let foreign = rate != 0 && forcedTarget == nil ? rate : nil
+        if state.foreignForceRate != foreign { state.foreignForceRate = foreign }
+    }
+
     func housekeeping(_ context: LevelTick) {
+        updateForeignRate()
         guard let target = forcedTarget else { return }
         let now = clock.now()
         if !forceConfirmed {
@@ -456,6 +517,7 @@ package final class LevelModel {
             }
         } else if backend.forceRate != target {
             DebugLog.shared.log("graph rate was changed by someone else; left alone")
+            marker.clear()
             forgetForce()
             return
         }
@@ -477,7 +539,9 @@ package final class LevelModel {
             return
         }
         if !forceConfirmed || backend.forceRate == forcedTarget {
-            _ = backend.setForceRate(0)
+            if backend.setForceRate(0) { marker.clear() }
+        } else {
+            marker.clear()
         }
         forgetForce()
     }
@@ -490,10 +554,19 @@ package final class LevelModel {
     func volumeAnchor() -> EarVolumeAnchor? {
         let output = routing.realOutput
         let onQudelix = output?.isQudelix5K == true
-        return StagePolicy.volumeAnchor(
+        guard let anchor = StagePolicy.volumeAnchor(
             playingToQudelix: onQudelix,
             qudelixVolumeDb: onQudelix ? reporter?.reportedVolumeDb : nil,
             systemVolumeDb: output.flatMap { routing.sinkVolumeDb(named: $0.name) })
+        else { return nil }
+        guard routing.isStageDefault else { return anchor }
+        guard let stageDb = routing.stageVolumeDb() else { return nil }
+        let db = anchor.db + stageDb
+        guard EarLevel.plausibleVolumeDb.contains(db) else { return nil }
+        switch anchor {
+        case .qudelix: return .qudelix(db)
+        case .system: return .system(db)
+        }
     }
 
     func updateEarLevel(processor: StageProcessor) {

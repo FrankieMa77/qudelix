@@ -70,6 +70,15 @@ package struct AudioSinkVolume: Equatable {
         self.channelVolume = channelVolume
         self.muted = muted
     }
+
+    package var gain: Float { volume * channelVolume }
+}
+
+package enum AudioLegState: Equatable {
+    case connecting
+    case ready
+    case streaming
+    case failed
 }
 
 package struct AudioStreamFormat: Equatable {
@@ -96,6 +105,9 @@ package protocol AudioStreamHandle: AnyObject {
     var isStreaming: Bool { get }
     var hasFailed: Bool { get }
     var format: AudioStreamFormat? { get }
+    var sinkLegFormat: AudioStreamFormat? { get }
+    var sinkLegState: AudioLegState { get }
+    var playbackLegState: AudioLegState { get }
     var underruns: UInt64 { get }
     var overruns: UInt64 { get }
     func stop()
@@ -106,9 +118,11 @@ package protocol LinuxAudioBackend: AnyObject {
     var defaultSinkName: String? { get }
     var configuredDefaultSinkName: String? { get }
     var forceRate: Int { get }
+    var connected: Bool { get }
     var changeHandler: (() -> Void)? { get set }
 
     func sinkVolume(named name: String) -> AudioSinkVolume?
+    func scaleSinkVolume(named name: String, by factor: Float, muted: Bool?) -> Bool
     func setDefaultSink(named name: String?) -> Bool
     func setForceRate(_ rate: Int) -> Bool
     func startMonitor(sink: String, block: @escaping AudioCaptureBlock) throws -> AudioStreamHandle

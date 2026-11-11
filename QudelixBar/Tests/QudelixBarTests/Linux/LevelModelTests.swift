@@ -406,6 +406,111 @@ final class LevelModelTests: XCTestCase {
         XCTAssertEqual(rig.backend.forceRate, 0)
     }
 
+    private func markerRate(_ rig: StageRig) -> Int? {
+        guard let data = try? Data(contentsOf: rig.forceMarkerURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Int] else { return nil }
+        return object["rate"]
+    }
+
+    private func staleRig(marker: Bool = true, rate: Int = 0) throws -> StageRig {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("force-stale-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if marker {
+            try Data("{\"rate\":44100}".utf8).write(to: directory.appendingPathComponent("force-rate.json"))
+        }
+        let rig = try StageRig(directory: directory, start: false) { $0.forceRate = rate }
+        rigs.append(rig)
+        return rig
+    }
+
+    func testAutoMatchRecordsTheRateItSetAndForgetsItOnRelease() throws {
+        let rig = try makeRig(detect: true)
+        let signal = try armAutoRate(rig)
+        var chunk = 0
+        feedSignal(rig, signal: signal, rate: 96000, ticks: 27, chunk: &chunk)
+        XCTAssertEqual(rig.backend.forceRate, 192000)
+        XCTAssertEqual(markerRate(rig), 192000)
+        rig.enableStage()
+        rig.tick()
+        XCTAssertEqual(rig.backend.forceRate, 0)
+        XCTAssertNil(markerRate(rig))
+    }
+
+    func testAMarkerThatCannotBeWrittenKeepsAutoMatchFromChangingTheRate() throws {
+        let rig = try makeRig(detect: true)
+        try FileManager.default.createDirectory(at: rig.forceMarkerURL.appendingPathComponent("occupied"),
+                                                withIntermediateDirectories: true)
+        let signal = try armAutoRate(rig)
+        var chunk = 0
+        feedSignal(rig, signal: signal, rate: 96000, ticks: 30, chunk: &chunk)
+        XCTAssertEqual(rig.backend.forceRateCalls, [])
+        XCTAssertEqual(rig.backend.forceRate, 0)
+    }
+
+    func testARateLeftBehindByAnEarlierRunIsClearedAtStart() throws {
+        let rig = try staleRig(rate: 44100)
+        rig.model.start()
+        XCTAssertEqual(rig.backend.forceRateCalls, [0])
+        XCTAssertEqual(rig.backend.forceRate, 0)
+        XCTAssertNil(markerRate(rig))
+        XCTAssertNil(rig.model.level.state.foreignForceRate)
+    }
+
+    func testARateSomeoneElseSetIsLeftAloneAndTheStaleMarkerIsDropped() throws {
+        let rig = try staleRig(rate: 96000)
+        rig.model.start()
+        XCTAssertEqual(rig.backend.forceRateCalls, [])
+        XCTAssertEqual(rig.backend.forceRate, 96000)
+        XCTAssertNil(markerRate(rig))
+    }
+
+    func testAMarkerWithNoRateInForceIsJustRemoved() throws {
+        let rig = try staleRig(rate: 0)
+        rig.model.start()
+        XCTAssertEqual(rig.backend.forceRateCalls, [])
+        XCTAssertNil(markerRate(rig))
+    }
+
+    func testARateFixedByAnotherProgramIsShownOnTheLevelPage() throws {
+        let rig = try makeRig()
+        rig.backend.forceRate = 44100
+        rig.tick()
+        XCTAssertEqual(rig.model.level.state.foreignForceRate, 44100)
+        let notices = LevelPresentation.notices(stage: rig.model.state, level: rig.model.level.state)
+        XCTAssertEqual(notices.map(\.text),
+                       ["Another program has fixed the audio graph at 44.1 kHz; Auto-match waits."])
+        rig.backend.forceRate = 0
+        rig.tick()
+        XCTAssertNil(rig.model.level.state.foreignForceRate)
+    }
+
+    func testARateAutoMatchSetItselfIsNotReportedAsForeign() throws {
+        let rig = try makeRig(detect: true)
+        let signal = try armAutoRate(rig)
+        var chunk = 0
+        feedSignal(rig, signal: signal, rate: 96000, ticks: 27, chunk: &chunk)
+        XCTAssertEqual(rig.backend.forceRate, 192000)
+        XCTAssertNil(rig.model.level.state.foreignForceRate)
+    }
+
+    func testAForceRateIsForgottenWhenTheServerRestartsAndTheMarkerIsCheckedAgain() throws {
+        let rig = try makeRig(detect: true)
+        let signal = try armAutoRate(rig)
+        var chunk = 0
+        feedSignal(rig, signal: signal, rate: 96000, ticks: 27, chunk: &chunk)
+        XCTAssertNotNil(rig.model.level.forcedRate)
+        rig.backend.connected = false
+        rig.backend.changeHandler?()
+        rig.hops.drain()
+        XCTAssertNil(rig.model.level.forcedRate)
+        rig.backend.forceRate = 0
+        rig.backend.connected = true
+        rig.backend.changeHandler?()
+        rig.hops.drain()
+        XCTAssertNil(markerRate(rig))
+    }
+
     func testAForceRateTheUserSetIsNeverOverridden() throws {
         let rig = try makeRig(detect: true)
         rig.backend.forceRate = 44100

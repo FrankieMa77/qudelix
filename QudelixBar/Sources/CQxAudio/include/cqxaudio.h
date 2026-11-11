@@ -53,6 +53,7 @@ int qx_audio_set_default_sink(QxAudio *audio, const char *name);
 int qx_audio_get_force_rate(QxAudio *audio);
 int qx_audio_set_force_rate(QxAudio *audio, int rate);
 int qx_audio_get_sink_volume(QxAudio *audio, const char *node_name, QxSinkVolume *out);
+int qx_audio_scale_sink_volume(QxAudio *audio, const char *node_name, float scale, int mute);
 
 QxStream *qx_audio_start_monitor(QxAudio *audio, const char *sink_name, QxCaptureFn fn, void *user);
 QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const char *virtual_description,
@@ -60,6 +61,8 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
 QxStream *qx_audio_start_tone(QxAudio *audio, const char *sink_name, QxToneFn fn, void *user);
 
 int qx_stream_state(QxStream *stream);
+int qx_stream_leg_state(QxStream *stream, int leg);
+uint32_t qx_stream_leg_rate(QxStream *stream, int leg);
 uint32_t qx_stream_rate(QxStream *stream);
 uint32_t qx_stream_channels(QxStream *stream);
 uint64_t qx_stream_underruns(QxStream *stream);

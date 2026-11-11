@@ -52,6 +52,7 @@ final class StageRig {
 
     var settingsURL: URL { directory.appendingPathComponent("stage.json") }
     var memoryURL: URL { directory.appendingPathComponent("routing.json") }
+    var forceMarkerURL: URL { directory.appendingPathComponent("force-rate.json") }
     var impulseDirectory: URL { directory.appendingPathComponent("impulses") }
 
     init(directory: URL? = nil,
@@ -80,7 +81,8 @@ final class StageRig {
                                 memoryURL: dir.appendingPathComponent("routing.json"))
         model = StageModel(backend: backend, routing: routing, clock: clock,
                            settingsURL: settings,
-                           impulseDirectory: { dir.appendingPathComponent("impulses") })
+                           impulseDirectory: { dir.appendingPathComponent("impulses") },
+                           forceMarkerURL: dir.appendingPathComponent("force-rate.json"))
         model.reporter = reporter
         if start { model.start() }
     }

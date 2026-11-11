@@ -175,7 +175,8 @@ final class OutputRoutingTests: XCTestCase {
         routing.start()
         routing.prepareInsert(target: "qx_5k")
         let saved = try JSONDecoder().decode(RoutingMemory.self, from: Data(contentsOf: memoryURL))
-        XCTAssertEqual(saved, RoutingMemory(target: "qx_5k", previousConfigured: "qx_5k"))
+        XCTAssertEqual(saved, RoutingMemory(target: "qx_5k", previousConfigured: "qx_5k",
+                                            stageGain: 1, stageMuted: false))
         backend.sinks.append(AudioSink(id: 9, name: LinuxAudioNames.stageSinkName, description: "Qudelix Stage"))
         routing.refresh()
         XCTAssertTrue(routing.activateStage())

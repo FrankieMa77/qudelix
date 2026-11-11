@@ -66,6 +66,8 @@ package struct StageModelState: Equatable {
     package var impulseBusy = false
     package var settingsNotice: String?
     package var runningRate: Double?
+    package var audioNotice: String?
+    package var impulseWaiting = false
 
     package init() {}
 
@@ -73,7 +75,7 @@ package struct StageModelState: Equatable {
 
     package var impulseInPath: Bool {
         guard case .ready = impulseState else { return false }
-        return settings.hasImpulse && settings.impulseMixValue > 0
+        return settings.hasImpulse && settings.impulseMixValue > 0 && !impulseWaiting
     }
 
     package var impulseProblem: String? {
@@ -107,10 +109,18 @@ struct ImpulseStore {
     }
 }
 
+struct StageCallbackSizes: Equatable {
+    var last = 0
+    var smallest = 0
+    var largest = 0
+}
+
 private final class StageRenderBridge {
     let processor: StageProcessor
     private let input = UnsafeMutablePointer<StageBuffer>.allocate(capacity: 1)
     private let output = UnsafeMutablePointer<StageBuffer>.allocate(capacity: 1)
+    private let sizeLock = RTLock()
+    private var sizes = StageCallbackSizes()
 
     init(processor: StageProcessor) {
         self.processor = processor
@@ -121,11 +131,26 @@ private final class StageRenderBridge {
     deinit {
         input.deallocate()
         output.deallocate()
+        sizeLock.destroy()
+    }
+
+    func drainSizes() -> StageCallbackSizes {
+        sizeLock.lock()
+        let seen = sizes
+        sizes.smallest = 0
+        sizes.largest = 0
+        sizeLock.unlock()
+        return seen
     }
 
     func insert(_ samples: UnsafePointer<Float>, _ out: UnsafeMutablePointer<Float>,
                 _ frames: Int, _ channels: Int) {
         guard frames > 0, channels > 0 else { return }
+        sizeLock.lock()
+        sizes.last = frames
+        if sizes.smallest == 0 || frames < sizes.smallest { sizes.smallest = frames }
+        if frames > sizes.largest { sizes.largest = frames }
+        sizeLock.unlock()
         let bytes = UInt32(clamping: frames * channels * MemoryLayout<Float>.size)
         input.pointee = StageBuffer(channels: UInt32(channels), byteSize: bytes,
                                     data: UnsafeMutableRawPointer(mutating: samples))
@@ -150,6 +175,11 @@ package final class StageModel {
     package static let phasePoll: TimeInterval = 0.1
     package static let saveDelay: TimeInterval = 0.5
     package static let defaultGraphRate = 48000.0
+    package static let silenceLimit: TimeInterval = 3
+    package static let underrunTicksLimit = 3
+    package static let silentRetryBackoff: TimeInterval = 300
+    package static let volumeGrace: TimeInterval = 1
+    package static let reconnectingStatus = "The audio server restarted \u{2014} reconnecting\u{2026}"
 
     private enum Phase: Equatable {
         case idle
@@ -195,6 +225,14 @@ package final class StageModel {
     private var callReleasedByHand = false
     private var correlationSmoothed: Double?
     private var lastOutputKey: String?
+    private var wasConnected = false
+    private var silenceSince: Date?
+    private var lastUnderruns: UInt64 = 0
+    private var underrunRises = 0
+
+    private enum StartError: Error {
+        case recordUnwritable
+    }
 
     private var handle: AudioStreamHandle?
     private var bridge: StageRenderBridge?
@@ -226,9 +264,11 @@ package final class StageModel {
                              clock: AppClock = SystemClock(),
                              settingsURL: URL = StageStateFile.url,
                              impulseDirectory: (() -> URL)? = nil,
+                             forceMarkerURL: URL? = nil,
                              availableRates: [Double] = LevelModel.defaultAvailableRates) {
         self.init(backend: backend, routing: routing, clock: clock, settingsURL: settingsURL,
-                  impulseDirectory: impulseDirectory, kernel: nil, availableRates: availableRates)
+                  impulseDirectory: impulseDirectory, forceMarkerURL: forceMarkerURL,
+                  kernel: nil, availableRates: availableRates)
     }
 
     init(backend: LinuxAudioBackend,
@@ -236,6 +276,7 @@ package final class StageModel {
          clock: AppClock,
          settingsURL: URL,
          impulseDirectory: (() -> URL)?,
+         forceMarkerURL: URL? = nil,
          kernel: SpectrumKernel?,
          availableRates: [Double]) {
         self.backend = backend
@@ -267,7 +308,7 @@ package final class StageModel {
             perAppEQ = saved.perAppEQ
         }
         level = LevelModel(backend: backend, routing: routing, clock: clock, seed: seed,
-                           kernel: kernel, availableRates: availableRates)
+                           kernel: kernel, availableRates: availableRates, markerURL: forceMarkerURL)
         settingsUnreadable = !outcome.permitsSaving
         stageByDevice = loadedStages
         preservedA2dpGuard = a2dpGuard
@@ -329,6 +370,7 @@ package final class StageModel {
         state.impulseState = impulseState
         state.impulseBusy = impulseBusy
         state.runningRate = runningRate
+        state.audioNotice = routing.notice
         level.publish()
         guard state != notified else { return }
         notified = state
@@ -473,6 +515,7 @@ package final class StageModel {
     }
 
     private func reconcileOnce() {
+        guard routing.connected else { return }
         let device = routing.realOutput
         let hold = callActive && wantedMode != nil && device != nil
         let desired = desiredMode
@@ -519,7 +562,7 @@ package final class StageModel {
         do {
             switch mode {
             case .insert:
-                routing.prepareInsert(target: device.name)
+                guard routing.prepareInsert(target: device.name) else { throw StartError.recordUnwritable }
                 handle = try backend.startInsert(target: device.name) { input, output, frames, channels, _ in
                     bridge.insert(input, output, frames, channels)
                 }
@@ -555,6 +598,9 @@ package final class StageModel {
     }
 
     private static func failureMessage(_ error: Error) -> String {
+        if let startError = error as? StartError, startError == .recordUnwritable {
+            return OutputRouting.recordFailedNotice
+        }
         if let backendError = error as? AudioBackendError {
             switch backendError {
             case .unavailable:
@@ -588,6 +634,9 @@ package final class StageModel {
         runningRate = nil
         callHold = false
         failure = nil
+        silenceSince = nil
+        underrunRises = 0
+        lastUnderruns = 0
         if wasActive { status = "Off." }
         let outer = busy
         busy = true
@@ -597,11 +646,11 @@ package final class StageModel {
         withExtendedLifetime(oldBridge) {}
     }
 
-    private func failEngine(_ message: String, summary: String) {
+    private func failEngine(_ message: String, summary: String, backoff: TimeInterval = StageModel.retryBackoff) {
         stopEngine()
         failure = StageFailure(message: message, summary: summary)
         status = message
-        retryNotBefore = clock.now().addingTimeInterval(Self.retryBackoff)
+        retryNotBefore = clock.now().addingTimeInterval(backoff)
         DebugLog.shared.log("stage engine failed: \(message)")
         publish()
     }
@@ -622,12 +671,19 @@ package final class StageModel {
             failEngine("The audio stream stopped unexpectedly.", summary: "the stream stopped")
             return
         }
+        syncRate()
+        if ratesDiffer() {
+            failEngine(Self.rateMismatchMessage(routing.realOutput), summary: "different rates")
+            return
+        }
         let now = clock.now()
         switch phase {
         case .idle, .active:
             return
         case .starting(let deadline):
-            if handle.isReady, routing.stageSinkPresent {
+            let volumeReady = routing.stageVolumeKnown
+                || now > deadline.addingTimeInterval(Self.volumeGrace - Self.phaseDeadline)
+            if handle.isReady, routing.stageSinkPresent, volumeReady {
                 if routing.activateStage() {
                     phase = .routing(deadline: now.addingTimeInterval(Self.phaseDeadline))
                 } else {
@@ -656,6 +712,50 @@ package final class StageModel {
             }
         }
         schedulePhasePoll()
+    }
+
+    private func ratesDiffer() -> Bool {
+        guard let handle, let sink = handle.sinkLegFormat?.rate, let playback = handle.format?.rate,
+              sink > 0, playback > 0 else { return false }
+        return sink != playback
+    }
+
+    private static func rateMismatchMessage(_ output: AudioSink?) -> String {
+        let name = output?.isQudelix5K == true ? "the 5K" : "your output"
+        return "The audio graph runs the Stage output and \(name) at different rates; Stage needs one rate."
+    }
+
+    private func watchInsertHealth() {
+        guard let handle, engineMode == .insert, phase == .active else {
+            silenceSince = nil
+            underrunRises = 0
+            return
+        }
+        if ratesDiffer() {
+            failEngine(Self.rateMismatchMessage(routing.realOutput), summary: "different rates")
+            return
+        }
+        let now = clock.now()
+        if handle.sinkLegState == .streaming, handle.playbackLegState != .streaming {
+            let since = silenceSince ?? now
+            silenceSince = since
+            if now.timeIntervalSince(since) >= Self.silenceLimit {
+                failEngine("Stage went silent: the audio server isn\u{2019}t carrying its output to "
+                           + (routing.realOutput?.description ?? "your output")
+                           + ". Stage is off and your output is back.",
+                           summary: "the Stage output went silent", backoff: Self.silentRetryBackoff)
+                return
+            }
+        } else {
+            silenceSince = nil
+        }
+        let underruns = handle.underruns
+        underrunRises = underruns > lastUnderruns ? underrunRises + 1 : 0
+        lastUnderruns = underruns
+        if underrunRises >= Self.underrunTicksLimit {
+            failEngine("Stage can\u{2019}t keep up with the audio server, so it is off and your output is back.",
+                       summary: "the Stage output kept underrunning", backoff: Self.silentRetryBackoff)
+        }
     }
 
     private func syncRate() {
@@ -736,7 +836,31 @@ package final class StageModel {
         }
     }
 
+    package func audioServerLost() {
+        if handle != nil || callHold { stopEngine() }
+        level.backendLost()
+        status = Self.reconnectingStatus
+        publish()
+    }
+
+    private func trackConnection() {
+        let connected = routing.connected
+        defer { wasConnected = connected }
+        guard connected != wasConnected else { return }
+        if connected {
+            level.recoverForce()
+            retryNotBefore = nil
+            if handle == nil, !callHold { status = "Off." }
+        } else {
+            if handle != nil || callHold { stopEngine() }
+            level.backendLost()
+            if wasConnected { status = Self.reconnectingStatus }
+        }
+    }
+
     private func outputsChangedOnce() {
+        trackConnection()
+        guard routing.connected else { return }
         let key = routing.realOutput?.name
         if let key {
             if lastOutputKey == nil, stageByDevice[key] == nil,
@@ -939,10 +1063,12 @@ package final class StageModel {
         if handle?.hasFailed == true {
             failEngine("The audio stream stopped unexpectedly.", summary: "the stream stopped")
         }
+        watchInsertHealth()
         level.housekeeping(levelContext)
 
         guard handle != nil else {
             state.sourceCorrelation = nil
+            state.impulseWaiting = false
             state.limiterGainReductionDb = 0
             if loudnessTargetDb != 0 { loudnessTargetDb = 0 }
             state.loudnessShelfDb = 0
@@ -967,6 +1093,7 @@ package final class StageModel {
 
         updateLimiterTelemetry()
         refreshImpulseStatus()
+        refreshImpulseWaiting()
         updateBassGuardTelemetry()
         level.qualityTick(processor: processor, context: levelContext)
         level.automationStep(levelContext)
@@ -975,6 +1102,17 @@ package final class StageModel {
         updateBassGuard()
         level.consumeMeter(processor: processor)
         publish()
+    }
+
+    private func refreshImpulseWaiting() {
+        guard engineMode == .insert, let sizes = bridge?.drainSizes(), sizes.last > 0 else { return }
+        guard state.settings.hasImpulse, state.settings.impulseMixValue > 0,
+              case .ready(_, _, let hop, _) = impulseState else {
+            state.impulseWaiting = false
+            return
+        }
+        let constant = sizes.smallest == sizes.largest
+        state.impulseWaiting = !(constant && hop > 0 && sizes.last % hop == 0)
     }
 
     private func refreshImpulseStatus() {

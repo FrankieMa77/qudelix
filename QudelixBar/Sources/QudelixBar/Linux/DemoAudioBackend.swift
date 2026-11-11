@@ -11,6 +11,7 @@ package final class DemoAudioBackend: LinuxAudioBackend {
     package private(set) var defaultSinkName: String? = DemoAudioBackend.fiveK.name
     package private(set) var configuredDefaultSinkName: String? = DemoAudioBackend.fiveK.name
     package private(set) var forceRate = 0
+    package var connected: Bool { true }
     package var changeHandler: (() -> Void)?
 
     package init() {}
@@ -18,6 +19,8 @@ package final class DemoAudioBackend: LinuxAudioBackend {
     package func sinkVolume(named name: String) -> AudioSinkVolume? {
         AudioSinkVolume(volume: 0.5, channelVolume: 1, muted: false)
     }
+
+    package func scaleSinkVolume(named name: String, by factor: Float, muted: Bool?) -> Bool { false }
 
     package func setDefaultSink(named name: String?) -> Bool { false }
 

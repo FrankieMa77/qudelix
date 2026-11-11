@@ -242,15 +242,17 @@ final class LevelPage {
 
     private func stageChanged(_ next: StageModelState) {
         stageState = next
-        var shown: [StageNotice] = []
-        if let notice = next.settingsNotice { shown.append(StageNotice(text: notice, caution: true)) }
-        if let failure = LevelPresentation.failureNotice(next) { shown.append(StageNotice(text: failure, caution: true)) }
-        notices.show(shown)
+        refreshNotices()
         refresh()
+    }
+
+    private func refreshNotices() {
+        notices.show(LevelPresentation.notices(stage: stageState, level: levelState))
     }
 
     private func levelChanged(_ next: LevelModelState) {
         levelState = next
+        refreshNotices()
         refresh()
     }
 
