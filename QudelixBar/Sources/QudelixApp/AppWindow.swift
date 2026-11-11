@@ -79,7 +79,7 @@ enum AppWindow {
                 if let stage = audio?.stage {
                     let stagePage = StagePage(stage: stage)
                     self.stagePage = stagePage
-                    content = stagePage.widget
+                    content = AudioGate.wrap(stagePage.widget, page: page, audio: audio)
                 } else {
                     content = makePlaceholder(for: page, audio: audio)
                 }
@@ -87,7 +87,7 @@ enum AppWindow {
                 if let stage = audio?.stage {
                     let levelPage = LevelPage(stage: stage, automation: audio?.automation)
                     self.levelPage = levelPage
-                    content = levelPage.widget
+                    content = AudioGate.wrap(levelPage.widget, page: page, audio: audio)
                 } else {
                     content = makePlaceholder(for: page, audio: audio)
                 }
@@ -96,7 +96,7 @@ enum AppWindow {
                     let tunePage = TunePage(tune: tune)
                     self.tunePage = tunePage
                     tuneDriver = TuneRenderDriver(options: options, tune: tune, page: tunePage)
-                    content = tunePage.widget
+                    content = AudioGate.wrap(tunePage.widget, page: page, audio: audio)
                 } else {
                     content = makePlaceholder(for: page, audio: audio)
                 }

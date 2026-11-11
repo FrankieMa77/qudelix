@@ -26,16 +26,12 @@ let model: AppModel = MainActor.assumeIsolated {
 
 let audio: AudioStack = MainActor.assumeIsolated {
     let isolated = options.demo || options.noDevice || options.render != nil || options.trayDump != nil
-    var locations = AudioStackLocations.system
-    var backend: LinuxAudioBackend?
     if isolated {
-        locations = .isolated(in: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let locations = AudioStackLocations.isolated(in: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("qudelix-render-\(UUID().uuidString)", isDirectory: true))
-        backend = options.noAudio ? nil : DemoAudioBackend()
-    } else {
-        backend = try? PipeWireAudioBackend()
+        return AudioStack(app: model, backend: options.noAudio ? nil : DemoAudioBackend(), locations: locations)
     }
-    return AudioStack(app: model, backend: backend, locations: locations)
+    return AudioStack(app: model, backendFactory: { try? PipeWireAudioBackend() })
 }
 
 Signals.connect(application, signal: "activate") {
