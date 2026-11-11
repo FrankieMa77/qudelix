@@ -64,6 +64,10 @@ Signals.connect(application, signal: "shutdown") {
     }
 }
 
+UnixSignals.onTerminate {
+    g_application_quit(UnsafeMutablePointer<GApplication>(OpaquePointer(application)))
+}
+
 AppMenu.installOnMain(application: application)
 
 let quit = g_simple_action_new("quit", nil)!
