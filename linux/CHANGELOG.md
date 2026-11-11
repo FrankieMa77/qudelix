@@ -28,6 +28,20 @@ New in the app:
 - Load from file on the EQ and Presets pages.
 - Loading the slot that is already active now says what happened.
 
+Safety:
+
+- When Stage stops, for any reason (turned off, failed, output changed, quit, logout or a crash),
+  your output gets the volume you were hearing through Stage, and its mute, before it becomes the
+  default again, so the sound never jumps louder.
+- Stage turns itself off, puts your output back and says why if it goes silent, if its two audio
+  paths run at different rates, or if it cannot save its recovery record. A failed restore of
+  your default output is reported.
+- Auto-match clears a sample rate it left behind after a crash, and says when another program
+  has fixed the rate.
+- The app opens at once and connects to the audio server in the background. It reconnects by
+  itself after a PipeWire or WirePlumber restart, and quits cleanly on SIGTERM, SIGINT and SIGHUP.
+- The tone test refuses an output above 100 % and reminds you to set your usual volume first.
+
 Bluetooth fixes (the 1.6.4 work that never shipped on its own):
 
 - The link waits for BlueZ 5.87 to finish loading the 5K's services.
@@ -40,6 +54,7 @@ Known limits:
 - The AI and AutoEq gaps in the app come in a later version: Library import, paste and export,
   the published-preset mode, bass and tilt, and the source cutoff. Use `qudelix` for those.
 - Stage, Level and Tune have not yet been tested on real hardware by the developer.
+- Apps that pick an output themselves bypass Stage.
 - USB is the supported link. Bluetooth is included but untested on a real 5K.
 
 ## Earlier (released together with the Mac app)
