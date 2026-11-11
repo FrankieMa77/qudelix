@@ -67,7 +67,8 @@ jobs:
           apt-get install -y --no-install-recommends libdbus-1-dev pkg-config libcurl4-openssl-dev binutils \
             libgtk-4-dev libadwaita-1-dev \
             xvfb xauth fonts-cantarell adwaita-icon-theme librsvg2-common libgl1-mesa-dri \
-            dpkg-dev desktop-file-utils appstream dbus
+            dpkg-dev desktop-file-utils appstream dbus \
+            libpipewire-0.3-dev
 
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
