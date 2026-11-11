@@ -299,6 +299,31 @@ final class TuneModelTests: XCTestCase {
         await rig.close()
     }
 
+    func testTonesRefuseAnOverAmplifiedOutput() async throws {
+        let rig = try await AutoRig(withStage: true)
+        let tune = makeTune(rig)
+        rig.stageRig?.backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 1.0, muted: false)
+        XCTAssertNil(tune.blocker(for: .tones))
+        rig.stageRig?.backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 1.2, muted: false)
+        XCTAssertEqual(tune.blocker(for: .tones), ToneTestModel.Blocker.overAmplified.message)
+        XCTAssertTrue(tune.state.blockers[.tones] == nil)
+        tune.start(.tones)
+        XCTAssertNil(tune.state.active)
+        XCTAssertTrue(rig.stageRig?.backend.tones.isEmpty ?? false)
+        rig.stageRig?.backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 1.0, muted: false)
+        XCTAssertNil(tune.blocker(for: .tones))
+        await rig.close()
+    }
+
+    func testTheToneScreenCautionsAboutTheLevelBeforeStarting() async throws {
+        let rig = try await AutoRig(withStage: true)
+        let tune = makeTune(rig)
+        let screen = TunePresentation.screen(.tones, tune.state)
+        XCTAssertEqual(screen.cautions, ["Set your usual listening volume first; the loudest tone is \u{2212}12 dBFS."])
+        XCTAssertEqual(ToneTestMath.maxLevelDBFS, -12)
+        await rig.close()
+    }
+
     func testTonesAreBlockedOnACall() async throws {
         let rig = try await AutoRig(withStage: true)
         let tune = makeTune(rig)

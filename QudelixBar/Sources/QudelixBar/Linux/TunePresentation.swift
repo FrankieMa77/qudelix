@@ -227,6 +227,7 @@ package enum TunePresentation {
             "Set a comfortable listening volume first \u{2014} the tones are quiet, but they are relative "
                 + "to it. EQ is switched off while measuring, then restored."
         ]
+        screen.cautions = [ToneTestModel.levelCaution]
     }
 
     private static func sideRunning(_ screen: inout TuneScreen, _ side: TuneSideState) {

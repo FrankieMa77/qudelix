@@ -74,7 +74,7 @@ final class ToneTestModel {
     typealias Staircase = ToneTestMath.Staircase
 
     enum Blocker: Equatable {
-        case notConnected, unsupported, voiceCall, noOutput, wrongOutput(String)
+        case notConnected, unsupported, voiceCall, noOutput, wrongOutput(String), overAmplified
 
         var message: String {
             switch self {
@@ -87,10 +87,15 @@ final class ToneTestModel {
                 return "No audio output is available, so the tones cannot play."
             case .wrongOutput(let name):
                 return "Sound is going to \(name). Choose the Qudelix as the output device."
+            case .overAmplified:
+                return "The output volume is above 100 %, which could make the tones far too loud. "
+                    + "Lower it to 100 % or less in Sound settings first."
             }
         }
     }
 
+    static let levelCaution = "Set your usual listening volume first; the loudest tone is \u{2212}12 dBFS."
+    static let maxSinkGain: Float = 1.001
     static let playerDeadlinePolls = 40
     static let playerPollMs = 50
 
@@ -142,6 +147,9 @@ final class ToneTestModel {
         guard let output = routing.realOutput else { return .noOutput }
         guard output.isQudelix5K else {
             return .wrongOutput(output.description.isEmpty ? output.name : output.description)
+        }
+        if let level = backend?.sinkVolume(named: output.name), level.gain > Self.maxSinkGain {
+            return .overAmplified
         }
         return nil
     }
