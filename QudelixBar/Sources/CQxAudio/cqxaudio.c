@@ -27,6 +27,7 @@
 #define QX_MAX_CHANNELS 8
 #define QX_DEFAULT_CLOCK_RATE 48000
 #define QX_QUANTUM_FRAMES 512
+#define QX_BLUETOOTH_QUANTUM_FRAMES 1024
 
 enum {
     KIND_MONITOR = 0,
@@ -84,6 +85,7 @@ struct QxStream {
     atomic_uint_fast64_t head;
     atomic_uint_fast64_t tail;
     atomic_int primed;
+    uint32_t prime_quanta;
     atomic_uint_fast64_t underruns;
     atomic_uint_fast64_t overruns;
 };
@@ -332,6 +334,11 @@ static void sink_info(void *data, const struct pw_node_info *info)
     copy_present(slot->info.vendor_id, sizeof slot->info.vendor_id, props, PW_KEY_DEVICE_VENDOR_ID);
     copy_present(slot->info.product_id, sizeof slot->info.product_id, props, PW_KEY_DEVICE_PRODUCT_ID);
     copy_present(slot->info.bluez_address, sizeof slot->info.bluez_address, props, "api.bluez5.address");
+    const char *profile = lookup(props, "api.bluez5.profile");
+    if (profile == NULL)
+        profile = lookup(props, "device.profile.name");
+    if (profile != NULL)
+        copy_string(slot->info.profile, sizeof slot->info.profile, profile);
     const char *device = lookup(props, PW_KEY_DEVICE_ID);
     if (device != NULL)
         slot->device_id = atoi(device);
@@ -400,6 +407,10 @@ static void registry_global(void *data, uint32_t id, uint32_t permissions, const
         copy_string(slot->info.vendor_id, sizeof slot->info.vendor_id, lookup(props, PW_KEY_DEVICE_VENDOR_ID));
         copy_string(slot->info.product_id, sizeof slot->info.product_id, lookup(props, PW_KEY_DEVICE_PRODUCT_ID));
         copy_string(slot->info.bluez_address, sizeof slot->info.bluez_address, lookup(props, "api.bluez5.address"));
+        const char *initial_profile = lookup(props, "api.bluez5.profile");
+        if (initial_profile == NULL)
+            initial_profile = lookup(props, "device.profile.name");
+        copy_string(slot->info.profile, sizeof slot->info.profile, initial_profile);
         slot->node = pw_registry_bind(audio->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);
         if (slot->node != NULL) {
             pw_node_add_listener(slot->node, &slot->listener, &sink_events, slot);
@@ -826,16 +837,17 @@ static uint32_t ring_pop(QxStream *stream, float *out, uint32_t frames)
     uint64_t tail = atomic_load_explicit(&stream->tail, memory_order_relaxed);
     uint64_t head = atomic_load_explicit(&stream->head, memory_order_acquire);
     uint64_t fill = head - tail;
-    uint64_t limit = 4 * (uint64_t)frames;
+    uint64_t prime = (uint64_t)stream->prime_quanta * frames;
+    uint64_t limit = 2 * prime;
     if (limit < 2048)
         limit = 2048;
     if (fill > limit) {
-        tail = head - 2 * (uint64_t)frames;
-        fill = 2 * (uint64_t)frames;
+        tail = head - prime;
+        fill = prime;
         atomic_fetch_add_explicit(&stream->overruns, 1, memory_order_relaxed);
     }
     if (!atomic_load_explicit(&stream->primed, memory_order_relaxed)) {
-        if (fill < 2 * (uint64_t)frames) {
+        if (fill < prime) {
             atomic_store_explicit(&stream->tail, tail, memory_order_release);
             return 0;
         }
@@ -1038,12 +1050,12 @@ static int register_stream(QxAudio *audio, QxStream *stream)
     return 0;
 }
 
-static void latency_text(QxAudio *audio, char *out, size_t length)
+static void latency_text(QxAudio *audio, uint32_t frames, char *out, size_t length)
 {
     int rate = audio->force_rate > 0 ? audio->force_rate : audio->clock_rate;
     if (rate <= 0)
         rate = QX_DEFAULT_CLOCK_RATE;
-    snprintf(out, length, "%d/%d", QX_QUANTUM_FRAMES, rate);
+    snprintf(out, length, "%u/%d", frames, rate);
 }
 
 static QxStream *finish_start(QxAudio *audio, QxStream *stream, int result)
@@ -1083,7 +1095,7 @@ QxStream *qx_audio_start_monitor(QxAudio *audio, const char *sink_name, QxCaptur
 }
 
 QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const char *virtual_description,
-                                const char *target_sink, QxRenderFn fn, void *user)
+                                const char *target_sink, int bluetooth, QxRenderFn fn, void *user)
 {
     pw_thread_loop_lock(audio->loop);
     QxStream *stream = audio->lost ? NULL : stream_alloc(audio, KIND_INSERT);
@@ -1095,7 +1107,8 @@ QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const 
     stream->user = user;
     copy_string(stream->virtual_name, sizeof stream->virtual_name, virtual_name);
     char latency[32];
-    latency_text(audio, latency, sizeof latency);
+    stream->prime_quanta = bluetooth ? 4 : 2;
+    latency_text(audio, bluetooth ? QX_BLUETOOTH_QUANTUM_FRAMES : QX_QUANTUM_FRAMES, latency, sizeof latency);
     struct pw_properties *sink_props = pw_properties_new(
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",

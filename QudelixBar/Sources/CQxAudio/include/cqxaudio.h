@@ -21,6 +21,7 @@ typedef struct {
     char vendor_id[16];
     char product_id[16];
     char bluez_address[32];
+    char profile[48];
 } QxSinkInfo;
 
 typedef struct {
@@ -57,7 +58,7 @@ int qx_audio_scale_sink_volume(QxAudio *audio, const char *node_name, float scal
 
 QxStream *qx_audio_start_monitor(QxAudio *audio, const char *sink_name, QxCaptureFn fn, void *user);
 QxStream *qx_audio_start_insert(QxAudio *audio, const char *virtual_name, const char *virtual_description,
-                                const char *target_sink, QxRenderFn fn, void *user);
+                                const char *target_sink, int bluetooth, QxRenderFn fn, void *user);
 QxStream *qx_audio_start_tone(QxAudio *audio, const char *sink_name, QxToneFn fn, void *user);
 
 int qx_stream_state(QxStream *stream);

@@ -80,9 +80,9 @@ package final class SwappableAudioBackend: LinuxAudioBackend {
         return try backend.startMonitor(sink: sink, block: block)
     }
 
-    package func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
+    package func startInsert(target: String, bluetooth: Bool, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
         guard let backend = current else { throw AudioBackendError.unavailable(-1) }
-        return try backend.startInsert(target: target, render: render)
+        return try backend.startInsert(target: target, bluetooth: bluetooth, render: render)
     }
 
     package func startTone(sink: String, render: @escaping AudioToneBlock) throws -> AudioStreamHandle {

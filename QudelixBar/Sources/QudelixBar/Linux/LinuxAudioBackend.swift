@@ -15,6 +15,7 @@ package struct AudioSink: Equatable {
     package var vendorId: String
     package var productId: String
     package var bluezAddress: String
+    package var profile: String
 
     package init(id: UInt32,
                  name: String,
@@ -23,7 +24,8 @@ package struct AudioSink: Equatable {
                  deviceBus: String = "",
                  vendorId: String = "",
                  productId: String = "",
-                 bluezAddress: String = "") {
+                 bluezAddress: String = "",
+                 profile: String = "") {
         self.id = id
         self.name = name
         self.description = description
@@ -32,12 +34,19 @@ package struct AudioSink: Equatable {
         self.vendorId = vendorId
         self.productId = productId
         self.bluezAddress = bluezAddress
+        self.profile = profile
     }
 
     package var transport: AudioSinkTransport {
         if deviceBus == "usb" { return .usb }
         if deviceBus == "bluetooth" || deviceApi == "bluez5" || !bluezAddress.isEmpty { return .bluetooth }
         return .other
+    }
+
+    package var isBluetoothHeadsetProfile: Bool {
+        guard transport == .bluetooth else { return false }
+        let lowered = profile.lowercased()
+        return ["headset", "hfp", "hsp", "head-unit", "handsfree"].contains { lowered.contains($0) }
     }
 
     package var isStageSink: Bool { name == LinuxAudioNames.stageSinkName }
@@ -126,7 +135,13 @@ package protocol LinuxAudioBackend: AnyObject {
     func setDefaultSink(named name: String?) -> Bool
     func setForceRate(_ rate: Int) -> Bool
     func startMonitor(sink: String, block: @escaping AudioCaptureBlock) throws -> AudioStreamHandle
-    func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle
+    func startInsert(target: String, bluetooth: Bool, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle
     func startTone(sink: String, render: @escaping AudioToneBlock) throws -> AudioStreamHandle
     func shutdown()
+}
+
+extension LinuxAudioBackend {
+    package func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
+        try startInsert(target: target, bluetooth: false, render: render)
+    }
 }

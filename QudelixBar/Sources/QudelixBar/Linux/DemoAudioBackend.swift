@@ -30,7 +30,7 @@ package final class DemoAudioBackend: LinuxAudioBackend {
         throw AudioBackendError.streamFailed
     }
 
-    package func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
+    package func startInsert(target: String, bluetooth: Bool, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
         throw AudioBackendError.streamFailed
     }
 

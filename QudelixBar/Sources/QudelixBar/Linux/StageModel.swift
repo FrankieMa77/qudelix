@@ -177,6 +177,15 @@ package final class StageModel {
     package static let defaultGraphRate = 48000.0
     package static let silenceLimit: TimeInterval = 3
     package static let underrunTicksLimit = 3
+    package static let bluetoothUnderrunTicksLimit = 10
+    package static let bluetoothRetryDelay: TimeInterval = 15
+    package static let bluetoothRetries = 3
+    package static let bluetoothHealthyRun: TimeInterval = 120
+    package static let bluetoothStallMessage =
+        "Stage paused because the Bluetooth link to the 5K kept stalling. It turns itself back on; "
+        + "if this keeps happening, move closer to the computer or use USB."
+    package static let headsetHoldStatus =
+        "Paused while the 5K is in its headset profile \u{2014} resumes when it switches back."
     package static let silentRetryBackoff: TimeInterval = 300
     package static let volumeGrace: TimeInterval = 1
     package static let reconnectingStatus = "The audio server restarted \u{2014} reconnecting\u{2026}"
@@ -229,6 +238,12 @@ package final class StageModel {
     private var silenceSince: Date?
     private var lastUnderruns: UInt64 = 0
     private var underrunRises = 0
+    private var runningBluetooth = false
+    private var bluetoothStalls = 0
+    private var bluetoothRetryDue = false
+    private var healthySince: Date?
+    private var knownSinkNames: Set<String> = []
+    private var headsetHold = false
 
     private enum StartError: Error {
         case recordUnwritable
@@ -517,7 +532,8 @@ package final class StageModel {
     private func reconcileOnce() {
         guard routing.connected else { return }
         let device = routing.realOutput
-        let hold = callActive && wantedMode != nil && device != nil
+        headsetHold = device?.isBluetoothHeadsetProfile == true
+        let hold = (callActive || headsetHold) && wantedMode != nil && device != nil
         let desired = desiredMode
 
         if handle != nil, !hold {
@@ -531,7 +547,8 @@ package final class StageModel {
         if hold {
             if !callHold {
                 level.clearVerdict()
-                DebugLog.shared.log("call in progress — stage engine holding")
+                DebugLog.shared.log(headsetHold ? "headset profile — stage engine holding"
+                                                : "call in progress — stage engine holding")
                 beginHold()
             }
         } else if handle == nil, let desired, let device {
@@ -547,7 +564,7 @@ package final class StageModel {
         if handle != nil { stopEngine() }
         callHold = true
         failure = nil
-        status = "Paused for a call — resumes when the call ends."
+        status = callActive ? "Paused for a call — resumes when the call ends." : Self.headsetHoldStatus
     }
 
     private func startEngine(on device: AudioSink, mode: StageRunMode) {
@@ -563,7 +580,8 @@ package final class StageModel {
             switch mode {
             case .insert:
                 guard routing.prepareInsert(target: device.name) else { throw StartError.recordUnwritable }
-                handle = try backend.startInsert(target: device.name) { input, output, frames, channels, _ in
+                handle = try backend.startInsert(target: device.name,
+                                                 bluetooth: device.transport == .bluetooth) { input, output, frames, channels, _ in
                     bridge.insert(input, output, frames, channels)
                 }
             case .monitor:
@@ -574,6 +592,7 @@ package final class StageModel {
             self.bridge = bridge
             engineMode = mode
             runningSinkName = device.name
+            runningBluetooth = device.transport == .bluetooth
             runningRate = rate
             failure = nil
             if mode == .insert {
@@ -637,6 +656,8 @@ package final class StageModel {
         silenceSince = nil
         underrunRises = 0
         lastUnderruns = 0
+        healthySince = nil
+        runningBluetooth = false
         if wasActive { status = "Off." }
         let outer = busy
         busy = true
@@ -653,6 +674,14 @@ package final class StageModel {
         retryNotBefore = clock.now().addingTimeInterval(backoff)
         DebugLog.shared.log("stage engine failed: \(message)")
         publish()
+    }
+
+    private func failBluetoothStall() {
+        let retry = bluetoothStalls < Self.bluetoothRetries
+        bluetoothStalls = retry ? bluetoothStalls + 1 : 0
+        bluetoothRetryDue = retry
+        failEngine(Self.bluetoothStallMessage, summary: "the Bluetooth link kept stalling",
+                   backoff: retry ? Self.bluetoothRetryDelay : Self.silentRetryBackoff)
     }
 
     private func schedulePhasePoll() {
@@ -752,6 +781,16 @@ package final class StageModel {
         let underruns = handle.underruns
         underrunRises = underruns > lastUnderruns ? underrunRises + 1 : 0
         lastUnderruns = underruns
+        if runningBluetooth {
+            let since = healthySince ?? now
+            healthySince = since
+            if now.timeIntervalSince(since) >= Self.bluetoothHealthyRun { bluetoothStalls = 0 }
+            if underrunRises >= Self.bluetoothUnderrunTicksLimit {
+                healthySince = nil
+                failBluetoothStall()
+            }
+            return
+        }
         if underrunRises >= Self.underrunTicksLimit {
             failEngine("Stage can\u{2019}t keep up with the audio server, so it is off and your output is back.",
                        summary: "the Stage output kept underrunning", backoff: Self.silentRetryBackoff)
@@ -850,6 +889,7 @@ package final class StageModel {
         if connected {
             level.recoverForce()
             retryNotBefore = nil
+            bluetoothStalls = 0
             if handle == nil, !callHold { status = "Off." }
         } else {
             if handle != nil || callHold { stopEngine() }
@@ -881,8 +921,15 @@ package final class StageModel {
         if key != lastOutputKey {
             level.adoptEarCalibration(for: key)
             retryNotBefore = nil
+            bluetoothStalls = 0
         }
         lastOutputKey = key
+        let names = Set(routing.sinks.map(\.name))
+        if let key, names.contains(key), !knownSinkNames.contains(key) {
+            retryNotBefore = nil
+            bluetoothStalls = 0
+        }
+        knownSinkNames = names
 
         if handle != nil, let running = runningSinkName,
            !routing.sinks.contains(where: { $0.name == running }) {
@@ -1059,6 +1106,10 @@ package final class StageModel {
             reconcile()
         }
 
+        if handle == nil, bluetoothRetryDue, let notBefore = retryNotBefore, clock.now() >= notBefore {
+            bluetoothRetryDue = false
+            reconcile()
+        }
         syncRate()
         if handle?.hasFailed == true {
             failEngine("The audio stream stopped unexpectedly.", summary: "the stream stopped")

@@ -47,6 +47,7 @@ final class FakeAudioBackend: LinuxAudioBackend {
     var stageVolumeOnCreate = AudioSinkVolume(volume: 1, channelVolume: 1, muted: false)
     private(set) var monitors: [(sink: String, block: AudioCaptureBlock, stream: FakeAudioStream)] = []
     private(set) var inserts: [(target: String, render: AudioRenderBlock, stream: FakeAudioStream)] = []
+    private(set) var insertBluetooth: [Bool] = []
     private(set) var tones: [(sink: String, render: AudioToneBlock, stream: FakeAudioStream)] = []
     private(set) var isShutDown = false
 
@@ -80,7 +81,10 @@ final class FakeAudioBackend: LinuxAudioBackend {
 
     private func applyDefault(_ name: String?) {
         configuredDefaultSinkName = name
-        defaultSinkName = name ?? sinks.first { !$0.isStageSink }?.name
+        let fallback = sinks.first { !$0.isStageSink }?.name
+        defaultSinkName = name.flatMap { wanted in
+            fallback == nil || sinks.contains { $0.name == wanted } ? wanted : nil
+        } ?? fallback
         changeHandler?()
     }
 
@@ -105,11 +109,12 @@ final class FakeAudioBackend: LinuxAudioBackend {
         return stream
     }
 
-    func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
+    func startInsert(target: String, bluetooth: Bool, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
         if failStreams { throw AudioBackendError.streamFailed }
         let stream = FakeAudioStream()
         stream.format = streamFormat
         stream.sinkLegFormat = sinkLegRate.map { AudioStreamFormat(rate: $0, channels: 2) } ?? streamFormat
+        insertBluetooth.append(bluetooth)
         inserts.append((target, render, stream))
         if autoStageSink {
             volumes[LinuxAudioNames.stageSinkName] = stageVolumeOnCreate

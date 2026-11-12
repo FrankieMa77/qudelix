@@ -191,7 +191,8 @@ package final class PipeWireAudioBackend: LinuxAudioBackend {
                       deviceBus: text(info.device_bus),
                       vendorId: text(info.vendor_id),
                       productId: text(info.product_id),
-                      bluezAddress: text(info.bluez_address))
+                      bluezAddress: text(info.bluez_address),
+                      profile: text(info.profile))
         }
     }
 
@@ -267,12 +268,12 @@ package final class PipeWireAudioBackend: LinuxAudioBackend {
         return try adopt(stream, box: box)
     }
 
-    package func startInsert(target: String, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
+    package func startInsert(target: String, bluetooth: Bool, render: @escaping AudioRenderBlock) throws -> AudioStreamHandle {
         guard let audio else { throw AudioBackendError.streamFailed }
         let box = RenderBox(render)
         let user = Unmanaged.passUnretained(box).toOpaque()
         let stream = qx_audio_start_insert(audio, LinuxAudioNames.stageSinkName, LinuxAudioNames.stageSinkDescription,
-                                           target, { user, input, output, frames, channels, rate in
+                                           target, bluetooth ? 1 : 0, { user, input, output, frames, channels, rate in
             guard let user, let input, let output else { return }
             Unmanaged<RenderBox>.fromOpaque(user).takeUnretainedValue()
                 .block(input, output, Int(frames), Int(channels), Int(rate))
