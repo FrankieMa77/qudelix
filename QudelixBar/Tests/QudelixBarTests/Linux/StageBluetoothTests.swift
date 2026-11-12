@@ -161,6 +161,31 @@ final class StageBluetoothTests: XCTestCase {
         XCTAssertNil(after.deferred)
     }
 
+    func testAPendingVolumeForTheSameOutputIsAppliedOnceItsVolumeIsKnownAndNeverRaisesTheLevel() throws {
+        let rig = try makeUsbRig()
+        rig.enableStage()
+        quietStageVolume(rig, gain: 0.3)
+        rig.backend.sinks.removeAll()
+        rig.backend.volumes["qx_5k"] = nil
+        rig.backend.changeHandler?()
+        rig.settle(0.5)
+        XCTAssertTrue(rig.model.state.status == "Off." || !rig.model.state.running)
+        rig.backend.sinks = [StageRig.fiveK]
+        rig.backend.changeHandler?()
+        rig.settle(1)
+        XCTAssertTrue(rig.model.state.running)
+        XCTAssertEqual(rig.backend.inserts.last?.target, "qx_5k")
+        rig.backend.volumes["qx_5k"] = AudioSinkVolume(volume: 1, channelVolume: 1, muted: false)
+        rig.backend.changeHandler?()
+        rig.settle(0.5)
+        let stageGain = rig.backend.volumes[LinuxAudioNames.stageSinkName]?.gain ?? 1
+        let targetGain = rig.backend.volumes["qx_5k"]?.gain ?? 1
+        XCTAssertEqual(targetGain, 0.3, accuracy: 0.0005)
+        XCTAssertLessThanOrEqual(stageGain * targetGain, 0.3 + 0.0005)
+        let memory = try JSONDecoder().decode(RoutingMemory.self, from: Data(contentsOf: rig.memoryURL))
+        XCTAssertNil(memory.deferred)
+    }
+
     func testAFailureBackoffEndsWhenTheOutputComesBackAfterAPowerCycle() throws {
         let rig = try makeUsbRig()
         rig.enableStage()

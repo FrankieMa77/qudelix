@@ -49,6 +49,35 @@ context.objects = [
             object.linger = true
         }
     }
+    {
+        factory = adapter
+        args = {
+            factory.name = support.null-audio-sink
+            node.name = "qx_test_loopback"
+            node.description = "Loopback Output Test"
+            media.class = Audio/Sink
+            audio.position = [ FL FR ]
+            device.id = 777
+            priority.session = 1
+            priority.driver = 1
+            object.linger = true
+        }
+    }
+    {
+        factory = adapter
+        args = {
+            factory.name = support.null-audio-sink
+            node.name = "qx_test_internal"
+            node.description = "Internal Output Test"
+            media.class = Audio/Sink/Internal
+            audio.position = [ FL FR ]
+            device.id = 777
+            api.bluez5.profile = "headset-head-unit"
+            priority.session = 1
+            priority.driver = 1
+            object.linger = true
+        }
+    }
 ]
 CONF
 

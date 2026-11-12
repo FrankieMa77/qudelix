@@ -217,7 +217,7 @@ package final class OutputRouting {
         restoreCheckAt = nil
         let stale = snapshot.configuredName == LinuxAudioNames.stageSinkName
         let previous = stale ? memory?.previousConfigured : snapshot.configuredName
-        let carried = (memory?.pendingEntries ?? []).filter { $0.target != target }
+        let carried = memory?.pendingEntries ?? []
         memory = RoutingMemory(target: target, previousConfigured: previous, stageGain: 1, stageMuted: false,
                                deferred: carried.isEmpty ? nil : Array(carried.suffix(Self.deferredCap)))
         guard saveMemory() else {

@@ -39,6 +39,7 @@ typedef struct {
     int used;
     QxSinkInfo info;
     int device_id;
+    int internal;
     QxSinkVolume volume;
     float channel_values[QX_MAX_CHANNELS];
     uint32_t channel_count;
@@ -380,7 +381,8 @@ static void registry_global(void *data, uint32_t id, uint32_t permissions, const
         return;
     if (strcmp(type, PW_TYPE_INTERFACE_Node) == 0) {
         const char *media_class = lookup(props, PW_KEY_MEDIA_CLASS);
-        if (media_class == NULL || strcmp(media_class, "Audio/Sink") != 0)
+        int internal = media_class != NULL && strcmp(media_class, "Audio/Sink/Internal") == 0;
+        if (media_class == NULL || (strcmp(media_class, "Audio/Sink") != 0 && !internal))
             return;
         QxSinkSlot *slot = NULL;
         for (int i = 0; i < QX_MAX_SINKS; i++) {
@@ -396,6 +398,10 @@ static void registry_global(void *data, uint32_t id, uint32_t permissions, const
         slot->audio = audio;
         slot->info.id = id;
         slot->device_id = -1;
+        slot->internal = internal;
+        const char *initial_device = lookup(props, PW_KEY_DEVICE_ID);
+        if (initial_device != NULL)
+            slot->device_id = atoi(initial_device);
         copy_string(slot->info.name, sizeof slot->info.name, lookup(props, PW_KEY_NODE_NAME));
         const char *description = lookup(props, PW_KEY_NODE_DESCRIPTION);
         if (description == NULL)
@@ -415,7 +421,8 @@ static void registry_global(void *data, uint32_t id, uint32_t permissions, const
         if (slot->node != NULL) {
             pw_node_add_listener(slot->node, &slot->listener, &sink_events, slot);
             uint32_t ids[1] = { SPA_PARAM_Props };
-            pw_node_subscribe_params(slot->node, ids, 1);
+            if (!internal)
+                pw_node_subscribe_params(slot->node, ids, 1);
         }
         notify(audio);
     } else if (strcmp(type, PW_TYPE_INTERFACE_Device) == 0) {
@@ -632,9 +639,18 @@ int qx_audio_list_sinks(QxAudio *audio, QxSinkInfo *out, int max)
     pw_thread_loop_lock(audio->loop);
     for (int i = 0; i < QX_MAX_SINKS && count < max; i++) {
         const QxSinkSlot *slot = &audio->sinks[i];
-        if (!slot->used)
+        if (!slot->used || slot->internal)
             continue;
         QxSinkInfo info = slot->info;
+        if (info.profile[0] == 0 && slot->device_id >= 0) {
+            for (int n = 0; n < QX_MAX_SINKS; n++) {
+                const QxSinkSlot *twin = &audio->sinks[n];
+                if (twin->used && twin->internal && twin->device_id == slot->device_id && twin->info.profile[0] != 0) {
+                    copy_string(info.profile, sizeof info.profile, twin->info.profile);
+                    break;
+                }
+            }
+        }
         for (int d = 0; d < QX_MAX_SINKS && slot->device_id >= 0; d++) {
             const QxDeviceSlot *device = &audio->devices[d];
             if (!device->used || device->id != (uint32_t)slot->device_id)
@@ -720,7 +736,7 @@ int qx_audio_get_sink_volume(QxAudio *audio, const char *node_name, QxSinkVolume
     memset(out, 0, sizeof *out);
     pw_thread_loop_lock(audio->loop);
     for (int i = 0; i < QX_MAX_SINKS; i++) {
-        if (audio->sinks[i].used && strcmp(audio->sinks[i].info.name, node_name) == 0) {
+        if (audio->sinks[i].used && !audio->sinks[i].internal && strcmp(audio->sinks[i].info.name, node_name) == 0) {
             *out = audio->sinks[i].volume;
             found = out->valid;
             break;
@@ -740,7 +756,7 @@ int qx_audio_scale_sink_volume(QxAudio *audio, const char *node_name, float scal
         result = -ENOENT;
         for (int i = 0; i < QX_MAX_SINKS; i++) {
             QxSinkSlot *slot = &audio->sinks[i];
-            if (!slot->used || strcmp(slot->info.name, node_name) != 0)
+            if (!slot->used || slot->internal || strcmp(slot->info.name, node_name) != 0)
                 continue;
             if (slot->node == NULL || !slot->volume.valid || slot->channel_count == 0)
                 break;

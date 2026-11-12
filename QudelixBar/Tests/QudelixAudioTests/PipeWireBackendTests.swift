@@ -37,6 +37,13 @@ final class PipeWireBackendTests: XCTestCase {
         XCTAssertGreaterThan(fiveK.id, 0)
     }
 
+    func testAnInternalNodeLendsItsProfileToTheVisibleSinkAndIsNotListed() throws {
+        XCTAssertTrue(waitFor { self.backend.sinks.contains { $0.name == "qx_test_loopback" && !$0.profile.isEmpty } })
+        let sinks = backend.sinks
+        XCTAssertEqual(sinks.first { $0.name == "qx_test_loopback" }?.profile, "headset-head-unit")
+        XCTAssertFalse(sinks.contains { $0.name == "qx_test_internal" })
+    }
+
     func testDefaultSinkReadSetAndRestore() throws {
         XCTAssertTrue(waitFor { self.backend.defaultSinkName != nil })
         XCTAssertTrue(backend.setDefaultSink(named: Harness.other))
