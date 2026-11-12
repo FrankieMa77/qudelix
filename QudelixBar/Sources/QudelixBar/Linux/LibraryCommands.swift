@@ -11,6 +11,8 @@ enum LibraryCommand: CLIFamily {
     case save(name: String, replacing: Bool)
     case delete(String)
     case search(String)
+    case importFile(path: String, name: String?)
+    case export(reference: String, file: String?)
     case fetch(reference: String, target: String?, saveAs: String?)
 
     static let name = "library"
@@ -21,6 +23,8 @@ enum LibraryCommand: CLIFamily {
         row("library apply <n|name>", "write a saved preset to the device"),
         row("library save <name>", "save the live EQ; 'save replace <name>' overwrites"),
         row("library delete <n|name>", "forget a saved preset"),
+        row("library import <file>", "add an EQ text file to the library [--name <name>]"),
+        row("library export <n|name>", "print a saved preset as EQ text [<file> to write it]"),
         row("library search <query>", "find a headphone in the AutoEq catalog"),
         row("library fetch <n|name>", "fit an AutoEq correction and apply it"),
     ]
@@ -48,7 +52,7 @@ enum LibraryCommand: CLIFamily {
     static func parse(_ rest: [String]) throws -> LibraryCommand {
         guard let sub = rest.first else {
             throw CLIUsageError(
-                message: "library needs list, show, apply, save, delete, search or fetch")
+                message: "library needs list, show, apply, save, delete, import, export, search or fetch")
         }
         let arguments = Array(rest.dropFirst())
         switch sub {
@@ -74,12 +78,16 @@ enum LibraryCommand: CLIFamily {
                     + "and takes no flags — not \(flag)")
             }
             return .search(arguments.joined(separator: " "))
+        case "import":
+            return try parseImport(arguments)
+        case "export":
+            return try parseExport(arguments)
         case "fetch":
             return try parseFetch(arguments)
         default:
             throw CLIUsageError(
-                message: "library needs list, show, apply, save, delete, search or fetch "
-                    + "— not \(sub)")
+                message: "library needs list, show, apply, save, delete, import, export, "
+                    + "search or fetch — not \(sub)")
         }
     }
 
@@ -101,6 +109,45 @@ enum LibraryCommand: CLIFamily {
                     + "overwrite what is already saved under it")
         }
         return .save(name: arguments[0], replacing: false)
+    }
+
+    private static func parseImport(_ arguments: [String]) throws -> LibraryCommand {
+        var path: String?
+        var name: String?
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--name" || token == "name" && path != nil {
+                guard name == nil else {
+                    throw CLIUsageError(message: "library import takes one name")
+                }
+                guard index + 1 < arguments.count, !arguments[index + 1].isEmpty else {
+                    throw CLIUsageError(message: "library import: \(token) needs a name after it")
+                }
+                name = arguments[index + 1]
+                index += 2
+                continue
+            }
+            guard path == nil, !token.isEmpty else {
+                throw CLIUsageError(message: "library import needs one file and, "
+                    + "optionally, '--name <name>'")
+            }
+            path = token
+            index += 1
+        }
+        guard let path else {
+            throw CLIUsageError(message: "library import needs a file path")
+        }
+        return .importFile(path: path, name: name)
+    }
+
+    private static func parseExport(_ arguments: [String]) throws -> LibraryCommand {
+        guard (1...2).contains(arguments.count), !arguments[0].isEmpty,
+              arguments.count == 1 || !arguments[1].isEmpty else {
+            throw CLIUsageError(message: "library export needs a number or a name and, "
+                + "optionally, a file to write")
+        }
+        return .export(reference: arguments[0], file: arguments.count == 2 ? arguments[1] : nil)
     }
 
     private static func isReplaceToken(_ token: String) -> Bool {
@@ -144,15 +191,15 @@ enum LibraryCommand: CLIFamily {
 
     var needsDevice: Bool {
         switch self {
-        case .apply, .save, .fetch: return true
-        case .list, .show, .delete, .search: return false
+        case .apply, .save, .fetch, .importFile: return true
+        case .list, .show, .delete, .search, .export: return false
         }
     }
 
     var persistsToFlash: Bool {
         switch self {
         case .apply, .fetch: return true
-        case .list, .show, .save, .delete, .search: return false
+        case .list, .show, .save, .delete, .search, .importFile, .export: return false
         }
     }
 
@@ -170,6 +217,11 @@ enum LibraryCommand: CLIFamily {
         case .save(let name, let replacing):
             try await Self.runSave(name: name, replacing: replacing,
                                    session: try Self.device(session), json: options.json)
+        case .importFile(let path, let name):
+            try await Self.runImport(path: path, name: name, session: try Self.device(session),
+                                     json: options.json)
+        case .export(let reference, let file):
+            try Self.runExport(reference, file: file, json: options.json)
         case .search(let query):
             try await Self.runSearch(query, budget: Self.budget(options), json: options.json)
         case .fetch(let reference, let target, let saveAs):
@@ -411,6 +463,69 @@ enum LibraryCommand: CLIFamily {
         }
         document.presets.append(entry)
         return (clean, document.presets.count - 1)
+    }
+
+    private static func runImport(path: String, name: String?, session: QxSession,
+                                  json: Bool) async throws {
+        _ = try document()
+        guard let data = SafeFile.read(URL(fileURLWithPath: path), cap: QudelixController.maxImportBytes) else {
+            throw CLIUsageError(message: "could not read \(path) \u{2014} an EQ preset is a plain text "
+                + "file, and not a large one")
+        }
+        guard let text = ParametricEQFile.decodeText(data) else {
+            throw CLIUsageError(message: "could not read \(path) as text")
+        }
+        let group = await session.snapshot().eqGroup
+        let wanted = name ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let result = await MainActor.run { () -> (preset: LibraryPreset?, index: Int, message: String) in
+            let library = PresetLibrary()
+            library.currentCurve = {
+                PresetLibrary.LiveCurve(bands: [], preGain: 0, group: group, sourceName: nil)
+            }
+            library.start(fileURL: fileURL)
+            let saved = library.importText(text, name: wanted,
+                                           origin: URL(fileURLWithPath: path).lastPathComponent)
+            let index = saved.flatMap { added in library.presets.firstIndex { $0.id == added.id } } ?? 0
+            return (saved, index, library.lastMessage ?? "")
+        }
+        guard let saved = result.preset else {
+            throw LibraryError(description: result.message.isEmpty
+                ? "nothing was added to the library" : result.message)
+        }
+        if json {
+            StdIO.out(QxFormat.json(["imported": saved.name,
+                                     "index": result.index + 1,
+                                     "bands": saved.bands.count,
+                                     "message": result.message,
+                                     "path": fileURL.path]))
+        } else {
+            StdIO.out("added \u{201C}\(saved.name)\u{201D} as library preset "
+                + "\(result.index + 1) in \(fileURL.path)")
+            if !result.message.isEmpty { StdIO.out(result.message) }
+        }
+    }
+
+    private static func runExport(_ reference: String, file: String?, json: Bool) throws {
+        let presets = try document().presets
+        let preset = presets[try resolve(reference, in: presets)]
+        let text = QudelixController.exportText(bands: preset.bands, preGain: preset.preGain)
+        guard let file else {
+            if json {
+                StdIO.out(QxFormat.json(["name": preset.name, "text": text]))
+            } else {
+                StdIO.out(String(text.dropLast(text.hasSuffix("\n") ? 1 : 0)))
+            }
+            return
+        }
+        guard SafeFile.writeAtomic(Data(text.utf8), to: URL(fileURLWithPath: file)) else {
+            throw LibraryError(description: "could not write \(file) — check that the folder is "
+                + "writable and the disk has room")
+        }
+        if json {
+            StdIO.out(QxFormat.json(["exported": preset.name, "path": file]))
+        } else {
+            StdIO.out("wrote \u{201C}\(preset.name)\u{201D} to \(file)")
+        }
     }
 
     private static func runSearch(_ query: String, budget: TimeInterval,

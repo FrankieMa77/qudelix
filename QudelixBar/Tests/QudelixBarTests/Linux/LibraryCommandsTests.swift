@@ -123,7 +123,7 @@ final class LibraryCommandsTests: XCTestCase {
 
     func testParseErrorsAreUsageErrors() {
         XCTAssertEqual(usageMessage(["library"]),
-                       "library needs list, show, apply, save, delete, search or fetch")
+                       "library needs list, show, apply, save, delete, import, export, search or fetch")
         XCTAssertNotNil(usageMessage(["library", "sideways"]))
         XCTAssertNotNil(usageMessage(["library", "list", "now"]))
         XCTAssertNotNil(usageMessage(["library", "show"]))
@@ -141,6 +141,128 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "sideways", "x"]))
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "target", "a", "target", "b"]))
         XCTAssertNotNil(usageMessage(["library", "fetch", "1", "save", "a", "save", "b"]))
+    }
+
+    func testImportAndExportParse() throws {
+        XCTAssertEqual(try parse("library import eq.txt"), .library(.importFile(path: "eq.txt", name: nil)))
+        XCTAssertEqual(try CLI.parse(["library", "import", "eq.txt", "--name", "My EQ"]).command,
+                       .library(.importFile(path: "eq.txt", name: "My EQ")))
+        XCTAssertEqual(try CLI.parse(["library", "import", "--name", "My EQ", "eq.txt"]).command,
+                       .library(.importFile(path: "eq.txt", name: "My EQ")))
+        XCTAssertEqual(try parse("library export 2"), .library(.export(reference: "2", file: nil)))
+        XCTAssertEqual(try parse("library export Bassy out.txt"),
+                       .library(.export(reference: "Bassy", file: "out.txt")))
+        XCTAssertNotNil(usageMessage(["library", "import"]))
+        XCTAssertNotNil(usageMessage(["library", "import", "a.txt", "b.txt"]))
+        XCTAssertNotNil(usageMessage(["library", "import", "a.txt", "--name"]))
+        XCTAssertNotNil(usageMessage(["library", "import", "a.txt", "--name", "x", "--name", "y"]))
+        XCTAssertNotNil(usageMessage(["library", "export"]))
+        XCTAssertNotNil(usageMessage(["library", "export", "1", "a.txt", "b.txt"]))
+        XCTAssertFalse(QudelixCLI.persistsToFlash(try parse("library import eq.txt")))
+        XCTAssertFalse(QudelixCLI.persistsToFlash(try parse("library export 1")))
+        XCTAssertTrue(CLI.needsDevice(try parse("library import eq.txt")))
+        XCTAssertFalse(CLI.needsDevice(try parse("library export 1")))
+        XCTAssertTrue(CLI.usageText.contains("library import <file>"))
+        XCTAssertTrue(CLI.usageText.contains("library export <n|name>"))
+    }
+
+    private func captured(_ body: () async -> Void) async -> [String] {
+        let capture = StdIOCapture()
+        StdIO.outSink = { line in capture.append(line) }
+        defer { StdIO.outSink = nil }
+        await body()
+        return capture.all
+    }
+
+    private func eqFile(_ name: String, _ text: String) -> String {
+        let url = libraryFile.deletingLastPathComponent().appendingPathComponent(name)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        return url.path
+    }
+
+    private let apoText = "Preamp: -3.0 dB\nFilter 1: ON PK Fc 100 Hz Gain 2.0 dB Q 1.00\n"
+        + "Filter 2: ON LSC Fc 105 Hz Gain 4.0 dB Q 0.70\n"
+
+    func testImportFilesTheTextUnderTheDeviceModeAndWritesNothingToTheDevice() async throws {
+        let link = deviceLink()
+        let path = eqFile("HD 650.txt", apoText)
+        let lines = await captured { await expect(CLIExit.ok, ["library", "import", path], link) }
+        let presets = stored()
+        XCTAssertEqual(presets.count, 1)
+        XCTAssertEqual(presets[0].name, "HD 650")
+        XCTAssertEqual(presets[0].scope, .global)
+        XCTAssertEqual(presets[0].group, .user)
+        XCTAssertEqual(presets[0].preGain, -3, accuracy: 0.001)
+        XCTAssertEqual(presets[0].bands.map(\.freq), [100, 105])
+        XCTAssertTrue(lines.joined(separator: "\n").contains("nothing has been sent to the 5K"))
+        XCTAssertTrue(link.sentCommands.allSatisfy { QxCompatibility.isRequest($0) })
+        XCTAssertTrue(link.payloads(for: .saveAll).isEmpty)
+    }
+
+    func testImportTakesANameAndNeverOverwritesAnExistingOne() async throws {
+        let path = eqFile("a.txt", apoText)
+        await expect(CLIExit.ok, ["library", "import", path, "--name", "Mine"], deviceLink())
+        await expect(CLIExit.ok, ["library", "import", "--name", "Mine", path], deviceLink())
+        let names = stored().map(\.name)
+        XCTAssertEqual(names.count, 2)
+        XCTAssertEqual(names[0], "Mine")
+        XCTAssertNotEqual(names[1], "Mine")
+        XCTAssertTrue(names[1].hasPrefix("Mine"))
+    }
+
+    func testImportJsonNamesWhatWasAdded() async throws {
+        let path = eqFile("b.txt", apoText)
+        let lines = await captured {
+            await expect(CLIExit.ok, ["library", "import", "--json", path], deviceLink())
+        }
+        let object = try JSONSerialization.jsonObject(with: Data(lines.joined().utf8)) as? [String: Any]
+        XCTAssertEqual(object?["imported"] as? String, "b")
+        XCTAssertEqual(object?["index"] as? Int, 1)
+        XCTAssertEqual(object?["bands"] as? Int, 2)
+    }
+
+    func testImportRefusesWhatIsNotAnEqFileOrCannotBeRead() async throws {
+        let junk = eqFile("junk.txt", "hello there\n")
+        let junkExit = await run(["library", "import", junk], deviceLink())
+        XCTAssertEqual(junkExit, CLIExit.deviceError)
+        let missing = await run(["library", "import", junk + ".missing"], deviceLink())
+        XCTAssertEqual(missing, CLIExit.usageError)
+        XCTAssertTrue(stored().isEmpty)
+    }
+
+    func testImportLeavesAnUnreadableLibraryAlone() async throws {
+        try? Data("{not json".utf8).write(to: libraryFile)
+        let path = eqFile("c.txt", apoText)
+        let exit = await run(["library", "import", path], deviceLink())
+        XCTAssertNotEqual(exit, CLIExit.ok)
+        XCTAssertEqual(try? Data(contentsOf: libraryFile), Data("{not json".utf8))
+    }
+
+    func testExportPrintsTheSameTextTheAppExportsOrWritesAFile() async throws {
+        write([preset("Bassy", gain: 2.5), preset("Bright")])
+        let expected = QudelixController.exportText(bands: preset("Bassy", gain: 2.5).bands, preGain: -2)
+        let printed = await captured { await expect(CLIExit.ok, ["library", "export", "bassy"]) }
+        XCTAssertEqual(printed.joined(separator: "\n") + "\n", expected)
+        let target = libraryFile.deletingLastPathComponent().appendingPathComponent("out.txt").path
+        await expect(CLIExit.ok, ["library", "export", "1", target])
+        XCTAssertEqual(try? String(contentsOfFile: target, encoding: .utf8), expected)
+        let json = await captured { await expect(CLIExit.ok, ["library", "export", "--json", "2"]) }
+        let object = try JSONSerialization.jsonObject(with: Data(json.joined().utf8)) as? [String: Any]
+        XCTAssertEqual(object?["name"] as? String, "Bright")
+        await expect(CLIExit.usageError, ["library", "export", "9"])
+        let unwritable = await run(["library", "export", "1", target + "/no/such/x.txt"])
+        XCTAssertEqual(unwritable, CLIExit.deviceError)
+    }
+
+    func testExportedTextImportsBackThroughTheSameParser() async throws {
+        write([preset("Round", gain: 3)])
+        let target = libraryFile.deletingLastPathComponent().appendingPathComponent("round.txt").path
+        await expect(CLIExit.ok, ["library", "export", "Round", target])
+        await expect(CLIExit.ok, ["library", "import", target, "--name", "Back"], deviceLink())
+        let presets = stored()
+        XCTAssertEqual(presets.count, 2)
+        XCTAssertEqual(presets[0].bands.map(\.freq), presets[1].bands.map(\.freq))
+        XCTAssertEqual(presets[0].bands.map(\.gain), presets[1].bands.map(\.gain))
     }
 
     func testSearchRefusesAFlagRatherThanLookingForItsText() {
@@ -165,7 +287,7 @@ final class LibraryCommandsTests: XCTestCase {
     }
 
     func testUsageLinesLineUpWithTheOnesAlreadyInTheHelp() {
-        XCTAssertEqual(LibraryCommand.usageLines.count, 7)
+        XCTAssertEqual(LibraryCommand.usageLines.count, 9)
         for line in LibraryCommand.usageLines {
             XCTAssertTrue(line.hasPrefix("  library "), line)
             XCTAssertFalse(line.hasPrefix("   "), line)

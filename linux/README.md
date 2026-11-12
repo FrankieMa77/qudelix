@@ -149,6 +149,8 @@ commands:
   library apply <n|name>    write a saved preset to the device
   library save <name>       save the live EQ; 'save replace <name>' overwrites
   library delete <n|name>   forget a saved preset
+  library import <file>     add an EQ text file to the library [--name <name>]
+  library export <n|name>   print a saved preset as EQ text [<file> to write it]
   library search <query>    find a headphone in the AutoEq catalogue
   library fetch <n|name>    fit an AutoEq correction and apply it
   ai providers              every provider, its default model and its key
@@ -194,7 +196,9 @@ device to save its settings once they finish. Read-only commands never do.
 
 `library` takes a saved preset either by its number in `library list` or by name: a
 case-insensitive exact match first, then a unique prefix. `library search` downloads the AutoEq
-catalogue and remembers its results so that `library fetch <n>` can pick one.
+catalogue and remembers its results so that `library fetch <n>` can pick one. `library import` reads
+the device's EQ mode, files the text under it and sends nothing to the 5K; `library export` prints
+a saved preset in the same Equalizer APO text, or writes it to the file you name.
 
 `ai` designs presets with your own account at a provider (mistral, openai, anthropic or
 openrouter). Nothing is sent until you ask for it.
