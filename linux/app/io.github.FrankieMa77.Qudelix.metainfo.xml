@@ -10,7 +10,7 @@
   </developer>
   <description>
     <p>Qudelix is a desktop app for the Qudelix 5K DAC and amplifier. It shows the device state and changes its settings: volume and mute, the DAC filter, the parametric EQ, the device's 20 preset slots, a local preset library with AutoEq import, and the battery level with a discharge graph.</p>
-    <p>The USB link is the tested one. The Bluetooth link is included but has not been tried against a real device on Linux.</p>
+    <p>USB is the recommended link. Bluetooth control works too, but it needs the 5K's short connection window.</p>
     <p>A tray icon gives quick access to volume, mute, EQ and presets. It needs a StatusNotifier host, such as the AppIndicator extension that Ubuntu ships; without one the app has no tray icon and closing the window quits it.</p>
   </description>
   <launchable type="desktop-id">io.github.FrankieMa77.Qudelix.desktop</launchable>
@@ -36,7 +36,7 @@
   <releases>
     <release version="0.7.1" date="2026-11-12">
       <description>
-        <p>Bluetooth control works: Qudelix opens the 5K's Bluetooth LE control link itself, on any BlueZ version, and no longer disturbs Bluetooth audio while it waits for the 5K.</p>
+        <p>Bluetooth control works and no longer disturbs Bluetooth audio while it waits for the 5K. The sidebar opens pages on click, Stage is steadier on Bluetooth, the mouse wheel no longer changes sliders, and quitting no longer loses a pending save.</p>
       </description>
     </release>
     <release version="0.7.0" date="2026-11-11">

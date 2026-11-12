@@ -194,8 +194,8 @@ need PipeWire.
   [qudelix-app-bin](https://aur.archlinux.org/packages/qudelix-app-bin).
 
 Then unplug and replug the 5K so the included udev rule lets your user reach it
-without `sudo`. USB is the supported link and the recommended one; Bluetooth is
-included but untested.
+without `sudo`. USB is the recommended link; Bluetooth control works too, but needs the
+5K's short connection window.
 Commands, permissions, file locations and uninstalling are in
 [linux/README.md](linux/README.md).
 

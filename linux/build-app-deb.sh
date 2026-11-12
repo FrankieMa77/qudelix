@@ -68,8 +68,8 @@ Description: desktop app for the Qudelix 5K
  Qudelix shows the Qudelix 5K DAC and amplifier and changes its settings:
  volume, DAC filter, the parametric EQ, the device's preset slots, a local
  preset library, AutoEq import and the battery level. It has a window and a
- top-bar tray menu. The USB link is the supported one; the Bluetooth link is
- included but untested. The qudelix package supplies the udev rule.
+ top-bar tray menu. The USB link is the recommended one; Bluetooth control
+ works too. The qudelix package supplies the udev rule.
 EOT
 
 mkdir -p "$OUT_DIR"

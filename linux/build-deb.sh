@@ -43,11 +43,11 @@ Section: sound
 Priority: optional
 Depends: libc6, libstdc++6, libcurl4, libdbus-1-3, udev
 Homepage: https://github.com/FrankieMa77/qudelix
-Description: command-line control for the Qudelix 5K over USB
+Description: command-line control for the Qudelix 5K
  qudelix reads and changes the Qudelix 5K DAC and amplifier: volume, DAC
  filter, the parametric EQ, the device's preset slots, a local preset library
- and AutoEq import. The USB link is the supported one; the Bluetooth link is
- included but untested.
+ and AutoEq import. The USB link is the recommended one; Bluetooth control
+ works too.
 EOT
 
 for script in postinst postrm; do

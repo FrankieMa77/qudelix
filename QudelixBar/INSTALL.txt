@@ -186,9 +186,8 @@ KNOWN LIMITS
 
 LICENSE / CREDITS
 -----------------
-The device protocol was reverse-engineered from Qudelix's own Chrome app for
-interoperability, with help from the open-source devicePEQ project
-(github.com/jeromeof/devicePEQ). Headphone presets come from AutoEq
+Thanks to the open-source devicePEQ project (github.com/jeromeof/devicePEQ).
+Headphone presets come from AutoEq
 (github.com/jaakkopasanen/AutoEq) by Jaakko Pasanen.
 
 Provided as-is, with no warranty. It writes only EQ, volume, and preset

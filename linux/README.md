@@ -4,8 +4,8 @@
 device's state and changes its settings over USB: volume, DAC filter, the parametric EQ, the
 device's 20 preset slots, a local preset library, AutoEq import and an EQ history.
 
-The USB link is the supported one. The Bluetooth link is included but untested: it has not
-been run against a real 5K on Linux.
+USB is the recommended link. Bluetooth control works too, but it needs the 5K's short
+connection window (see Bluetooth below).
 
 ## Desktop app
 
@@ -56,7 +56,7 @@ While the app is connected to the 5K it holds the device, so `qudelix` reports i
 (exit code 4) until the 5K is unplugged or you quit the app. Closing the window does not release
 it while the app stays in the top bar: quit it from the top-bar menu or the app menu. The hold
 applies to every user on the machine, root included. An app that is running but not connected
-does not block `qudelix`. USB is the supported link; the Bluetooth link is untested.
+does not block `qudelix`. USB is the recommended link; Bluetooth control works but needs the 5K's short connection window.
 
 ## Install (command line)
 
@@ -221,27 +221,29 @@ same JSON format as the macOS QudelixBar app.
 
 ## Bluetooth
 
-The Bluetooth link (`--ble`) uses BlueZ over D-Bus. It is included but untested: no Linux
-test has been run against a real Qudelix 5K over Bluetooth. Use `--usb` for everything that
-has to work today.
+`--ble` (or `--bluetooth`) controls the 5K over Bluetooth. USB stays the recommended link; use
+Bluetooth when you want to leave the cable out.
 
-Connect the 5K in your system Bluetooth settings first. Connected as headphones is fine: the
-app never opens or closes the audio connection and opens only the Bluetooth LE control link
-next to it. If the 5K is not connected, the app does not connect it for you. Opening the
-control link can take up to 40 seconds (10 s scan, 15 s connect, 10 s for the GATT services,
-plus the handshake); `--timeout` overrides that. Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output
-in a bug report; its Bluetooth section lists what BlueZ knows about the 5K without connecting
-to anything.
+- No pairing is needed for the control link. Connect the 5K as your headphones the usual way
+  for the sound; Qudelix opens its own control link next to that and never touches the audio
+  connection.
+- The 5K accepts a control link only for a short time after it is switched on, and again soon
+  after a previous control link ends. The app waits for that by itself and connects within a
+  second or so. Nothing to click.
+- If it does not connect, switch the 5K off, wait two minutes, switch it on and let it
+  reconnect by itself.
+- The Bluetooth settings page of GNOME, while it is open and scanning, or clicking Connect
+  there while the 5K powers on, can make it miss the 5K. Close that page and let the 5K
+  reconnect on its own.
+- Only one program can hold the 5K's Bluetooth control link at a time. Quit the app before
+  you use `qudelix --ble`.
 
-With BlueZ older than 5.88 (unless `Experimental = true` is set in `/etc/bluetooth/main.conf`),
-the app opens the control link with a plain connect and leaves it open on exit. The audio
-connection is never touched.
+Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output in
+a bug report; its Bluetooth section lists what this computer knows about the 5K without
+connecting to anything. `--timeout` changes how long a command waits for the link.
 
-If `status` says BlueZ is still holding the 5K's control channel, restart the Bluetooth service
-(`sudo systemctl restart bluetooth`, or your init system's equivalent) and try again.
-
-With `--verbose`, the log also says why the LE link dropped when BlueZ reports it (timeout, closed
-by the 5K, closed by this computer, authentication failure).
+With `--verbose`, the log also says why the link dropped when it is known (timeout, closed by
+the 5K, closed by this computer).
 
 ## Uninstall
 
