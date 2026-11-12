@@ -130,38 +130,5 @@ final class DBusMessageTests: XCTestCase {
         XCTAssertEqual(close(decoded), 0)
         XCTAssertEqual(openDescriptorCount(), before)
     }
-
-    func testBluetoothOutageIsAnnouncedOnceAndKeepsRetrying() throws {
-        let transport = BluezTransport()
-        let announcements = Announcements()
-        transport.onLinkUnusable = { message in announcements.record(message) }
-        transport.start()
-        defer { transport.stop() }
-
-        let deadline = Date().addingTimeInterval(8)
-        while transport.reconnectBackoff < 2 && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        XCTAssertGreaterThanOrEqual(transport.reconnectBackoff, 2)
-        XCTAssertEqual(announcements.count, 1)
-        XCTAssertFalse(transport.isConnected)
-    }
-}
-
-private final class Announcements: @unchecked Sendable {
-    private let lock = NSLock()
-    private var messages: [String] = []
-
-    func record(_ message: String) {
-        lock.lock()
-        messages.append(message)
-        lock.unlock()
-    }
-
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return messages.count
-    }
 }
 #endif

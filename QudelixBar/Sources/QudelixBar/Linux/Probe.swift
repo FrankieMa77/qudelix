@@ -199,7 +199,7 @@ enum Probe {
         let presence = BluezPresence.system()
         guard presence.nameHasOwner() else { return .unavailable }
         let objects = (try? presence.managedObjects()) ?? [:]
-        return BluezLinkPlan.report(onBus: true, objects: objects)
+        return BluezLinkPlan.report(onBus: true, objects: objects, leSocket: LEAttSupport.canOpen())
 #else
         return .unavailable
 #endif

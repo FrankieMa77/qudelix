@@ -23,17 +23,10 @@ final class BluezLinkPlanTests: XCTestCase {
         ["org.bluez.GattCharacteristic1": ["UUID": .string(uuid)]]
     }
 
-    private func scenario(connected: Bool, bearerState: BluezBearerState,
-                          characteristics: Bool = false,
+    private func scenario(connected: Bool, characteristics: Bool = false,
                           resolved: Bool? = nil) -> BluezPresence.Objects {
         var interfaces = device(name: "Qudelix-5K", uuids: audioUUIDs, connected: connected)
         interfaces["org.bluez.Device1"]?["ServicesResolved"] = .boolean(resolved ?? characteristics)
-        switch bearerState {
-        case .unknown: break
-        case .disconnected: interfaces["org.bluez.Bearer.LE1"] = bearer(connected: false)
-        case .connected: interfaces["org.bluez.Bearer.LE1"] = bearer(connected: true)
-        case .hidden: interfaces["org.bluez.Bearer.LE1"] = [:]
-        }
         var objects: BluezPresence.Objects = ["/org/bluez/hci0": ["org.bluez.Adapter1": [:]], base: interfaces]
         if characteristics {
             objects[base + "/service0010/char0011"] = characteristic(GaiaFraming.commandUUID)
@@ -79,46 +72,15 @@ final class BluezLinkPlanTests: XCTestCase {
         XCTAssertNil(BluezLinkPlan.pickDevice(in: ["/e": device(name: "Headphones")], pinned: nil))
     }
 
-    func testCharacteristicsPresentAreUsedStraightAway() {
-        for connected in [true, false] {
-            let objects = scenario(connected: connected, bearerState: .unknown, characteristics: true)
-            XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: false),
-                           .useCharacteristics)
-        }
-    }
-
-    func testCharacteristicsAreUsedOnlyOnceServicesAreResolved() {
-        let ready = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: true)
-        XCTAssertEqual(BluezLinkPlan.step(objects: ready, device: base, scanned: false), .useCharacteristics)
-        let stale = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: false)
-        XCTAssertEqual(BluezLinkPlan.step(objects: stale, device: base, scanned: false), .connectDevice)
-        let off = scenario(connected: false, bearerState: .hidden, characteristics: true, resolved: false)
-        XCTAssertEqual(BluezLinkPlan.step(objects: off, device: base, scanned: false), .notConnected)
-        let down = scenario(connected: true, bearerState: .disconnected, characteristics: true, resolved: false)
-        XCTAssertEqual(BluezLinkPlan.step(objects: down, device: base, scanned: false), .connectBearer)
-        let loading = scenario(connected: true, bearerState: .connected, characteristics: true, resolved: false)
-        XCTAssertEqual(BluezLinkPlan.step(objects: loading, device: base, scanned: false),
-                       .awaitCharacteristics)
-    }
-
-    func testAStaleLinkIsNeverTrustedEvenWhenServicesLookResolved() {
-        let ready = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: true)
-        XCTAssertEqual(BluezLinkPlan.step(objects: ready, device: base, scanned: false, linkTrusted: false),
-                       .connectDevice)
-        let down = scenario(connected: true, bearerState: .disconnected, characteristics: true, resolved: true)
-        XCTAssertEqual(BluezLinkPlan.step(objects: down, device: base, scanned: false, linkTrusted: false),
-                       .connectBearer)
-    }
-
     func testReadinessNeedsBothTheCharacteristicsAndResolvedServices() {
-        let both = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: true)
+        let both = scenario(connected: true, characteristics: true, resolved: true)
         XCTAssertEqual(BluezLinkPlan.ready(base, in: both)?.command, base + "/service0010/char0011")
         XCTAssertEqual(BluezLinkPlan.ready(base, in: both)?.response, base + "/service0010/char0013")
         XCTAssertTrue(BluezLinkPlan.servicesResolved(base, in: both))
-        let unresolved = scenario(connected: true, bearerState: .hidden, characteristics: true, resolved: false)
+        let unresolved = scenario(connected: true, characteristics: true, resolved: false)
         XCTAssertNil(BluezLinkPlan.ready(base, in: unresolved))
         XCTAssertFalse(BluezLinkPlan.servicesResolved(base, in: unresolved))
-        let bare = scenario(connected: true, bearerState: .hidden, characteristics: false, resolved: true)
+        let bare = scenario(connected: true, characteristics: false, resolved: true)
         XCTAssertNil(BluezLinkPlan.ready(base, in: bare))
         XCTAssertFalse(BluezLinkPlan.servicesResolved("/missing", in: both))
     }
@@ -132,106 +94,8 @@ final class BluezLinkPlanTests: XCTestCase {
         let write = DBusCallError(name: "org.bluez.Error.NotPermitted", message: "Write acquired")
         XCTAssertTrue(BluezLinkPlan.isNotifyHeld(notify))
         XCTAssertFalse(BluezLinkPlan.isNotifyHeld(write))
-        XCTAssertTrue(BluezLinkPlan.isWriteHeld(write))
-        XCTAssertFalse(BluezLinkPlan.isWriteHeld(notify))
         XCTAssertFalse(BluezLinkPlan.isNotifyHeld(DBusCallError(name: "org.bluez.Error.Failed",
                                                                 message: "Notify acquired")))
-    }
-
-    func testADisconnectedBearerGetsAnLEConnect() {
-        for connected in [true, false] {
-            let objects = scenario(connected: connected, bearerState: .disconnected)
-            XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: false),
-                           .connectBearer)
-        }
-    }
-
-    func testAConnectedBearerOnlyWaitsForCharacteristics() {
-        let objects = scenario(connected: true, bearerState: .connected)
-        XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: false),
-                       .awaitCharacteristics)
-    }
-
-    func testAudioConnectedWithoutABearerScansThenConnectsTheDevice() {
-        let objects = scenario(connected: true, bearerState: .unknown)
-        XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: false),
-                       .scanForLE)
-        XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: true),
-                       .connectDevice)
-        let withBearer = scenario(connected: true, bearerState: .disconnected)
-        XCTAssertEqual(BluezLinkPlan.step(objects: withBearer, device: base, scanned: true),
-                       .connectBearer)
-    }
-
-    func testAFullyDisconnectedDeviceScansFirstAndNeverConnectsWithoutABearer() {
-        let objects = scenario(connected: false, bearerState: .unknown)
-        XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: false), .scanForLE)
-        XCTAssertEqual(BluezLinkPlan.step(objects: objects, device: base, scanned: true), .notConnected)
-        let appeared = scenario(connected: false, bearerState: .disconnected)
-        XCTAssertEqual(BluezLinkPlan.step(objects: appeared, device: base, scanned: true), .connectBearer)
-    }
-
-    func testABearerWithoutPropertiesIsHiddenAndOneWithConnectedFalseIsDisconnected() {
-        let hidden = scenario(connected: true, bearerState: .hidden)
-        XCTAssertEqual(BluezLinkPlan.bearerState(of: base, in: hidden), .hidden)
-        let down = scenario(connected: true, bearerState: .disconnected)
-        XCTAssertEqual(BluezLinkPlan.bearerState(of: base, in: down), .disconnected)
-    }
-
-    func testAHiddenBearerGoesStraightToTheDeviceConnectWithoutScanning() {
-        let up = scenario(connected: true, bearerState: .hidden)
-        let off = scenario(connected: false, bearerState: .hidden)
-        for scanned in [true, false] {
-            XCTAssertEqual(BluezLinkPlan.step(objects: up, device: base, scanned: scanned), .connectDevice)
-            XCTAssertEqual(BluezLinkPlan.step(objects: off, device: base, scanned: scanned), .notConnected)
-        }
-    }
-
-    func testAnUnusableBearerConnectFallsBackToTheDeviceConnect() {
-        let up = scenario(connected: true, bearerState: .disconnected)
-        let off = scenario(connected: false, bearerState: .disconnected)
-        XCTAssertEqual(BluezLinkPlan.step(objects: up, device: base, scanned: false, bearerUsable: false),
-                       .connectDevice)
-        XCTAssertEqual(BluezLinkPlan.step(objects: off, device: base, scanned: false, bearerUsable: false),
-                       .notConnected)
-        XCTAssertEqual(BluezLinkPlan.step(objects: up, device: base, scanned: false), .connectBearer)
-    }
-
-    func testTheProbeSaysWhenBlueZHidesTheBearerControls() {
-        var objects = scenario(connected: true, bearerState: .hidden)
-        objects["/org/bluez/hci0"] = ["org.bluez.Adapter1": [:]]
-        let report = BluezLinkPlan.report(onBus: true, objects: objects)
-        XCTAssertEqual(report.devices[0].leBearer, .hidden)
-        let lines = BluetoothProbe.lines(report)
-        XCTAssertTrue(lines.contains {
-            $0.contains("LE bearer")
-                && $0.contains("present, but this BlueZ hides its controls (BlueZ 5.88+, or Experimental = true)")
-        })
-        let devices = BluetoothProbe.object(report)["devices"] as? [[String: Any]]
-        XCTAssertEqual(devices?.first?["le_bearer"] as? String, "hidden")
-    }
-
-    func testTheDeviceConnectIsPlannedOnlyForAnAudioConnectedDeviceWithoutABearerAfterAScan() {
-        for connected in [true, false] {
-            for state in [BluezBearerState.unknown, .disconnected, .connected, .hidden] {
-                for characteristics in [true, false] {
-                    for scanned in [true, false] {
-                        let objects = scenario(connected: connected, bearerState: state,
-                                               characteristics: characteristics)
-                        let step = BluezLinkPlan.step(objects: objects, device: base, scanned: scanned)
-                        let expected = connected && !characteristics
-                            && (state == .hidden || (state == .unknown && scanned))
-                        XCTAssertEqual(step == .connectDevice, expected,
-                                       "connected \(connected) bearer \(state) chars \(characteristics) scanned \(scanned)")
-                    }
-                }
-            }
-        }
-    }
-
-    func testTheOnlyTeardownActionIsTheBearerDisconnectAndOnlyWhenWeConnectedIt() {
-        XCTAssertEqual(BluezLinkPlan.stopAction(calledBearerConnect: true), .disconnectBearer)
-        XCTAssertEqual(BluezLinkPlan.stopAction(calledBearerConnect: false), .none)
     }
 
     func testBenignAnswersAreRecognizedByTheirSuffix() {
@@ -259,35 +123,12 @@ final class BluezLinkPlanTests: XCTestCase {
         XCTAssertFalse(BluezLinkPlan.isPresent(device(name: "Sony", connected: true)))
     }
 
-    func testTheBluetoothAppearanceWaitCoversTheWorstLinkStepPlusTheHandshake() {
-        XCTAssertEqual(BluezLinkPlan.appearanceSeconds, 40)
-        XCTAssertEqual(QxLinkTimeouts.bluetoothAppearance, BluezLinkPlan.appearanceSeconds)
-        XCTAssertLessThanOrEqual(BluezLinkPlan.appearanceSeconds, 45)
-    }
-
-    func testFailureReasonsAreMaskedAndTheNotConnectedTextIsFixed() {
-        XCTAssertEqual(BluezLinkFailure.notConnected(alias: "Qudelix-5K"),
-                       "found Qudelix-5K, but it is not connected — connect it in your Bluetooth settings first")
-        let text = BluezLinkFailure.text(alias: "Qudelix-5K", connectedForAudio: true,
-                                         detail: "no /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        XCTAssertTrue(BluezMask.text(text).contains("dev_XX_XX_XX_XX_EE_FF"))
-    }
-
     func testAddressMaskingKeepsTheLastTwoBytes() {
         XCTAssertEqual(BluezMask.text("AA:BB:CC:DD:EE:FF"), "XX:XX:XX:XX:EE:FF")
         XCTAssertEqual(BluezMask.text("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0010/char0011"),
                        "/org/bluez/hci0/dev_XX_XX_XX_XX_EE_FF/service0010/char0011")
         XCTAssertEqual(BluezMask.text("link on aa:bb:cc:dd:ee:ff failed"), "link on XX:XX:XX:XX:ee:ff failed")
         XCTAssertEqual(BluezMask.text("no address here"), "no address here")
-    }
-
-    func testFailureReasonIsOneLine() {
-        let text = BluezLinkFailure.text(alias: "Qudelix-5K", connectedForAudio: true,
-                                         detail: "no LE advertisement seen in 10 s")
-        XCTAssertEqual(text, "found Qudelix-5K (connected for audio), but its Bluetooth LE control link "
-            + "did not come up: no LE advertisement seen in 10 s")
-        XCTAssertFalse(BluezLinkFailure.text(alias: "x", connectedForAudio: false, detail: "d")
-            .contains("for audio"))
     }
 
     func testProbeReportForAnAudioConnectedFiveKWithoutLE() {
@@ -302,31 +143,26 @@ final class BluezLinkPlanTests: XCTestCase {
         XCTAssertEqual(report.adapterPath, "/org/bluez/hci0")
         XCTAssertEqual(report.devices.count, 1)
         XCTAssertEqual(report.devices[0].address, "XX:XX:XX:XX:EE:FF")
-        XCTAssertEqual(report.devices[0].leBearer, .unknown)
         XCTAssertFalse(report.devices[0].gaiaCharacteristics)
         let lines = BluetoothProbe.lines(report)
         XCTAssertTrue(lines.contains { $0.contains("adapter /org/bluez/hci0: powered, not scanning") })
-        XCTAssertTrue(lines.contains { $0.contains("LE bearer") && $0.contains("not known to BlueZ") })
         XCTAssertTrue(lines.contains { $0.contains("0000110b") && $0.contains("A2DP sink") })
         XCTAssertTrue(lines.contains { $0.contains("0000111e") && $0.contains("HFP") })
         XCTAssertFalse(lines.joined().contains("AA:BB:CC:DD"))
         let object = BluetoothProbe.object(report)
         let devices = object["devices"] as? [[String: Any]]
-        XCTAssertEqual(devices?.first?["le_bearer"] as? String, "unknown")
         XCTAssertEqual(devices?.first?["connected"] as? Bool, true)
         XCTAssertEqual(object["powered"] as? Bool, true)
         XCTAssertFalse(QxFormat.json(object).isEmpty)
     }
 
-    func testProbeReportForAFiveKWithAConnectedLEBearerAndCharacteristics() {
-        var objects = scenario(connected: true, bearerState: .connected, characteristics: true)
+    func testProbeReportForAFiveKWithCharacteristics() {
+        var objects = scenario(connected: true, characteristics: true)
         objects[base]?["org.bluez.Device1"]?["UUIDs"] = .strings([GaiaFraming.serviceUUID,
                                                                   "00001107-d102-11e1-9b23-00025b00a5a5"])
         let report = BluezLinkPlan.report(onBus: true, objects: objects)
-        XCTAssertEqual(report.devices[0].leBearer, .connected)
         XCTAssertTrue(report.devices[0].gaiaCharacteristics)
         let lines = BluetoothProbe.lines(report)
-        XCTAssertTrue(lines.contains { $0.contains("LE bearer") && $0.hasSuffix("connected") })
         XCTAssertTrue(lines.contains { $0.contains("GAIA over LE") })
         XCTAssertTrue(lines.contains { $0.contains("GAIA over RFCOMM") })
         XCTAssertTrue(lines.contains { $0.contains("GAIA chars") && $0.contains("present") })
@@ -342,6 +178,46 @@ final class BluezLinkPlanTests: XCTestCase {
         let object = BluetoothProbe.object(missing)
         XCTAssertEqual(object["bluez_on_bus"] as? Bool, false)
         XCTAssertEqual((object["devices"] as? [Any])?.count, 0)
+    }
+
+    func testTheWaitingAndNoDeviceTextsAreFixed() {
+        XCTAssertEqual(BluezLinkFailure.waitingForLink,
+                       "Waiting for the Qudelix 5K's Bluetooth control link. "
+                       + "The 5K offers it for a few seconds after it is switched on; "
+                       + "if it is already on, switch it off and on again.")
+        XCTAssertTrue(BluezLinkFailure.noDeviceKnown.contains("Pair it once"))
+        XCTAssertEqual(BluezLinkFailure.waitLog("Connection refused"),
+                       "BLE waiting for the 5K to offer its control link (Connection refused)")
+    }
+
+    func testTheBluetoothAppearanceWaitStaysFortySeconds() {
+        XCTAssertEqual(QxLinkTimeouts.bluetoothAppearance, 40)
+    }
+
+    func testAddressAndAdapterComeFromBlueZOrFromThePath() {
+        var objects = scenario(connected: false)
+        XCTAssertEqual(BluezLinkPlan.address(of: base, in: objects), "AA:BB:CC:DD:EE:FF")
+        XCTAssertEqual(BluezLinkPlan.adapterPath(in: objects), "/org/bluez/hci0")
+        XCTAssertNil(BluezLinkPlan.addressType(of: base, in: objects))
+        objects[base]?["org.bluez.Device1"]?["Address"] = .string("11:22:33:44:55:66")
+        objects[base]?["org.bluez.Device1"]?["AddressType"] = .string("random")
+        XCTAssertEqual(BluezLinkPlan.address(of: base, in: objects), "11:22:33:44:55:66")
+        XCTAssertEqual(BluezLinkPlan.addressType(of: base, in: objects), "random")
+        objects[base]?["org.bluez.Device1"]?["Address"] = .string("garbage")
+        XCTAssertEqual(BluezLinkPlan.address(of: base, in: objects), "AA:BB:CC:DD:EE:FF")
+        XCTAssertNil(BluezLinkPlan.address(of: "/org/bluez/hci0/other", in: objects))
+        XCTAssertNil(BluezLinkPlan.adapterPath(in: [:]))
+    }
+
+    func testTheProbeSaysWhetherAnLEControlSocketCanBeOpened() {
+        let objects = scenario(connected: false)
+        for (value, text) in [(true as Bool?, "this machine can open one"),
+                              (false, "this machine cannot open one"), (nil, "not checked")] {
+            let report = BluezLinkPlan.report(onBus: true, objects: objects, leSocket: value)
+            let lines = BluetoothProbe.lines(report)
+            XCTAssertTrue(lines.contains { $0.contains("LE control socket") && $0.contains(text) }, text)
+            XCTAssertEqual(BluetoothProbe.object(report)["le_control_socket"] as? Bool, value)
+        }
     }
 }
 #endif

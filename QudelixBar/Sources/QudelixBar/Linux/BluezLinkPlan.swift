@@ -1,20 +1,6 @@
 #if os(Linux)
 import Foundation
 
-enum BluezLinkStep: Equatable {
-    case useCharacteristics
-    case awaitCharacteristics
-    case connectBearer
-    case scanForLE
-    case connectDevice
-    case notConnected
-}
-
-enum BluezStopAction: Equatable {
-    case none
-    case disconnectBearer
-}
-
 enum BluezLinkPlan {
     typealias Objects = BluezPresence.Objects
 
@@ -23,12 +9,6 @@ enum BluezLinkPlan {
     static let leBearerInterface = "org.bluez.Bearer.LE1"
     static let characteristicInterface = "org.bluez.GattCharacteristic1"
     static let nameMarker = "qudelix"
-    static let scanSeconds: TimeInterval = 10
-    static let connectCallSeconds: TimeInterval = 15
-    static let characteristicsSeconds: TimeInterval = 10
-    static let handshakeAllowanceSeconds: TimeInterval = 5
-    static let appearanceSeconds: TimeInterval =
-        scanSeconds + connectCallSeconds + characteristicsSeconds + handshakeAllowanceSeconds
     static let presenceProperty = "RSSI"
 
     static func looksLikeQudelix(_ interfaces: [String: [String: DBusValue]]) -> Bool {
@@ -114,39 +94,27 @@ enum BluezLinkPlan {
         error.name.hasSuffix("NotPermitted") && error.message.contains("Notify acquired")
     }
 
-    static func isWriteHeld(_ error: DBusCallError) -> Bool {
-        error.name.hasSuffix("NotPermitted") && error.message.contains("Write acquired")
+    static func adapterPath(in objects: Objects) -> String? {
+        objects.keys.sorted().first { objects[$0]?[adapterInterface] != nil }
     }
 
-    static func bearerState(of device: String, in objects: Objects) -> BluezBearerState {
-        guard let bearer = objects[device]?[leBearerInterface] else { return .unknown }
-        guard let connected = bearer["Connected"]?.boolValue else { return .hidden }
-        return connected ? .connected : .disconnected
+    static func address(of device: String, in objects: Objects) -> String? {
+        if let text = objects[device]?[deviceInterface]?["Address"]?.stringValue,
+           LEAttAddress.parse(text) != nil { return text }
+        guard let name = device.split(separator: "/").last, name.hasPrefix("dev_") else { return nil }
+        let text = name.dropFirst(4).replacingOccurrences(of: "_", with: ":")
+        return LEAttAddress.parse(text) != nil ? text : nil
     }
 
-    static func step(objects: Objects, device: String, scanned: Bool,
-                     bearerUsable: Bool = true, linkTrusted: Bool = true) -> BluezLinkStep {
-        if linkTrusted, ready(device, in: objects) != nil { return .useCharacteristics }
-        switch bearerState(of: device, in: objects) {
-        case .connected: return .awaitCharacteristics
-        case .disconnected where bearerUsable: return .connectBearer
-        case .hidden, .disconnected:
-            return isConnected(device, in: objects) ? .connectDevice : .notConnected
-        case .unknown:
-            guard scanned else { return .scanForLE }
-            return isConnected(device, in: objects) ? .connectDevice : .notConnected
-        }
-    }
-
-    static func stopAction(calledBearerConnect: Bool) -> BluezStopAction {
-        calledBearerConnect ? .disconnectBearer : .none
+    static func addressType(of device: String, in objects: Objects) -> String? {
+        objects[device]?[deviceInterface]?["AddressType"]?.stringValue
     }
 
     static func isBenign(_ error: DBusCallError, _ names: String...) -> Bool {
         names.contains { error.name.hasSuffix($0) }
     }
 
-    static func report(onBus: Bool, objects: Objects) -> BluetoothReport {
+    static func report(onBus: Bool, objects: Objects, leSocket: Bool? = nil) -> BluetoothReport {
         guard onBus else { return .unavailable }
         let adapter = objects.keys.sorted().first { objects[$0]?[adapterInterface] != nil }
         let adapterProps = adapter.flatMap { objects[$0]?[adapterInterface] }
@@ -160,14 +128,13 @@ enum BluezLinkPlan {
                 trusted: props["Trusted"]?.boolValue ?? false,
                 connected: props["Connected"]?.boolValue ?? false,
                 servicesResolved: props["ServicesResolved"]?.boolValue ?? false,
-                leBearer: bearerState(of: path, in: objects),
                 uuids: props["UUIDs"]?.stringArray ?? [],
                 gaiaCharacteristics: characteristics(under: path, in: objects) != nil)
         }
         return BluetoothReport(bluezOnBus: true, adapterPath: adapter,
                                powered: adapterProps?["Powered"]?.boolValue,
                                discovering: adapterProps?["Discovering"]?.boolValue,
-                               devices: devices)
+                               devices: devices, leControlSocket: leSocket)
     }
 }
 #endif

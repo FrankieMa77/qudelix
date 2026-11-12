@@ -4,20 +4,33 @@ import Glibc
 
 final class BluezTransport: QxLink {
     static let bus = "org.bluez"
-    private static let adapterInterface = "org.bluez.Adapter1"
     private static let deviceInterface = "org.bluez.Device1"
     private static let characteristicInterface = "org.bluez.GattCharacteristic1"
-    private static let bearerInterface = BluezLinkPlan.leBearerInterface
-    private static let propertiesInterface = "org.freedesktop.DBus.Properties"
-    private static let objectManagerInterface = "org.freedesktop.DBus.ObjectManager"
 
-    private static let servicesResolvedTimeout: TimeInterval = BluezLinkPlan.characteristicsSeconds
-    private static let connectTimeoutMs = Int32(BluezLinkPlan.connectCallSeconds * 1000)
     private static let minReconnectDelay: TimeInterval = 0.5
     private static let maxReconnectDelay: TimeInterval = 8
     private static let txErrorLimit = 5
     private static let writeSpacing: TimeInterval = 0.02
     private static let readPollTimeoutMilliseconds: Int32 = 200
+    private static let connectTickMilliseconds: Int32 = 500
+    private static let writeCallTimeoutMs: Int32 = 5_000
+    private static let waitLogInterval: TimeInterval = 60
+
+    static let armedRetryDelay: TimeInterval = 1
+    static let noDeviceRetryDelay: TimeInterval = 3
+
+    static let armedFailureCodes: Set<Int32> = [ECONNREFUSED, ENOSYS, EHOSTDOWN, ETIMEDOUT, EBUSY,
+                                                ECONNRESET, ECONNABORTED, EHOSTUNREACH, EINTR]
+
+    static func isArmedFailure(_ code: Int32) -> Bool {
+        armedFailureCodes.contains(code)
+    }
+
+    private enum Mode {
+        case none
+        case le
+        case bluez
+    }
 
     var kind: QxLinkKind { .bluetooth }
 
@@ -29,12 +42,26 @@ final class BluezTransport: QxLink {
 
     private let queue = DispatchQueue(label: "qudelix.bluez")
     private let lock = NSLock()
+    private let sessionLock = NSLock()
 
-    private var connection: DBusConnection?
+    private let makeBus: () throws -> BluezBus
+    private let makeSocket: () -> LEAttSocket
+    private let pinnedPath: () -> String?
+    private let savePin: (String) -> Void
+    private let armedDelay: TimeInterval
+    private let noDeviceDelay: TimeInterval
+    private let uptime: () -> TimeInterval
+
+    private var bus: BluezBus?
     private var storedDevicePath: String?
     private var storedDeviceAlias = "Qudelix 5K"
-    private var notifyFD: Int32 = -1
-    private var writeFD: Int32 = -1
+    private var mode = Mode.none
+    private var up = false
+    private var socket: LEAttSocket?
+    private var session = LEGaiaSession()
+    private var linkUpAt: TimeInterval = 0
+    private var notifyFD = -1 as Int32
+    private var commandPath: String?
     private var writeBudget = 20
     private var notifyBudget = 512
     private var generation = 0
@@ -47,16 +74,30 @@ final class BluezTransport: QxLink {
     private var reconnectDelay = BluezTransport.minReconnectDelay
     private var reconnectScheduled = false
     private var stopping = false
-    private var weConnectedBearer = false
-    private var bearerConnectUnavailable = false
     private var linkStale = false
     private var lastDrop: BluezDrop?
     private var bringUpPending = false
     private var storedFailure: String?
     private var storedNeedsAttention = false
-    private var discoveringAdapter: String?
-    private var resolvedGate: DispatchSemaphore?
     private var announcedUnusable = false
+    private var lastWaitLog: Date?
+    private var announcedNoDevice = false
+
+    init(bus: @escaping () throws -> BluezBus = { try SystemBluezBus() },
+         socket: @escaping () -> LEAttSocket = { LEAttSystemSocket() },
+         pinnedPath: @escaping () -> String? = { BluezTransport.pinnedDevicePath() },
+         savePin: @escaping (String) -> Void = { BluezTransport.pinDevice($0) },
+         armedDelay: TimeInterval = BluezTransport.armedRetryDelay,
+         noDeviceDelay: TimeInterval = BluezTransport.noDeviceRetryDelay,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        makeBus = bus
+        makeSocket = socket
+        self.pinnedPath = pinnedPath
+        self.savePin = savePin
+        self.armedDelay = armedDelay
+        self.noDeviceDelay = noDeviceDelay
+        self.uptime = uptime
+    }
 
     var failureReason: String? {
         lock.lock()
@@ -84,7 +125,7 @@ final class BluezTransport: QxLink {
     var isConnected: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return notifyFD >= 0 && writeFD >= 0
+        return up
     }
 
     private var devicePath: String? {
@@ -131,7 +172,7 @@ final class BluezTransport: QxLink {
         DebugLog.shared.log("BLE pinned device cleared")
     }
 
-    private static func pinDevice(_ path: String) {
+    static func pinDevice(_ path: String) {
         let file = pinnedDeviceFile
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
@@ -142,7 +183,6 @@ final class BluezTransport: QxLink {
         lock.lock()
         stopping = false
         bringUpPending = false
-        bearerConnectUnavailable = false
         lock.unlock()
         queue.async { [weak self] in self?.bringUp() }
     }
@@ -161,26 +201,14 @@ final class BluezTransport: QxLink {
         lock.lock()
         stopping = true
         lastDrop = nil
-        let gate = resolvedGate
         lock.unlock()
-        gate?.signal()
         queue.async { [weak self] in
             defer { completion?() }
             guard let self else { return }
-            self.stopDiscovery()
-            let action = BluezLinkPlan.stopAction(calledBearerConnect: self.weConnectedBearer)
-            let path = self.devicePath
             self.teardown(reason: "stopped", notify: false)
-            if let path, action == .disconnectBearer {
-                _ = try? self.connection?.call(destination: Self.bus, path: path,
-                                               interface: Self.bearerInterface,
-                                               method: "Disconnect",
-                                               timeoutMs: 2_000)
-            }
-            self.connection?.stopSignalPump()
-            self.connection = nil
+            self.bus?.close()
+            self.bus = nil
             self.devicePath = nil
-            self.weConnectedBearer = false
         }
     }
 
@@ -190,12 +218,15 @@ final class BluezTransport: QxLink {
 
     private func sendNow(_ cmd: QxCmd, _ data: [UInt8]) {
         lock.lock()
-        let fd = writeFD
+        let current = mode
+        let isUp = up
         let budget = writeBudget
         let currentVendor = vendor
         let tripped = consecutiveTxErrors >= Self.txErrorLimit
+        let gen = generation
+        let path = commandPath
         lock.unlock()
-        guard fd >= 0 else {
+        guard isUp, current != .none else {
             log("BLE send dropped (not connected): \(cmd)")
             return
         }
@@ -206,48 +237,62 @@ final class BluezTransport: QxLink {
             return
         }
         DebugLog.shared.tx(cmd, data)
-        let written = frame.withUnsafeBytes { buffer -> Int in
-            guard let base = buffer.baseAddress else { return -1 }
-            return write(fd, base, buffer.count)
+        switch current {
+        case .le:
+            drive(gen) { session, now in session.send(frame, now: now) }
+        case .bluez:
+            writeThroughBlueZ(frame, to: path, cmd: cmd)
+        case .none:
+            return
         }
-        if written == frame.count {
+    }
+
+    private func writeThroughBlueZ(_ frame: [UInt8], to path: String?, cmd: QxCmd) {
+        guard let path, let bus else { return }
+        let value = DBusValue.array(element: "y", items: frame.map { .byte($0) })
+        let options = DBusValue.dictionary([("type", .string("request"))])
+        do {
+            _ = try bus.call(path: path, interface: Self.characteristicInterface,
+                             method: "WriteValue", arguments: [value, options],
+                             timeoutMs: Self.writeCallTimeoutMs)
             lock.lock()
             consecutiveTxErrors = 0
             lock.unlock()
-        } else {
-            let code = errno
-            lock.lock()
-            consecutiveTxErrors += 1
-            let count = consecutiveTxErrors
-            lock.unlock()
-            log("BLE write error \(String(cString: strerror(code))) cmd=\(cmd)"
-                + (count >= Self.txErrorLimit ? " — suspending TX until the link comes back" : ""))
-            if count == Self.txErrorLimit { onLinkUnusable?("Bluetooth writes keep failing (\(String(cString: strerror(code)))); the link is suspended until it comes back") }
+        } catch {
+            recordTxError("\(error)", cmd: cmd)
         }
         Thread.sleep(forTimeInterval: Self.writeSpacing)
+    }
+
+    private func recordTxError(_ detail: String, cmd: QxCmd?) {
+        lock.lock()
+        consecutiveTxErrors += 1
+        let count = consecutiveTxErrors
+        lock.unlock()
+        log("BLE write error \(detail)" + (cmd.map { " cmd=\($0)" } ?? "")
+            + (count >= Self.txErrorLimit ? " — suspending TX until the link comes back" : ""))
+        if count == Self.txErrorLimit {
+            onLinkUnusable?("Bluetooth writes keep failing (\(detail)); the link is suspended until it comes back")
+        }
     }
 
     private func bringUp() {
         lock.lock()
         bringUpPending = false
         lock.unlock()
-        if isStopping {
-            stopDiscovery()
-            return
-        }
-        guard !isConnected else { return }
-        let connection: DBusConnection
+        guard !isStopping, !isConnected else { return }
+        let bus: BluezBus
         do {
-            connection = try openConnection()
+            bus = try openBus()
         } catch {
             reportUnusable("Bluetooth is unavailable: \(error)")
             return
         }
 
-        let objects: [String: [String: [String: DBusValue]]]
+        let objects: BluezLinkPlan.Objects
         let listingStarted = Date()
         do {
-            objects = try connection.managedObjects(destination: Self.bus)
+            objects = try bus.managedObjects()
             let listingSeconds = Date().timeIntervalSince(listingStarted)
             if listingSeconds > 1 {
                 log(String(format: "BLE listing BlueZ objects took %.1f s (%d objects)",
@@ -259,11 +304,21 @@ final class BluezTransport: QxLink {
             return
         }
 
-        guard let candidate = Self.pickDevice(in: objects) else {
-            log("BLE no Qudelix among BlueZ's known devices — watching for one")
-            _ = startScan(in: objects, on: connection, reportFailure: true)
+        guard BluezLinkPlan.adapterPath(in: objects) != nil else {
+            reportUnusable("No Bluetooth adapter is present, so there is no link to open.")
             return
         }
+
+        guard let candidate = BluezLinkPlan.pickDevice(in: objects, pinned: pinnedPath()) else {
+            if !announcedNoDevice {
+                announcedNoDevice = true
+                log("BLE no Qudelix among BlueZ's known devices — watching for one")
+            }
+            setFailure(BluezLinkFailure.noDeviceKnown)
+            scheduleRearm(after: noDeviceDelay)
+            return
+        }
+        announcedNoDevice = false
         devicePath = candidate
         deviceAlias = objects[candidate]?[Self.deviceInterface]?["Alias"]?.stringValue
             ?? objects[candidate]?[Self.deviceInterface]?["Name"]?.stringValue
@@ -272,28 +327,41 @@ final class BluezTransport: QxLink {
         log("BLE picked \(deviceAlias) at \(candidate)"
             + (connectedNow ? " (already connected, e.g. for audio)" : " (not connected)"))
 
-        guard let paths = establishLink(connection, device: candidate, objects: objects,
-                                       connectedNow: connectedNow) else {
-            scheduleReconnect()
-            return
-        }
-        let commandPath = paths.command
-        let responsePath = paths.response
-
-        do {
-            let notify = try acquireNotify(path: responsePath, on: connection)
-            let write: (fd: Int32, mtu: UInt16)
-            do {
-                write = try acquireWrite(path: commandPath, on: connection)
-            } catch {
-                close(notify.fd)
-                throw error
+        if let paths = BluezLinkPlan.ready(candidate, in: objects) {
+            if !linkStale {
+                adoptBlueZLink(bus, device: candidate, paths: paths, connectedNow: connectedNow)
+                return
             }
+        } else {
+            linkStale = false
+        }
+        armLE(device: candidate, objects: objects)
+    }
+
+    private func openBus() throws -> BluezBus {
+        if let bus { return bus }
+        let created = try makeBus()
+        created.onSignal { [weak self] signal in self?.handle(signal) }
+        bus = created
+        return created
+    }
+
+    static func looksLikeQudelix(_ interfaces: [String: [String: DBusValue]]) -> Bool {
+        BluezLinkPlan.looksLikeQudelix(interfaces)
+    }
+
+    private func adoptBlueZLink(_ bus: BluezBus, device: String,
+                                paths: (command: String, response: String), connectedNow: Bool) {
+        log("BLE BlueZ already owns the LE link; using its GATT characteristics under \(device)")
+        do {
+            let notify = try acquireNotify(path: paths.response, on: bus)
             lock.lock()
             notifyFD = notify.fd
-            writeFD = write.fd
             notifyBudget = max(Int(notify.mtu), 23)
-            writeBudget = max(Int(write.mtu), 20)
+            writeBudget = max(Int(notify.mtu) - 3, 20)
+            commandPath = paths.command
+            mode = .bluez
+            up = true
             vendor = .qudelix
             triedFallbackVendor = false
             sawGoodReply = false
@@ -311,211 +379,43 @@ final class BluezTransport: QxLink {
             lock.unlock()
             let detail = BluezLinkFailure.detail("the Bluetooth channels could not be opened (\(error))",
                                                  drop: drop)
-            setFailure(BluezLinkFailure.text(alias: deviceAlias, connectedForAudio: connectedNow,
-                                             detail: detail), needsAttention: connectedNow)
+            setFailure("found \(deviceAlias)"
+                + (connectedNow ? " (connected for audio)" : "")
+                + ", but its Bluetooth LE control link did not come up: \(detail)",
+                       needsAttention: connectedNow)
             log("BLE cannot open the GAIA channels: \(error)")
             scheduleReconnect()
             return
         }
-
-        stopDiscovery()
         setFailure(nil)
-        startReader()
-        log("BLE adopted GAIA link on \(candidate) "
-            + "(write budget \(writeBudget) bytes)")
+        startNotifyReader()
+        log("BLE adopted GAIA link on \(device) (write budget \(writeBudget) bytes)")
         onConnected?(deviceAlias)
     }
 
-    private func openConnection() throws -> DBusConnection {
-        if let connection { return connection }
-        let connection = try DBusConnection()
-        connection.onSignal { [weak self] signal in self?.handle(signal) }
-        try? connection.addMatch("type='signal',sender='\(Self.bus)',"
-            + "interface='\(Self.propertiesInterface)',member='PropertiesChanged'")
-        try? connection.addMatch("type='signal',sender='\(Self.bus)',"
-            + "interface='\(Self.objectManagerInterface)',member='InterfacesAdded'")
-        try? connection.addMatch("type='signal',sender='\(Self.bus)',"
-            + "interface='\(Self.bearerInterface)',member='Disconnected'")
-        try? connection.addMatch("type='signal',sender='\(Self.bus)',"
-            + "interface='\(Self.deviceInterface)',member='Disconnected'")
-        connection.startSignalPump()
-        self.connection = connection
-        return connection
-    }
-
-    static func looksLikeQudelix(_ interfaces: [String: [String: DBusValue]]) -> Bool {
-        BluezLinkPlan.looksLikeQudelix(interfaces)
-    }
-
-    private static func pickDevice(in objects: [String: [String: [String: DBusValue]]]) -> String? {
-        BluezLinkPlan.pickDevice(in: objects, pinned: pinnedDevicePath())
-    }
-
-    private func establishLink(_ connection: DBusConnection, device: String,
-                               objects initial: [String: [String: [String: DBusValue]]],
-                               connectedNow: Bool) -> (command: String, response: String)? {
-        var scanned = false
-        var objects = initial
-
-        func failWith(_ reason: String, needsAttention: Bool) -> (command: String, response: String)? {
-            stopDiscovery()
-            setFailure(reason, needsAttention: needsAttention)
-            log("BLE \(reason)")
-            return nil
-        }
-
-        func fail(_ detail: String) -> (command: String, response: String)? {
-            lock.lock()
-            let drop = lastDrop
-            lock.unlock()
-            return failWith(BluezLinkFailure.text(alias: deviceAlias, connectedForAudio: connectedNow,
-                                                  detail: BluezLinkFailure.detail(detail, drop: drop)),
-                            needsAttention: connectedNow)
-        }
-
-        func awaitCharacteristics() -> (command: String, response: String)? {
-            stopDiscovery()
-            var found: (command: String, response: String)?
-            var sawCharacteristics = false
-            let appeared = waitUntil(Self.servicesResolvedTimeout) {
-                guard let latest = try? connection.managedObjects(destination: Self.bus) else {
-                    return false
-                }
-                if BluezLinkPlan.characteristics(under: device, in: latest) != nil {
-                    sawCharacteristics = true
-                }
-                guard let paths = BluezLinkPlan.ready(device, in: latest) else { return false }
-                found = paths
-                return true
-            }
-            guard appeared, let found else {
-                if isStopping { return nil }
-                if sawCharacteristics {
-                    return fail(BluezLinkFailure.servicesNotLoaded(seconds: Int(Self.servicesResolvedTimeout)))
-                }
-                return fail("the GAIA command and response characteristics did not appear "
-                    + "within \(Int(Self.servicesResolvedTimeout)) s")
-            }
-            log("BLE GAIA characteristics found under \(device)")
-            return found
-        }
-
-        for _ in 0..<4 {
-            if isStopping {
-                stopDiscovery()
-                return nil
-            }
-            let step = BluezLinkPlan.step(objects: objects, device: device, scanned: scanned,
-                                          bearerUsable: !bearerConnectUnavailable,
-                                          linkTrusted: !linkStale)
-            log("BLE link step for \(device): \(step)")
-            switch step {
-            case .useCharacteristics:
-                stopDiscovery()
-                if let paths = BluezLinkPlan.ready(device, in: objects) {
-                    log("BLE GAIA characteristics already present under \(device)")
-                    return paths
-                }
-                return fail("the GAIA characteristics vanished")
-            case .awaitCharacteristics:
-                return awaitCharacteristics()
-            case .connectBearer:
-                stopDiscovery()
-                linkStale = false
-                do {
-                    _ = try connection.call(destination: Self.bus, path: device,
-                                            interface: Self.bearerInterface, method: "Connect",
-                                            timeoutMs: Self.connectTimeoutMs)
-                    weConnectedBearer = true
-                    log("BLE LE bearer connected on \(device)")
-                } catch let error as DBusCallError where BluezLinkPlan.isBenign(error, "AlreadyConnected") {
-                    log("BLE LE bearer was already connected on \(device)")
-                } catch let error as DBusCallError where BluezLinkPlan.isBenign(error, "InProgress") {
-                    log("BLE LE bearer connect already in progress on \(device)")
-                } catch let error as DBusCallError
-                            where BluezLinkPlan.isBenign(error, "UnknownMethod", "UnknownInterface") {
-                    bearerConnectUnavailable = true
-                    log("BLE this BlueZ has no Bearer.LE1.Connect (\(error.name)); "
-                        + "opening the LE link with Device1.Connect")
-                    continue
-                } catch {
-                    return fail("\(error)")
-                }
-                return awaitCharacteristics()
-            case .scanForLE:
-                scanned = true
-                switch startScan(in: objects, on: connection, reportFailure: false) {
-                case .failed(let detail):
-                    return fail(detail)
-                case .started, .alreadyRunning:
-                    break
-                }
-                let isLEReady = waitUntil(BluezLinkPlan.scanSeconds) {
-                    guard let latest = try? connection.managedObjects(destination: Self.bus) else {
-                        return false
-                    }
-                    objects = latest
-                    if BluezLinkPlan.bearerState(of: device, in: latest) != .unknown { return true }
-                    return BluezLinkPlan.characteristics(under: device, in: latest) != nil
-                }
-                log("BLE scan ended on \(device): " + (isLEReady ? "LE side seen" : "nothing seen"))
-                stopDiscovery()
-                if let latest = try? connection.managedObjects(destination: Self.bus) { objects = latest }
-            case .connectDevice:
-                stopDiscovery()
-                linkStale = false
-                do {
-                    _ = try connection.call(destination: Self.bus, path: device,
-                                            interface: Self.deviceInterface, method: "Connect",
-                                            timeoutMs: Self.connectTimeoutMs)
-                    log("BLE Device1.Connect returned for \(device)")
-                } catch let error as DBusCallError
-                            where BluezLinkPlan.isBenign(error, "AlreadyConnected", "InProgress") {
-                    log("BLE Device1.Connect answered \(error.name) for \(device)")
-                } catch {
-                    return fail("\(error)")
-                }
-                return awaitCharacteristics()
-            case .notConnected:
-                return failWith(BluezLinkFailure.notConnected(alias: deviceAlias), needsAttention: false)
-            }
-        }
-        return fail("the link steps did not converge")
-    }
-
     private func acquireNotify(path: String,
-                               on connection: DBusConnection) throws -> (fd: Int32, mtu: UInt16) {
+                               on bus: BluezBus) throws -> (fd: Int32, mtu: UInt16) {
         do {
-            return try acquire("AcquireNotify", path: path, on: connection)
+            return try acquire(path: path, on: bus)
         } catch let error as DBusCallError where BluezLinkPlan.isNotifyHeld(error) {
-            _ = try? connection.call(destination: Self.bus, path: path,
-                                     interface: Self.characteristicInterface, method: "StopNotify")
+            _ = try? bus.call(path: path, interface: Self.characteristicInterface,
+                              method: "StopNotify", arguments: [],
+                              timeoutMs: DBusConnection.defaultTimeoutMs)
             log("BLE BlueZ still held the notify channel from an earlier attempt; released it")
-            return try acquire("AcquireNotify", path: path, on: connection)
+            return try acquire(path: path, on: bus)
         }
     }
 
-    private func acquireWrite(path: String,
-                              on connection: DBusConnection) throws -> (fd: Int32, mtu: UInt16) {
-        do {
-            return try acquire("AcquireWrite", path: path, on: connection)
-        } catch let error as DBusCallError where BluezLinkPlan.isWriteHeld(error) {
-            throw DBusCallError(name: "", message: BluezLinkFailure.writeChannelHeld)
-        }
-    }
-
-    private func acquire(_ method: String, path: String,
-                         on connection: DBusConnection) throws -> (fd: Int32, mtu: UInt16) {
-        let reply = try connection.call(destination: Self.bus, path: path,
-                                        interface: Self.characteristicInterface,
-                                        method: method,
-                                        arguments: [.dictionary([])])
+    private func acquire(path: String, on bus: BluezBus) throws -> (fd: Int32, mtu: UInt16) {
+        let reply = try bus.call(path: path, interface: Self.characteristicInterface,
+                                 method: "AcquireNotify", arguments: [.dictionary([])],
+                                 timeoutMs: DBusConnection.defaultTimeoutMs)
         let fields = reply.count >= 2 ? reply : (reply.first?.items ?? [])
         let harvested = Self.descriptors(in: reply)
         guard fields.count >= 2, let fd = fields[0].fdValue, fd >= 0,
               let mtu = fields[1].uint16Value else {
             for descriptor in harvested { close(descriptor) }
-            throw DBusCallError(name: "", message: "\(method) returned no usable descriptor")
+            throw DBusCallError(name: "", message: "AcquireNotify returned no usable descriptor")
         }
         for descriptor in harvested where descriptor != fd { close(descriptor) }
         return (fd, mtu)
@@ -530,77 +430,177 @@ final class BluezTransport: QxLink {
         }
     }
 
-    private func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let gate = DispatchSemaphore(value: 0)
-        lock.lock()
-        resolvedGate = gate
-        lock.unlock()
-        defer {
-            lock.lock()
-            resolvedGate = nil
-            lock.unlock()
+    private func armLE(device: String, objects: BluezLinkPlan.Objects) {
+        guard let address = BluezLinkPlan.address(of: device, in: objects) else {
+            reportUnusable("The Qudelix 5K's Bluetooth address is not known to BlueZ.")
+            return
         }
-        let deadline = Date().addingTimeInterval(timeout)
+        let addressType = BluezLinkPlan.addressType(of: device, in: objects)
+        let candidate = makeSocket()
+        setFailure(BluezLinkFailure.waitingForLink)
+        log("BLE armed: waiting for the 5K to accept an LE control link at \(address)")
+        var state: LEAttConnectState
+        do {
+            state = try candidate.beginConnect(address: address, addressType: addressType)
+        } catch let error as LEAttSocketError {
+            candidate.close()
+            if Self.isArmedFailure(error.code) {
+                armedFailure(error.description)
+            } else {
+                reportUnusable("Bluetooth LE control links are not available here (\(error)). "
+                    + "Use the USB link.")
+            }
+            return
+        } catch {
+            candidate.close()
+            reportUnusable("Bluetooth LE control links are not available here (\(error)).")
+            return
+        }
         while !isStopping {
-            if condition() { return true }
-            let remaining = deadline.timeIntervalSinceNow
-            if remaining <= 0 { return false }
-            _ = gate.wait(timeout: .now() + min(1, remaining))
+            switch state {
+            case .connected:
+                linkConnected(candidate)
+                return
+            case .failed(let code):
+                candidate.close()
+                let text = String(cString: strerror(code))
+                if Self.isArmedFailure(code) {
+                    armedFailure(text)
+                } else {
+                    reportUnusable("Bluetooth LE control links are not available here (\(text)). "
+                        + "Use the USB link.")
+                }
+                return
+            case .pending:
+                state = candidate.pollConnect(timeoutMs: Self.connectTickMilliseconds)
+            }
         }
-        return false
+        candidate.close()
     }
 
-    private enum ScanStart {
-        case started
-        case alreadyRunning
-        case failed(String)
+    private func armedFailure(_ detail: String) {
+        let now = Date()
+        if lastWaitLog.map({ now.timeIntervalSince($0) >= Self.waitLogInterval }) ?? true {
+            lastWaitLog = now
+            log(BluezLinkFailure.waitLog(detail))
+        }
+        scheduleRearm(after: armedDelay)
     }
 
-    private func startScan(in objects: [String: [String: [String: DBusValue]]],
-                           on connection: DBusConnection, reportFailure: Bool) -> ScanStart {
-        guard discoveringAdapter == nil else { return .alreadyRunning }
-        guard let adapter = objects.keys.sorted().first(where: {
-            objects[$0]?[Self.adapterInterface] != nil
-        }) else {
-            let text = "No Bluetooth adapter is present, so there is nothing to scan with."
-            if reportFailure { reportUnusable(text) }
-            return .failed(text)
+    private func linkConnected(_ connected: LEAttSocket) {
+        let now = uptime()
+        lock.lock()
+        socket = connected
+        mode = .le
+        up = false
+        generation += 1
+        let gen = generation
+        vendor = .qudelix
+        triedFallbackVendor = false
+        sawGoodReply = false
+        consecutiveTxErrors = 0
+        linkUpAt = now
+        lock.unlock()
+        sessionLock.lock()
+        session = LEGaiaSession()
+        sessionLock.unlock()
+        log("BLE LE link is up; discovering the GAIA service")
+        startLEReader(connected, generation: gen)
+        drive(gen) { session, now in session.linkUp(now: now) }
+    }
+
+    private func drive(_ gen: Int,
+                       _ body: (inout LEGaiaSession, TimeInterval) -> [LEGaiaOutput]) {
+        lock.lock()
+        let target = generation == gen ? socket : nil
+        lock.unlock()
+        guard let target else { return }
+        var rest: [LEGaiaOutput] = []
+        var writeFailed = false
+        sessionLock.lock()
+        let outputs = body(&session, uptime())
+        for output in outputs {
+            if case .send(let pdu) = output {
+                if !target.write(pdu) { writeFailed = true }
+            } else {
+                rest.append(output)
+            }
         }
-        do {
-            _ = try connection.call(destination: Self.bus, path: adapter,
-                                    interface: Self.adapterInterface,
-                                    method: "SetDiscoveryFilter",
-                                    arguments: [.dictionary([("Transport", .string("le"))])])
-        } catch {
-            log("BLE adapter \(adapter) refused a low-energy scan filter "
-                + "(\(error)); scanning without one")
-        }
-        do {
-            _ = try connection.call(destination: Self.bus, path: adapter,
-                                    interface: Self.adapterInterface, method: "StartDiscovery")
-            discoveringAdapter = adapter
-            log("BLE scan started on \(adapter)")
-            return .started
-        } catch let error as DBusCallError where error.name.hasSuffix("InProgress") {
-            log("BLE a scan is already running on \(adapter)")
-            return .alreadyRunning
-        } catch {
-            let text = "The Bluetooth adapter would not start a low-energy scan (\(error)). "
-                + "This adapter may not support Bluetooth LE; use the USB link."
-            if reportFailure { reportUnusable(text) }
-            return .failed(text)
+        sessionLock.unlock()
+        if writeFailed { recordTxError("the LE socket refused a write", cmd: nil) }
+        for output in rest { handle(output, generation: gen) }
+    }
+
+    private func handle(_ output: LEGaiaOutput, generation gen: Int) {
+        switch output {
+        case .send:
+            return
+        case .ready(let budget):
+            lock.lock()
+            let live = generation == gen
+            if live {
+                writeBudget = budget
+                up = true
+                reconnectDelay = Self.minReconnectDelay
+                lastDrop = nil
+                announcedUnusable = false
+            }
+            let started = linkUpAt
+            lock.unlock()
+            guard live else { return }
+            setFailure(nil)
+            log(String(format: "BLE GAIA link ready in %.2f s (write budget %d bytes)",
+                       uptime() - started, budget))
+            onConnected?(deviceAlias)
+        case .packet(let raw):
+            deliver(raw, generation: gen)
+        case .writeRejected(let code):
+            recordTxError(String(format: "the 5K rejected a write (ATT error 0x%02X)", code), cmd: nil)
+        case .failed(let reason):
+            log("BLE link failed: \(reason)")
+            queue.async { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                let live = self.generation == gen
+                self.lock.unlock()
+                guard live else { return }
+                self.teardown(reason: reason, notify: true)
+                self.scheduleRearm(after: self.armedDelay)
+            }
         }
     }
 
-    private func stopDiscovery() {
-        guard let adapter = discoveringAdapter, let connection else { return }
-        discoveringAdapter = nil
-        _ = try? connection.call(destination: Self.bus, path: adapter,
-                                 interface: Self.adapterInterface, method: "StopDiscovery")
-        log("BLE scan stopped on \(adapter)")
+    private func startLEReader(_ link: LEAttSocket, generation gen: Int) {
+        lock.lock()
+        readerGeneration = gen
+        lock.unlock()
+        let thread = Thread { [weak self] in
+            var reason = "the device closed the link"
+            loop: while true {
+                guard let self, self.readerShouldContinue(gen) else {
+                    reason = ""
+                    break loop
+                }
+                switch link.read(timeoutMs: Self.readPollTimeoutMilliseconds) {
+                case .pdu(let pdu):
+                    self.drive(gen) { session, now in session.receive(pdu, now: now) }
+                case .timeout:
+                    self.drive(gen) { session, now in session.tick(now: now) }
+                case .closed(let text):
+                    reason = text
+                    break loop
+                }
+            }
+            link.close()
+            let ended = reason
+            self?.queue.async { [weak self] in self?.readerFinished(gen, reason: ended) }
+        }
+        thread.name = "qudelix.bluez.rx"
+        thread.stackSize = 512 * 1024
+        thread.start()
     }
 
-    private func startReader() {
+    private func startNotifyReader() {
         lock.lock()
         generation += 1
         let gen = generation
@@ -662,7 +662,7 @@ final class BluezTransport: QxLink {
         lock.unlock()
         guard live else { return }
         teardown(reason: reason, notify: true)
-        scheduleReconnect()
+        scheduleRearm(after: armedDelay)
     }
 
     private func deliver(_ raw: [UInt8], generation gen: Int) {
@@ -702,7 +702,7 @@ final class BluezTransport: QxLink {
         sawGoodReply = true
         lock.unlock()
         if firstGoodReply, let path = devicePath {
-            Self.pinDevice(path)
+            savePin(path)
             log("BLE pinned \(path) for future sessions")
         }
         onPacket?(packet)
@@ -721,24 +721,19 @@ final class BluezTransport: QxLink {
                 return
             }
             lock.lock()
-            let gate = resolvedGate
+            let viaBlueZ = mode == .bluez
             lock.unlock()
-            gate?.signal()
-            if changed["Connected"]?.boolValue == false {
+            if viaBlueZ, changed["Connected"]?.boolValue == false {
                 queue.async { [weak self] in
                     guard let self else { return }
                     self.teardown(reason: "the device disconnected", notify: true)
-                    self.scheduleReconnect()
+                    self.scheduleRearm(after: self.armedDelay)
                 }
             }
         case "InterfacesAdded":
             guard signal.arguments.count >= 2 else { return }
             if let added = signal.arguments[0].stringValue, let path = devicePath,
                added == path || added.hasPrefix(path + "/") {
-                lock.lock()
-                let gate = resolvedGate
-                lock.unlock()
-                gate?.signal()
                 return
             }
             guard devicePath == nil, !isConnected,
@@ -755,12 +750,7 @@ final class BluezTransport: QxLink {
             if !skip { lastDrop = drop }
             lock.unlock()
             guard !skip else { return }
-            switch drop.kind {
-            case .bearer:
-                log("BLE LE link dropped on \(signal.path): \(drop.message) (\(drop.name))")
-            case .device:
-                log("BLE \(signal.path) disconnected: \(drop.message) (\(drop.name))")
-            }
+            log("BLE \(signal.path) " + BluezLinkFailure.dropSentence(drop))
         default:
             return
         }
@@ -786,39 +776,48 @@ final class BluezTransport: QxLink {
 
     private func teardown(reason: String, notify: Bool) {
         lock.lock()
-        let wasUp = notifyFD >= 0 && writeFD >= 0
+        let wasUp = up
         generation += 1
-        let orphanedNotify = readerGeneration == nil ? notifyFD : -1
-        let writeDescriptor = writeFD
+        let orphanedNotify = mode == .bluez && readerGeneration == nil ? notifyFD : -1
+        let leSocket = socket
+        socket = nil
         notifyFD = -1
-        writeFD = -1
+        commandPath = nil
+        mode = .none
+        up = false
         vendor = .qudelix
         triedFallbackVendor = false
         sawGoodReply = false
         consecutiveTxErrors = 0
         lock.unlock()
-        weConnectedBearer = false
+        sessionLock.lock()
+        session = LEGaiaSession()
+        sessionLock.unlock()
         if orphanedNotify >= 0 { close(orphanedNotify) }
-        if writeDescriptor >= 0 { close(writeDescriptor) }
+        leSocket?.close()
         if wasUp {
             log("BLE link torn down (\(reason))")
             if notify { onDisconnected?() }
         }
     }
 
-    private func scheduleReconnect() {
+    private func scheduleRearm(after delay: TimeInterval) {
         guard !isStopping, !reconnectScheduled else { return }
         reconnectScheduled = true
-        lock.lock()
-        let delay = reconnectDelay
-        reconnectDelay = min(reconnectDelay * 2, Self.maxReconnectDelay)
-        lock.unlock()
-        log("BLE reconnecting in \(String(format: "%.1f", delay))s")
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.reconnectScheduled = false
             self.bringUp()
         }
+    }
+
+    private func scheduleReconnect() {
+        lock.lock()
+        let delay = reconnectDelay
+        reconnectDelay = min(reconnectDelay * 2, Self.maxReconnectDelay)
+        lock.unlock()
+        log("BLE retrying in \(String(format: "%.1f", delay))s")
+        scheduleRearm(after: delay)
     }
 
     private func reportUnusable(_ message: String) {

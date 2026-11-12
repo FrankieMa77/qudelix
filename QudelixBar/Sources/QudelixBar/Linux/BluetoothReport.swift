@@ -1,21 +1,5 @@
 import Foundation
 
-enum BluezBearerState: String, Equatable {
-    case unknown
-    case disconnected
-    case connected
-    case hidden
-
-    var probeText: String {
-        switch self {
-        case .unknown: return "not known to BlueZ"
-        case .disconnected: return "known, not connected"
-        case .connected: return "connected"
-        case .hidden: return "present, but this BlueZ hides its controls (BlueZ 5.88+, or Experimental = true)"
-        }
-    }
-}
-
 struct BluetoothDeviceReport: Equatable {
     var name: String
     var address: String
@@ -23,7 +7,6 @@ struct BluetoothDeviceReport: Equatable {
     var trusted: Bool
     var connected: Bool
     var servicesResolved: Bool
-    var leBearer: BluezBearerState
     var uuids: [String]
     var gaiaCharacteristics: Bool
 }
@@ -34,6 +17,7 @@ struct BluetoothReport: Equatable {
     var powered: Bool?
     var discovering: Bool?
     var devices: [BluetoothDeviceReport]
+    var leControlSocket: Bool? = nil
 
     static let unavailable = BluetoothReport(bluezOnBus: false, adapterPath: nil, powered: nil,
                                              discovering: nil, devices: [])
@@ -85,6 +69,7 @@ enum BluetoothProbe {
         } else {
             out.append("bluetooth     no Bluetooth adapter known to BlueZ")
         }
+        out.append("bluetooth     LE control socket: " + leSocketText(report.leControlSocket))
         guard !report.devices.isEmpty else {
             out.append("bluetooth     no Qudelix known to BlueZ — pair the 5K in your Bluetooth settings")
             return out
@@ -95,7 +80,6 @@ enum BluetoothProbe {
             out.append("  trusted     \(yesNo(device.trusted))")
             out.append("  connected   \(yesNo(device.connected))")
             out.append("  resolved    \(yesNo(device.servicesResolved))")
-            out.append("  LE bearer   \(device.leBearer.probeText)")
             out.append("  GAIA chars  \(device.gaiaCharacteristics ? "present" : "not present")")
             for uuid in device.uuids {
                 out.append("  uuid        \(uuid)" + (label(uuid).map { "  [\($0)]" } ?? ""))
@@ -115,7 +99,6 @@ enum BluetoothProbe {
                     "trusted": device.trusted,
                     "connected": device.connected,
                     "services_resolved": device.servicesResolved,
-                    "le_bearer": device.leBearer.rawValue,
                     "gaia_characteristics": device.gaiaCharacteristics,
                     "uuids": device.uuids.map { uuid -> [String: Any] in
                         var entry: [String: Any] = ["uuid": uuid]
@@ -128,7 +111,16 @@ enum BluetoothProbe {
         QxFormat.put(&object, "adapter_path", report.adapterPath)
         QxFormat.put(&object, "powered", report.powered)
         QxFormat.put(&object, "discovering", report.discovering)
+        QxFormat.put(&object, "le_control_socket", report.leControlSocket)
         return object
+    }
+
+    static func leSocketText(_ available: Bool?) -> String {
+        switch available {
+        case true?: return "this machine can open one"
+        case false?: return "this machine cannot open one (no AF_BLUETOOTH L2CAP support or permission)"
+        case nil: return "not checked"
+        }
     }
 
     private static func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
@@ -146,16 +138,15 @@ struct BluezDrop: Equatable {
 }
 
 enum BluezLinkFailure {
-    static func notConnected(alias: String) -> String {
-        "found \(alias), but it is not connected — connect it in your Bluetooth settings first"
-    }
+    static let waitingForLink = "Waiting for the Qudelix 5K's Bluetooth control link. "
+        + "The 5K offers it for a few seconds after it is switched on; "
+        + "if it is already on, switch it off and on again."
 
-    static let writeChannelHeld = "BlueZ is still holding the 5K's control channel from an earlier "
-        + "attempt; restart the Bluetooth service (for example: sudo systemctl restart bluetooth) "
-        + "and try again"
+    static let noDeviceKnown = "No Qudelix 5K is known to Bluetooth yet. "
+        + "Pair it once in your Bluetooth settings, then it will be found."
 
-    static func servicesNotLoaded(seconds: Int) -> String {
-        "the 5K's Bluetooth services did not finish loading within \(seconds) s"
+    static func waitLog(_ detail: String) -> String {
+        "BLE waiting for the 5K to offer its control link (\(detail))"
     }
 
     static func dropReason(name: String, message: String) -> String {
@@ -180,10 +171,5 @@ enum BluezLinkFailure {
     static func detail(_ detail: String, drop: BluezDrop?) -> String {
         guard let drop else { return detail }
         return detail + "; " + dropSentence(drop)
-    }
-
-    static func text(alias: String, connectedForAudio: Bool, detail: String) -> String {
-        "found \(alias)" + (connectedForAudio ? " (connected for audio)" : "")
-            + ", but its Bluetooth LE control link did not come up: \(detail)"
     }
 }

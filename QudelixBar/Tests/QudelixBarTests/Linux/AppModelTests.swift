@@ -178,6 +178,26 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testTheBluetoothLinkIsNeverStartedWhileTheUsbLinkConnects() async {
+        let usb = autoLink(volumeDb: -14)
+        let bluetooth = FakeLink(kind: .bluetooth)
+        let url = lockURL
+        let model = AppModel(makeLinks: { [usb, bluetooth] },
+                             acquireLock: { QxInstanceLock.acquire(at: url) },
+                             lockProblem: { QxInstanceLock.unavailability(at: url) },
+                             probeDevice: { AppDeviceProbe(present: true) },
+                             clock: clock,
+                             retryInterval: 2,
+                             connectTimeout: 2)
+        await connect(model)
+        XCTAssertEqual(model.state.connection, .connected(.usb))
+        XCTAssertFalse(bluetooth.started)
+        XCTAssertFalse(bluetooth.stopped)
+        await model.shutdown()
+        XCTAssertFalse(bluetooth.started)
+    }
+
+    @MainActor
     func testShutdownDuringTheCompatibilityCheckReleasesTheLinkAndTheLock() async {
         let link = autoLink()
         let model = makeModel(links: [link])
