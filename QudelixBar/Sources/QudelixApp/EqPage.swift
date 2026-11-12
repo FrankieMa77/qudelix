@@ -333,6 +333,7 @@ final class EqPage {
 
     @discardableResult
     func presentOverwrite(_ prompt: SlotOverwritePrompt) -> UnsafeMutableRawPointer {
+        if let open = dialog { return open }
         var opened: UnsafeMutableRawPointer?
         let created = Ui.confirm(parent: Ui.parentWindow(of: widget), title: prompt.title,
                                  message: prompt.message, action: prompt.confirmLabel,

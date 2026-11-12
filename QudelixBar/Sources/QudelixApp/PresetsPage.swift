@@ -181,6 +181,7 @@ final class PresetsPage {
 
     @discardableResult
     func presentSaveConfirmation(_ prompt: SlotOverwritePrompt) -> UnsafeMutableRawPointer {
+        if let open = dialog { return open }
         var opened: UnsafeMutableRawPointer?
         let created = Ui.confirm(parent: parentWindow, title: prompt.title, message: prompt.message,
                                  action: prompt.confirmLabel, destructive: true) { [weak self] confirmed in
@@ -196,6 +197,7 @@ final class PresetsPage {
 
     @discardableResult
     func presentRename(slot index: Int) -> UnsafeMutableRawPointer? {
+        guard dialog == nil else { return dialog }
         let current = state.slots.indices.contains(index) ? (state.slots[index].name ?? "") : ""
         var opened: UnsafeMutableRawPointer?
         let dialog = NameDialog.make(parent: parentWindow, title: "Rename preset \(index + 1)",
