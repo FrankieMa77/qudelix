@@ -206,7 +206,7 @@ final class LevelPage {
                 level.setAutoRate(adw_switch_row_get_active(self.autoMatchRow.opaque) != 0)
             }
         }
-        Signals.onValueChanged(calibrationSpin) { [weak self] value in
+        Signals.onSpinChanged(calibrationSpin) { [weak self] value in
             onMain {
                 guard let self, !self.updating else { return }
                 stage.setEarCalibration(EarLevel.defaultCalibrationDb + value.rounded(), editedFor: stage.outputKey)

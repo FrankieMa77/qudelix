@@ -40,6 +40,13 @@ private typealias ResponseHandler = (String) -> Void
 private typealias DecisionHandler = () -> Bool
 private typealias StateHandler = (Bool) -> Void
 private typealias KeyHandler = (UInt32, UInt32) -> Bool
+private typealias RowHandler = (Int) -> Void
+
+private let rowTrampoline: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { _, row, data in
+    guard let handler = unbox(data, RowHandler.self) else { return }
+    guard let row else { handler(-1); return }
+    handler(Int(gtk_list_box_row_get_index(row.assumingMemoryBound(to: GtkListBoxRow.self))))
+}
 
 private let instanceTrampoline: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { instance, data in
     guard let instance, let handler = unbox(data, InstanceHandler.self) else { return }
@@ -145,6 +152,32 @@ package enum Signals {
         return UInt(g_signal_connect_data(instance.raw, "notify::" + property, callback,
                                           retain(handler as NotifyHandler),
                                           releaseSignalData, GConnectFlags(rawValue: 0)))
+    }
+
+    @discardableResult
+    package static func onRowSelected(_ list: some GPointer,
+                                      handler: @escaping (Int) -> Void) -> UInt {
+        let callback = unsafeBitCast(rowTrampoline, to: GCallback.self)
+        return UInt(g_signal_connect_data(list.raw, "row-selected", callback,
+                                          retain(handler as RowHandler),
+                                          releaseSignalData, GConnectFlags(rawValue: 0)))
+    }
+
+    @discardableResult
+    package static func onRowActivated(_ list: some GPointer,
+                                       handler: @escaping (Int) -> Void) -> UInt {
+        let callback = unsafeBitCast(rowTrampoline, to: GCallback.self)
+        return UInt(g_signal_connect_data(list.raw, "row-activated", callback,
+                                          retain(handler as RowHandler),
+                                          releaseSignalData, GConnectFlags(rawValue: 0)))
+    }
+
+    @discardableResult
+    package static func onSpinChanged(_ spin: some GPointer,
+                                      handler: @escaping (Double) -> Void) -> UInt {
+        connect(spin, signal: "value-changed") { instance in
+            handler(gtk_spin_button_get_value(OpaquePointer(instance)))
+        }
     }
 
     @discardableResult

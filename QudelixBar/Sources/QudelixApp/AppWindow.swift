@@ -292,16 +292,14 @@ enum AppWindow {
             gtk_list_box_append(list.opaque, row)
             sidebarRows.append(row)
         }
-        Signals.connect(list, signal: "row-selected") { _ in
+        Signals.onRowSelected(list) { index in
             onMain {
-                guard !selectingRow, let list = sidebarList,
-                      let row = gtk_list_box_get_selected_row(list.opaque) else { return }
-                let index = Int(gtk_list_box_row_get_index(row))
+                guard !selectingRow else { return }
                 guard AppPage.allCases.indices.contains(index) else { return }
                 navigate(to: AppPage.allCases[index], showContent: true)
             }
         }
-        Signals.connect(list, signal: "row-activated") { _ in
+        Signals.onRowActivated(list) { _ in
             onMain {
                 guard let splitView else { return }
                 adw_navigation_split_view_set_show_content(splitView, 1)

@@ -8,10 +8,10 @@ package enum Accessible {
         return value
     }
 
-    private static func booleanValue(_ flag: Bool) -> GValue {
+    private static func tristateValue(_ flag: Bool) -> GValue {
         var value = GValue()
-        g_value_init(&value, g_type_from_name("gboolean"))
-        g_value_set_boolean(&value, flag ? 1 : 0)
+        g_value_init(&value, g_type_from_name("gint"))
+        g_value_set_int(&value, flag ? 1 : 0)
         return value
     }
 
@@ -31,7 +31,7 @@ package enum Accessible {
 
     package static func setSelected(_ widget: some GPointer, _ selected: Bool) {
         var state = GTK_ACCESSIBLE_STATE_SELECTED
-        var value = booleanValue(selected)
+        var value = tristateValue(selected)
         gtk_accessible_update_state_value(widget.opaque, 1, &state, &value)
         g_value_unset(&value)
     }
