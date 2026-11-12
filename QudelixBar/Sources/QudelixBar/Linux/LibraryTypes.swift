@@ -38,6 +38,12 @@ struct LibraryEnvironment {
     var autoEqTransport: HTTPTransport
     var ai: AIRuntime
     var searchDelay: TimeInterval = 0.4
+    var publishedIndex: @Sendable (URL, Int) async throws -> Data = { url, limit in
+        try await AutoEqIndex.fetch(url, limit: limit)
+    }
+    var publishedPreset: @Sendable (AutoEqEntry) async throws -> ParametricEQFile = { entry in
+        try await AutoEqIndex.fetchPreset(entry)
+    }
 
     static func system() -> LibraryEnvironment {
         LibraryEnvironment(libraryFile: PresetLibraryFile.url,

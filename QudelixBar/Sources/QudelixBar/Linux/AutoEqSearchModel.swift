@@ -6,6 +6,32 @@ package struct AutoEqResult: Equatable {
     package var detail: String
 }
 
+package enum AutoEqMode: Equatable, CaseIterable {
+    case fit
+    case published
+
+    package var label: String {
+        switch self {
+        case .fit: return "Fit to my device"
+        case .published: return "Published preset"
+        }
+    }
+
+    package var help: String {
+        switch self {
+        case .fit: return "Ask AutoEq's optimizer for a correction that already fits this device"
+        case .published: return "Download AutoEq's published preset as-is"
+        }
+    }
+
+    var noun: String {
+        switch self {
+        case .fit: return "headphones"
+        case .published: return "presets"
+        }
+    }
+}
+
 package enum AutoEqCatalogue: Equatable {
     case idle
     case loading
@@ -31,6 +57,16 @@ package struct AutoEqState: Equatable {
     package var applyRefusal: String?
     package var summary: String?
     package var fitBandCount = 10
+    package var mode = AutoEqMode.fit
+    package var bass = 0.0
+    package var tilt = 0.0
+    package var bassText = ""
+    package var tiltText = ""
+    package var canReset = false
+    package var cutoffHz: Double?
+    package var cutoffLabel: String?
+    package var limitToCutoff = false
+    package var fitHint = ""
 
     package init() {}
 }
@@ -39,12 +75,39 @@ package struct AutoEqState: Equatable {
 package final class AutoEqSearchModel {
     package static let maxQueryLength = 64
     package static let recommendedTarget = "Recommended for this measurement"
+    package static let bassRange = CorrectionOptions.bassRange
+    package static let tiltRange = CorrectionOptions.tiltRange
+    package static let bassStep = CorrectionOptions.bassStep
+    package static let tiltStep = CorrectionOptions.tiltStep
+    package static let bassHelp = "Low-shelf lift on top of the target. 0 dB is the target as published."
+    package static let tiltHelp = "Overall slope. Negative is darker, positive brighter. 0 is the target as published."
+    package static let targetHelp = "Which published target curve the correction is fitted to, before "
+        + "bass and tilt are layered on top. Over-ear and in-ear curves are "
+        + "fitted for different acoustics and aren't interchangeable, which "
+        + "is why they're grouped apart here."
+    package static let cutoffHelp = "Boosting above where the source stops amplifies the codec's own "
+        + "artefacts, and the pre-gain it costs is taken off the whole band. "
+        + "This measures what is playing right now, while the correction you "
+        + "write is permanent \u{2014} worth ticking only if most of what you listen "
+        + "to is limited like this."
+    package static let sourceLabel = "Correction source"
+    package static let resetLabel = "Reset personalization"
+
+    package static func fitHint(bandCount: Int) -> String {
+        "Fitted to the \(bandCount)-band mode \u{2014} asked for a curve this device can hold as-is."
+    }
+
+    package static func cutoffLabel(_ hz: Double) -> String {
+        "Limit correction to \(CorrectionOptions.describeCeiling(hz)) \u{2014} what's playing now stops there"
+    }
+
     package static let searchHint = "Search AutoEq \u{2014} e.g. HD 650. The catalog is "
         + "fetched from autoeq.app the first time you search."
 
     private unowned let host: AppModel
     private let saved: SavedPresetsModel
     private let service: AutoEqService
+    private let published: PublishedCorrectionSource
     private let delay: TimeInterval
 
     private var observers: [Int: (AutoEqState) -> Void] = [:]
@@ -59,6 +122,17 @@ package final class AutoEqSearchModel {
     private var fittedGroup: QxEqGroup = .user
     private var catalogue = AutoEqCatalogue.idle
     private var fitting = false
+    private var mode = AutoEqMode.fit
+    private var bass = 0.0
+    private var tilt = 0.0
+    private var limitToCutoff = false
+    private var cutoffHz: Double?
+    private var fittedCeiling: Double?
+    private var cutoffSource: (() -> Double?)?
+    private var levelObserver: (level: LevelModel, id: Int)?
+    private var refitTimer: AppTimer?
+    private var fittedOptions = CorrectionOptions()
+    private var fittedSource: (any CatalogueSource)?
     private var error: String?
     private var summary: String?
     private var debounce: AppTimer?
@@ -67,10 +141,19 @@ package final class AutoEqSearchModel {
     private var searchGeneration = 0
     private var fitGeneration = 0
 
-    init(host: AppModel, saved: SavedPresetsModel, environment: LibraryEnvironment) {
+    private var source: any CatalogueSource {
+        switch mode {
+        case .fit: return service
+        case .published: return published
+        }
+    }
+
+    init(host: AppModel, saved: SavedPresetsModel, environment: LibraryEnvironment,
+         service: AutoEqService? = nil, published: PublishedCorrectionSource? = nil) {
         self.host = host
         self.saved = saved
-        self.service = AutoEqService(transport: environment.autoEqTransport)
+        self.service = service ?? AutoEqService(transport: environment.autoEqTransport)
+        self.published = published ?? PublishedCorrectionSource(environment: environment)
         self.delay = environment.searchDelay
         host.addObserver { [weak self] _ in self?.publish() }
         host.eq.addObserver { [weak self] _ in self?.publish() }
@@ -122,23 +205,24 @@ package final class AutoEqSearchModel {
         let token = searchGeneration
         error = nil
         searchTask?.cancel()
-        switch service.state {
+        let active = source
+        switch active.phase {
         case .ready:
-            catalogue = .ready(service.models.count)
+            catalogue = .ready(active.catalogueSize)
             refreshResults()
             return
         case .idle, .loading, .failed:
             catalogue = .loading
         }
         publish()
-        service.prepare()
+        active.prepare()
         searchTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.service.loadTask?.value
+            await active.loadHandle?.value
             guard token == self.searchGeneration else { return }
-            switch self.service.state {
+            switch active.phase {
             case .ready:
-                self.catalogue = .ready(self.service.models.count)
+                self.catalogue = .ready(active.catalogueSize)
                 self.refreshResults()
             case .failed(let why):
                 self.catalogue = .failed(why)
@@ -152,7 +236,7 @@ package final class AutoEqSearchModel {
     }
 
     private func refreshResults() {
-        candidates = service.search(query)
+        candidates = source.search(query)
         if let current = selected, !candidates.contains(where: { $0.id == current.id }) {
             clearSelection()
         }
@@ -166,6 +250,8 @@ package final class AutoEqSearchModel {
         fitTask?.cancel()
         debounce?.cancel()
         debounce = nil
+        refitTimer?.cancel()
+        refitTimer = nil
         fitting = false
         if case .loading = catalogue { catalogue = .idle }
         publish()
@@ -188,9 +274,122 @@ package final class AutoEqSearchModel {
         if selected != nil { fit() } else { publish() }
     }
 
+    package func setMode(_ next: AutoEqMode) {
+        guard next != mode else { return }
+        searchGeneration += 1
+        searchTask?.cancel()
+        debounce?.cancel()
+        debounce = nil
+        mode = next
+        candidates = []
+        clearSelection()
+        switch source.phase {
+        case .ready: catalogue = .ready(source.catalogueSize)
+        case .idle, .loading, .failed: catalogue = .idle
+        }
+        if query.trimmingCharacters(in: .whitespaces).isEmpty {
+            publish()
+        } else {
+            searchNow()
+        }
+    }
+
+    package func setBass(_ value: Double) {
+        let snapped = CorrectionOptions.snap(value, step: CorrectionOptions.bassStep,
+                                             into: CorrectionOptions.bassRange)
+        guard snapped != bass else { return }
+        bass = snapped
+        optionsChanged()
+    }
+
+    package func setTilt(_ value: Double) {
+        let snapped = CorrectionOptions.snap(value, step: CorrectionOptions.tiltStep,
+                                             into: CorrectionOptions.tiltRange)
+        guard snapped != tilt else { return }
+        tilt = snapped
+        optionsChanged()
+    }
+
+    package func setLimitToCutoff(_ on: Bool) {
+        guard on != limitToCutoff else { return }
+        limitToCutoff = on
+        optionsChanged()
+    }
+
+    package func resetPersonalization() {
+        guard bass != 0 || tilt != 0 || target != nil else { return }
+        bass = 0
+        tilt = 0
+        target = nil
+        optionsChanged()
+    }
+
+    package func showNote(_ text: String) {
+        summary = text
+        publish()
+    }
+
+    package func attach(level: LevelModel) {
+        if let levelObserver { levelObserver.level.removeObserver(levelObserver.id) }
+        useCutoff { [weak level] in
+            guard let quality = level?.state.quality,
+                  quality.kind == .lossy || quality.kind == .lossyHigh else { return nil }
+            return quality.cutoffKHz
+        }
+        let id = level.addObserver { [weak self] _ in self?.cutoffChanged() }
+        levelObserver = (level, id)
+    }
+
+    package func useCutoff(_ source: (() -> Double?)?) {
+        cutoffSource = source
+        cutoffChanged()
+    }
+
+    private func cutoffChanged() {
+        let next = detectedCutoffHz()
+        guard next != cutoffHz else { return }
+        cutoffHz = next
+        if limitToCutoff, selected != nil, requestedCeiling() != fittedCeiling {
+            scheduleRefit()
+        } else {
+            publish()
+        }
+    }
+
+    private func detectedCutoffHz() -> Double? {
+        guard let kHz = cutoffSource?(), kHz.isFinite else { return nil }
+        let hz = kHz * 1000
+        guard hz >= CorrectionOptions.minCorrectionHz, hz < 20000 else { return nil }
+        return hz
+    }
+
+    private func requestedCeiling() -> Double? {
+        limitToCutoff ? cutoffHz : nil
+    }
+
+    private func currentOptions() -> CorrectionOptions {
+        CorrectionOptions(bassBoostGain: bass, tilt: tilt, target: target,
+                          maxCorrectionHz: requestedCeiling()).quantized()
+    }
+
+    private func optionsChanged() {
+        if selected != nil { scheduleRefit() } else { publish() }
+    }
+
+    private func scheduleRefit() {
+        refitTimer?.cancel()
+        publish()
+        refitTimer = host.clock.schedule(after: delay) { [weak self] in
+            self?.refitTimer = nil
+            self?.fit()
+        }
+    }
+
     private func clearSelection() {
         fitGeneration += 1
         fitTask?.cancel()
+        refitTimer?.cancel()
+        refitTimer = nil
         selected = nil
         fitted = nil
         fitting = false
@@ -200,6 +399,8 @@ package final class AutoEqSearchModel {
 
     private func fit() {
         guard let candidate = selected else { return }
+        refitTimer?.cancel()
+        refitTimer = nil
         fitTask?.cancel()
         fitGeneration += 1
         let token = fitGeneration
@@ -209,15 +410,18 @@ package final class AutoEqSearchModel {
         fitting = true
         let group = host.eq.currentGroup
         fittedGroup = group
-        var options = CorrectionOptions()
-        options.target = target
+        let options = currentOptions()
+        fittedOptions = options
+        fittedSource = source
+        fittedCeiling = options.maxCorrectionHz
         publish()
+        let active = source
         fitTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let result = try await self.service.correction(
+                let result = try await active.correction(
                     for: candidate, shapedFor: .qudelix(bandCount: group.bandCount),
-                    options: options.quantized())
+                    options: options)
                 guard token == self.fitGeneration else { return }
                 self.fitted = result
                 self.fitting = false
@@ -249,12 +453,46 @@ package final class AutoEqSearchModel {
             return false
         }
         let outcome = host.eq.apply(result.file, named: candidate.title)
+        if outcome.accepted {
+            landReference(result.file, headphone: candidate.title,
+                          source: fittedSource?.displayName ?? source.displayName,
+                          options: fittedOptions)
+        }
         var parts = [result.provenance]
         if outcome.accepted { parts.append(outcome.summary) } else { parts = [outcome.summary] }
         parts.append(contentsOf: result.warnings)
         summary = parts.joined(separator: " \u{00B7} ")
         publish()
         return outcome.accepted
+    }
+
+    @discardableResult
+    func applyCorrection(_ result: CorrectionResult, named name: String) -> Bool {
+        if let refusal = host.eq.writeRefusal {
+            summary = refusal
+            publish()
+            return false
+        }
+        let outcome = host.eq.apply(result.file, named: name,
+                                    undoLabel: "correction for \(name)")
+        guard outcome.accepted else {
+            summary = outcome.summary
+            publish()
+            return false
+        }
+        landReference(result.file, headphone: name, source: service.displayName,
+                      options: CorrectionOptions())
+        summary = ([result.provenance, outcome.summary] + result.warnings)
+            .joined(separator: " \u{00B7} ")
+        publish()
+        return true
+    }
+
+    private func landReference(_ file: ParametricEQFile, headphone: String, source: String,
+                               options: CorrectionOptions) {
+        host.eqHost.onReferenceLanded?(
+            ReferenceCurve(file: file, source: source, headphone: headphone, options: options),
+            host.eq.currentGroup)
     }
 
     @discardableResult
@@ -278,6 +516,16 @@ package final class AutoEqSearchModel {
         next.query = query
         next.catalogue = catalogue
         next.fitBandCount = host.eq.bandCapacity
+        next.mode = mode
+        next.bass = bass
+        next.tilt = tilt
+        next.bassText = DisplayFormat.decibels(bass)
+        next.tiltText = DisplayFormat.signed(tilt, decimals: 2) + " dB/oct"
+        next.canReset = bass != 0 || tilt != 0 || target != nil
+        next.cutoffHz = cutoffHz
+        next.cutoffLabel = cutoffHz.map(Self.cutoffLabel)
+        next.limitToCutoff = limitToCutoff
+        next.fitHint = Self.fitHint(bandCount: host.eq.bandCapacity)
         let limit = AutoEqService.displayLimit
         next.results = candidates.prefix(limit).map {
             AutoEqResult(id: $0.id, title: $0.title, detail: $0.detail)
@@ -286,7 +534,7 @@ package final class AutoEqSearchModel {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         switch catalogue {
         case .ready(let count) where trimmed.isEmpty:
-            next.status = "\(count) headphones available. Start typing to search."
+            next.status = "\(count) \(mode.noun) available. Start typing to search."
         case .ready where candidates.isEmpty:
             next.status = "No match for \u{201C}\(trimmed)\u{201D}."
         case .loading:
