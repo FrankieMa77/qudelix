@@ -465,10 +465,16 @@ final class StatusNotifierTests: XCTestCase {
         XCTAssertNil(fireEvent(TrayMenu.quitID, "hovered"))
         XCTAssertNil(fireEvent(TrayMenu.statusID))
         XCTAssertEqual(actions, [])
+        XCTAssertNil(fireEvent(TrayMenu.rootID, "opened"))
+        XCTAssertNil(fireEvent(TrayMenu.rootID, "closed"))
+        XCTAssertNil(fireEvent(4242, "opened"))
+        XCTAssertNil(fireEvent(4242, "hovered"))
         XCTAssertNotNil(fireEvent(4242))
         let group = call(notifierService, StatusNotifier.menuPath, "com.canonical.dbusmenu", "EventGroup",
                          GV.tuple([GV.array(of: "(isvu)", [
                              GV.tuple([GV.int32(TrayMenu.openID), GV.string("clicked"), GV.variant(GV.int32(0)), GV.uint32(0)]),
+                             GV.tuple([GV.int32(TrayMenu.rootID), GV.string("opened"), GV.variant(GV.int32(0)), GV.uint32(0)]),
+                             GV.tuple([GV.int32(4242), GV.string("opened"), GV.variant(GV.int32(0)), GV.uint32(0)]),
                              GV.tuple([GV.int32(4242), GV.string("clicked"), GV.variant(GV.int32(0)), GV.uint32(0)])
                          ])]))
         XCTAssertEqual(group.reply.map(GV.printed), "([4242],)")

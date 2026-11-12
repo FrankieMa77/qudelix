@@ -304,7 +304,7 @@ package final class StatusNotifier {
     }
 
     private func handleEvent(id: Int32, eventID: String) -> Bool {
-        guard let entry = menu.find(id) else { return false }
+        guard let entry = lookup(id) else { return eventID != "clicked" }
         if eventID == "clicked", entry.enabled, let action = entry.action { onAction(action) }
         return true
     }
