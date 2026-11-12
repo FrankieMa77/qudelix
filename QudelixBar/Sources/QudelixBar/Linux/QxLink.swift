@@ -17,6 +17,7 @@ package protocol QxLink: AnyObject {
     var failureNeedsAttention: Bool { get }
     var keepsArmed: Bool { get }
     var attachedName: String? { get }
+    var needsInstanceLock: Bool { get }
     func recycle()
     func start()
     func stop()
@@ -29,6 +30,7 @@ package extension QxLink {
     var failureNeedsAttention: Bool { false }
     var keepsArmed: Bool { false }
     var attachedName: String? { nil }
+    var needsInstanceLock: Bool { true }
     func recycle() {}
     func stopAndWait(timeout: TimeInterval) { stop() }
 }

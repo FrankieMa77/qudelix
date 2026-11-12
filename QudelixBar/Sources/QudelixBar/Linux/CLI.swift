@@ -339,6 +339,9 @@ package enum QudelixCLI {
 
     package static func run(arguments: [String],
                     makeLinks: (QxLinkKind?) -> [QxLink]) async -> Int32 {
+        if arguments.first == "link-service" {
+            return LinkServiceCommand.run(Array(arguments.dropFirst()))
+        }
         let invocation: CLIInvocation
         do {
             invocation = try CLI.parse(arguments)
