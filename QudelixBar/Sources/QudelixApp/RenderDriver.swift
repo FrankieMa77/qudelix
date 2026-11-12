@@ -21,6 +21,7 @@ final class LibraryRenderDriver {
         page.show(section)
         switch section {
         case .saved:
+            if options.expandOthers { page.expandOthers() }
             if let item = options.selectItem {
                 let presets = library.saved.state.presets
                 guard presets.indices.contains(item) else { return false }

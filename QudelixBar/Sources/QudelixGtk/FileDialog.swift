@@ -19,6 +19,17 @@ package enum TextFileFilters {
     }
 }
 
+package enum EqTextFileFilters {
+    package static let specs: [FileFilterSpec] = [
+        FileFilterSpec(name: "EQ text (*.txt)", suffixes: ["txt"]),
+        FileFilterSpec(name: "All files", suffixes: [])
+    ]
+
+    package static func matches(_ fileName: String, _ spec: FileFilterSpec) -> Bool {
+        TextFileFilters.matches(fileName, spec)
+    }
+}
+
 package enum WavFileFilters {
     package static let specs: [FileFilterSpec] = [
         FileFilterSpec(name: "WAV files", suffixes: ["wav", "wave"]),
@@ -47,6 +58,20 @@ private let fileDialogFinished: @convention(c) (UnsafeMutablePointer<GObject>?, 
     let dialog = OpaquePointer(completion.dialog)
     let file = gtk_file_dialog_open_finish(dialog, result, &error)
     if let error { g_error_free(error) }
+    finish(completion, file)
+}
+
+private let fileDialogSaved: @convention(c) (UnsafeMutablePointer<GObject>?, OpaquePointer?, UnsafeMutableRawPointer?) -> Void = { _, result, data in
+    guard let data else { return }
+    let completion = Unmanaged<FileDialogCompletion>.fromOpaque(data).takeRetainedValue()
+    var error: UnsafeMutablePointer<GError>?
+    let dialog = OpaquePointer(completion.dialog)
+    let file = gtk_file_dialog_save_finish(dialog, result, &error)
+    if let error { g_error_free(error) }
+    finish(completion, file)
+}
+
+private func finish(_ completion: FileDialogCompletion, _ file: OpaquePointer?) {
     var path: String?
     if let file {
         if let raw = g_file_get_path(file) {
@@ -59,6 +84,26 @@ private let fileDialogFinished: @convention(c) (UnsafeMutablePointer<GObject>?, 
     completion.handler(path)
 }
 
+private func configureFilters(_ dialog: OpaquePointer, _ specs: [FileFilterSpec]) {
+    let store = g_list_store_new(gtk_file_filter_get_type())!
+    var first: OpaquePointer?
+    for spec in specs {
+        let filter = gtk_file_filter_new()!
+        gtk_file_filter_set_name(filter, spec.name)
+        if spec.suffixes.isEmpty {
+            gtk_file_filter_add_pattern(filter, "*")
+        } else {
+            for suffix in spec.suffixes { gtk_file_filter_add_suffix(filter, suffix) }
+        }
+        g_list_store_append(store, UnsafeMutableRawPointer(filter))
+        if first == nil { first = filter }
+        g_object_unref(UnsafeMutableRawPointer(filter))
+    }
+    gtk_file_dialog_set_filters(dialog, store)
+    if let first { gtk_file_dialog_set_default_filter(dialog, first) }
+    g_object_unref(UnsafeMutableRawPointer(store))
+}
+
 package enum FileDialog {
     package static func openText(parent: UnsafeMutableRawPointer?, title: String,
                                  specs: [FileFilterSpec] = TextFileFilters.specs,
@@ -66,26 +111,24 @@ package enum FileDialog {
         let dialog = gtk_file_dialog_new()!
         gtk_file_dialog_set_title(dialog, title)
         gtk_file_dialog_set_modal(dialog, 1)
-        let store = g_list_store_new(gtk_file_filter_get_type())!
-        var first: OpaquePointer?
-        for spec in specs {
-            let filter = gtk_file_filter_new()!
-            gtk_file_filter_set_name(filter, spec.name)
-            if spec.suffixes.isEmpty {
-                gtk_file_filter_add_pattern(filter, "*")
-            } else {
-                for suffix in spec.suffixes { gtk_file_filter_add_suffix(filter, suffix) }
-            }
-            g_list_store_append(store, UnsafeMutableRawPointer(filter))
-            if first == nil { first = filter }
-            g_object_unref(UnsafeMutableRawPointer(filter))
-        }
-        gtk_file_dialog_set_filters(dialog, store)
-        if let first { gtk_file_dialog_set_default_filter(dialog, first) }
-        g_object_unref(UnsafeMutableRawPointer(store))
+        configureFilters(dialog, specs)
         let raw = UnsafeMutableRawPointer(dialog)
         let completion = FileDialogCompletion(dialog: raw, handler: handler)
         gtk_file_dialog_open(dialog, parent?.assumingMemoryBound(to: GtkWindow.self), nil, fileDialogFinished,
+                             Unmanaged.passRetained(completion).toOpaque())
+    }
+
+    package static func saveText(parent: UnsafeMutableRawPointer?, title: String, initialName: String,
+                                 specs: [FileFilterSpec] = EqTextFileFilters.specs,
+                                 handler: @escaping (String?) -> Void) {
+        let dialog = gtk_file_dialog_new()!
+        gtk_file_dialog_set_title(dialog, title)
+        gtk_file_dialog_set_modal(dialog, 1)
+        gtk_file_dialog_set_initial_name(dialog, initialName)
+        configureFilters(dialog, specs)
+        let raw = UnsafeMutableRawPointer(dialog)
+        let completion = FileDialogCompletion(dialog: raw, handler: handler)
+        gtk_file_dialog_save(dialog, parent?.assumingMemoryBound(to: GtkWindow.self), nil, fileDialogSaved,
                              Unmanaged.passRetained(completion).toOpaque())
     }
 }

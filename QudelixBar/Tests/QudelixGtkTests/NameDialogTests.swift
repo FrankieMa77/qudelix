@@ -130,4 +130,38 @@ final class NameDialogTests: XCTestCase {
         XCTAssertEqual(gtk_widget_get_visible(dialog.widget), 0)
         g_object_unref(dialog)
     }
+
+    func testAChoiceListRidesAlongAndItsSelectionIsReported() {
+        var results: [(String?, Int)] = []
+        let dialog = NameDialog.make(parent: nil, title: "Name", message: "Message", text: "Warm",
+                                     placeholder: "Name", action: "Save", maxLength: 29,
+                                     allowsBlank: false, choices: ["Every output", "Speakers"],
+                                     selectedChoice: 1, choicesEnabled: true,
+                                     choiceLabel: "Applies to") { results.append(($0, $1)) }
+        g_object_ref(dialog)
+        gtk_window_present(dialog.typed(GtkWindow.self))
+        pump()
+        let entry = NameDialog.entry(of: dialog)!
+        XCTAssertEqual(String(cString: gtk_editable_get_text(entry.opaque)), "Warm")
+        pressEnter(in: entry)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.0, "Warm")
+        XCTAssertEqual(results.first?.1, 1)
+        g_object_unref(dialog)
+    }
+
+    func testAChoiceListThatIsNotEnabledStillReportsItsSelection() {
+        var results: [(String?, Int)] = []
+        let dialog = NameDialog.make(parent: nil, title: "Name", message: "Message", text: "Warm",
+                                     placeholder: "Name", action: "Save", maxLength: 29,
+                                     allowsBlank: false, choices: ["Every output", "This output"],
+                                     selectedChoice: 0, choicesEnabled: false,
+                                     choiceLabel: "Applies to") { results.append(($0, $1)) }
+        g_object_ref(dialog)
+        gtk_window_present(dialog.typed(GtkWindow.self))
+        pump()
+        pressEnter(in: NameDialog.entry(of: dialog)!)
+        XCTAssertEqual(results.first?.1, 0)
+        g_object_unref(dialog)
+    }
 }

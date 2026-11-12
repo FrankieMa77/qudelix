@@ -36,6 +36,7 @@ let audio: AudioStack = MainActor.assumeIsolated {
 
 Signals.connect(application, signal: "activate") {
     onMain {
+        if let routing = audio.routing { model.library.saved.attach(routing: routing) }
         audio.start()
         if let path = options.trayDump {
             TrayDump.run(model: model, path: path, application: application.raw, expectsDevice: options.demo)
@@ -47,6 +48,7 @@ Signals.connect(application, signal: "activate") {
 
 Signals.connect(application, signal: "shutdown") {
     onMain {
+        model.library.saved.flushPendingWrites()
         var finished = false
         Task { @MainActor in
             await audio.shutdown()

@@ -71,6 +71,8 @@ final class LibraryPage {
         }
     }
 
+    func expandOthers() { saved.expandOthers() }
+
     func show(_ section: LibrarySectionName) {
         gtk_stack_set_visible_child_name(stack, section.rawValue)
         if let button = switchers[section] { gtk_toggle_button_set_active(button.typed(GtkToggleButton.self), 1) }

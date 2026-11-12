@@ -16,4 +16,15 @@ enum EqFileLoader {
             }
         }
     }
+
+    static func presentExport(from widget: Widget, eq: EqEditorModel) {
+        let parent = Ui.parentWindow(of: widget).map { UnsafeMutableRawPointer($0) }
+        FileDialog.saveText(parent: parent, title: EqEditorModel.exportTitle,
+                            initialName: EqEditorModel.exportFileName) { path in
+            onMain {
+                guard let path else { return }
+                eq.exportFile(to: URL(fileURLWithPath: path))
+            }
+        }
+    }
 }

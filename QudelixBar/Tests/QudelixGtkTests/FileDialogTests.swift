@@ -18,6 +18,16 @@ final class FileDialogTests: XCTestCase {
     }
 }
 
+final class EqTextFileFilterTests: XCTestCase {
+    func testTheEqFilterIsFirstAndMatchesTxtIgnoringCaseThenEverything() {
+        XCTAssertEqual(EqTextFileFilters.specs.map(\.name), ["EQ text (*.txt)", "All files"])
+        let text = EqTextFileFilters.specs[0]
+        XCTAssertTrue(EqTextFileFilters.matches("HD 650.TXT", text))
+        XCTAssertFalse(EqTextFileFilters.matches("HD 650.json", text))
+        XCTAssertTrue(EqTextFileFilters.matches("anything.bin", EqTextFileFilters.specs[1]))
+    }
+}
+
 final class WavFileFilterTests: XCTestCase {
     func testWavFilterIsFirstAndMatchesBothSuffixesIgnoringCase() {
         XCTAssertEqual(WavFileFilters.specs.map(\.name), ["WAV files", "All files"])

@@ -18,6 +18,7 @@ struct LaunchOptions {
     var query: String?
     var selectItem: Int?
     var aiDraft = false
+    var expandOthers = false
     var hidden = false
     var menuOpen = false
     var toast: String?
@@ -128,6 +129,8 @@ struct LaunchOptions {
                 options.noAudio = true
             case "--ai-draft":
                 options.aiDraft = true
+            case "--expand-others":
+                options.expandOthers = true
             case "--size":
                 let parts = (value ?? "").split(separator: "x").compactMap { Int32($0) }
                 if parts.count == 2 {

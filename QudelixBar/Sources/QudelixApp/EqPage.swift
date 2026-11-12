@@ -26,6 +26,7 @@ final class EqPage {
     private let bandsTen: UnsafeMutablePointer<GtkWidget>
     private let bandsTwenty: UnsafeMutablePointer<GtkWidget>
     private let loadButton: UnsafeMutablePointer<GtkWidget>
+    private let exportButton: UnsafeMutablePointer<GtkWidget>
     private let updateButton: UnsafeMutablePointer<GtkWidget>
     private let saveButton: UnsafeMutablePointer<GtkWidget>
     private let saveList: UnsafeMutablePointer<GtkWidget>
@@ -78,6 +79,8 @@ final class EqPage {
         gtk_widget_set_tooltip_text(bandsTwenty, bandsTooltip)
         loadButton = Ui.button("Load from file\u{2026}")
         gtk_widget_set_tooltip_text(loadButton, "Apply an AutoEq or Equalizer APO parametric EQ text file to the live EQ. Save it to a slot afterwards to keep it.")
+        exportButton = Ui.button("Export current EQ\u{2026}")
+        gtk_widget_set_tooltip_text(exportButton, EqEditorModel.exportHelp)
         updateButton = Ui.button("Update")
         saveButton = gtk_menu_button_new()!
         gtk_menu_button_set_label(saveButton.opaque, "Save to slot\u{2026}")
@@ -136,7 +139,7 @@ final class EqPage {
                                      preGainScale: preGainScale, bandsGroup: bandsGroup,
                                      modeSwitch: [bandsTen, bandsTwenty],
                                      headroom: [headroomLabel, headroomButton],
-                                     actions: (load: loadButton, update: updateButton, save: saveButton),
+                                     actions: (load: loadButton, export: exportButton, update: updateButton, save: saveButton),
                                      automation: panel.widget)
         editor = built.outer
         scroller = built.scroller
@@ -180,6 +183,7 @@ final class EqPage {
                                     modeSwitch: [UnsafeMutablePointer<GtkWidget>],
                                     headroom: [UnsafeMutablePointer<GtkWidget>],
                                     actions: (load: UnsafeMutablePointer<GtkWidget>,
+                                              export: UnsafeMutablePointer<GtkWidget>,
                                               update: UnsafeMutablePointer<GtkWidget>,
                                               save: UnsafeMutablePointer<GtkWidget>),
                                     automation: UnsafeMutablePointer<GtkWidget>)
@@ -221,11 +225,11 @@ final class EqPage {
         let actionRow = gtk_flow_box_new()!
         gtk_flow_box_set_selection_mode(actionRow.opaque, GTK_SELECTION_NONE)
         gtk_flow_box_set_homogeneous(actionRow.opaque, 0)
-        gtk_flow_box_set_max_children_per_line(actionRow.opaque, 4)
+        gtk_flow_box_set_max_children_per_line(actionRow.opaque, 5)
         gtk_flow_box_set_column_spacing(actionRow.opaque, 6)
         gtk_flow_box_set_row_spacing(actionRow.opaque, 6)
         gtk_flow_box_set_activate_on_single_click(actionRow.opaque, 0)
-        for button in [actions.load, modes, actions.update, actions.save] {
+        for button in [actions.load, actions.export, modes, actions.update, actions.save] {
             gtk_flow_box_append(actionRow.opaque, button)
             if let wrapper = gtk_widget_get_parent(button) { gtk_widget_set_focusable(wrapper, 0) }
         }
@@ -286,6 +290,9 @@ final class EqPage {
         }
         Signals.connect(loadButton, signal: "clicked") { [weak self] in
             onMain { if let self { EqFileLoader.present(from: self.widget, eq: eq) } }
+        }
+        Signals.connect(exportButton, signal: "clicked") { [weak self] in
+            onMain { if let self { EqFileLoader.presentExport(from: self.widget, eq: eq) } }
         }
         Signals.connect(updateButton, signal: "clicked") { [weak self] in onMain { self?.presets.updateActive() } }
         Signals.onValueChanged(preGainScale) { [weak self] value in
@@ -354,6 +361,7 @@ final class EqPage {
         let editable = state.canEdit
         let following = state.readOnlyReason != nil
         gtk_widget_set_sensitive(loadButton, editable ? 1 : 0)
+        gtk_widget_set_sensitive(exportButton, eq.canExport ? 1 : 0)
         gtk_widget_set_sensitive(updateButton, presets.canUpdateActive ? 1 : 0)
         gtk_widget_set_tooltip_text(updateButton, presets.updateHelp())
         gtk_widget_set_sensitive(saveButton, presets.canWrite && !following ? 1 : 0)
