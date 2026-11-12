@@ -23,6 +23,25 @@ Bluetooth control works now. In 0.7.0 the 5K's control link never came up over B
   link can no longer push your Bluetooth audio over to the headset (call) profile.
 - `qudelix probe` says whether this machine can open a Bluetooth LE control link.
 - The app no longer leaks system bus connections while it waits for the 5K over Bluetooth.
+- Clicking a sidebar page opens it.
+- Changes are no longer lost when you quit the app, or when `eq on` or `eq off` ends right after
+  the command, over Bluetooth: Qudelix finishes sending first.
+- A Bluetooth link that stops accepting data is now ended and reconnected instead of staying
+  silently dead.
+- With Bluetooth turned off on the computer, the app says so and waits quietly instead of
+  retrying in a tight loop. It picks up again when you turn Bluetooth on.
+- Stage on a Bluetooth output no longer switches itself off after a short stall. It uses a
+  deeper buffer, tolerates short stalls, and retries by itself a few times before giving up.
+- Stage holds while the 5K is in its headset profile, like during a call.
+- If the 5K drops out while Stage is on, your volume is kept and applied when it comes back.
+  Your default output is kept when Stage restores it.
+- The mouse wheel over a slider scrolls the page and no longer changes the value.
+- The tray menu no longer reports an error when opened.
+- Muting a band keeps its row open and keeps its filter name. Clicking a point on the curve no
+  longer scrolls the page.
+- "Applied 1 band" reads correctly, the searching page describes Bluetooth, group titles wrap
+  and the Tune method stays readable in narrow windows, and the rename and overwrite dialogs no
+  longer stack.
 
 ## 0.7.0
 
