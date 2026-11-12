@@ -4,10 +4,34 @@ package struct SavedPreset: Equatable {
     package var id: UUID
     package var name: String
     package var detail: String
+    package var canUseEverywhere = false
+    package var canUseOnlyHere = false
+}
+
+package enum LibraryOutputState: Equatable {
+    case unavailable
+    case noOutput
+    case output(key: String, name: String)
+
+    package var key: String? {
+        if case .output(let key, _) = self { return key }
+        return nil
+    }
+
+    package var name: String {
+        if case .output(_, let name) = self { return name }
+        return ""
+    }
 }
 
 package struct SavedPresetsState: Equatable {
     package var presets: [SavedPreset] = []
+    package var others: [SavedPreset] = []
+    package var scopeShown = false
+    package var outputName = ""
+    package var outputAvailable = false
+    package var headphoneName = ""
+    package var importRefusal: String?
     package var total = 0
     package var filter = ""
     package var selected: UUID?
@@ -24,6 +48,40 @@ package struct SavedPresetsState: Equatable {
 package final class SavedPresetsModel {
     package static let saveButtonLabel = "Save current EQ\u{2026}"
     package static let applyLabel = "Apply"
+    package static let everyOutputLabel = "Every output"
+    package static let useEverywhereLabel = "Use with every output"
+    package static let noOutputNotice = "No default output is available, so this can only be saved for "
+        + "every output."
+    package static let headphonesHint = "Used to find measurements and corrections for the pair you "
+        + "actually wear."
+    package static let pasteName = "Pasted EQ"
+    package static let addFromFileLabel = "Add from file\u{2026}"
+    package static let addFromFileTitle = "Choose a parametric EQ file to keep in the library"
+    package static let addFromFileHelp = "Add a parametric EQ file to the library without applying it."
+    package static let pasteLabel = "Paste"
+    package static let pasteHelp = "Add a correction from text on the clipboard \u{2014} the filter list as "
+        + "published sites print it. Nothing is sent to the 5K."
+    package static let exportTitle = "Save this preset as a parametric EQ file"
+    package static let connectToImport = "Connect the 5K first \u{2014} a file is filed under its current "
+        + "EQ mode."
+
+    package static func thisOutputLabel(_ name: String) -> String {
+        name.isEmpty ? "This output" : name
+    }
+
+    package static func useOnlyHereLabel(_ name: String) -> String {
+        "Use only with " + (name.isEmpty ? "this output" : name)
+    }
+
+    package static func othersTitle(_ count: Int) -> String {
+        "Other outputs (\(count))"
+    }
+
+    package static func exportFileName(_ name: String) -> String {
+        let flat = name.replacingOccurrences(of: "/", with: "-")
+        return (flat.isEmpty ? "preset" : flat) + ".txt"
+    }
+
     package static let maxNameLength = Int32(PresetLibraryFile.maxNameLength)
     package static let deleteMessage = "This preset is only on this computer. It can\u{2019}t be "
         + "recovered."
@@ -43,6 +101,8 @@ package final class SavedPresetsModel {
     private var selected: UUID?
     private var localNotice: String?
     private var applySummary: String?
+    private var outputSource: (() -> LibraryOutputState)?
+    private var routingObserver: (routing: OutputRouting, id: Int)?
 
     init(host: AppModel, fileURL: URL) {
         self.host = host
@@ -53,6 +113,26 @@ package final class SavedPresetsModel {
         host.addObserver { [weak self] _ in self?.publish() }
         host.eq.addObserver { [weak self] _ in self?.publish() }
     }
+
+    package func useOutputs(_ source: (() -> LibraryOutputState)?) {
+        outputSource = source
+        publish()
+    }
+
+    package func attach(routing: OutputRouting) {
+        if let routingObserver { routingObserver.routing.removeObserver(routingObserver.id) }
+        useOutputs { [weak routing] in
+            guard let routing, routing.connected else { return .unavailable }
+            guard let sink = routing.realOutput else { return .noOutput }
+            return .output(key: sink.name, name: sink.description.isEmpty ? sink.name : sink.description)
+        }
+        let id = routing.addObserver { [weak self] in self?.publish() }
+        routingObserver = (routing, id)
+    }
+
+    private var output: LibraryOutputState { outputSource?() ?? .unavailable }
+
+    private var scopeShown: Bool { output != .unavailable }
 
     @discardableResult
     package func addObserver(_ observer: @escaping (SavedPresetsState) -> Void) -> Int {
@@ -124,12 +204,17 @@ package final class SavedPresetsModel {
         return result.accepted
     }
 
+    private func scope(onlyHere: Bool) -> LibraryScope {
+        guard onlyHere, case .output(let key, let name) = output else { return .global }
+        return .output(uid: key, name: name)
+    }
+
     @discardableResult
-    package func saveCurrent(name: String) -> Bool {
+    package func saveCurrent(name: String, onlyHere: Bool = false) -> Bool {
         refreshFromDisk()
         store.clearMessage()
         applySummary = nil
-        guard let saved = store.saveCurrent(name: name, scope: .global) else {
+        guard let saved = store.saveCurrent(name: name, scope: scope(onlyHere: onlyHere)) else {
             localNotice = nil
             publish()
             return false
@@ -174,6 +259,77 @@ package final class SavedPresetsModel {
         publish()
     }
 
+    package func useEverywhere(_ id: UUID) {
+        refreshFromDisk()
+        guard let preset = entry(id) else { return }
+        store.setScope(preset, to: .global)
+        publish()
+    }
+
+    package func useOnlyHere(_ id: UUID) {
+        refreshFromDisk()
+        guard let preset = entry(id), case .output(let key, let name) = output else { return }
+        store.setScope(preset, to: .output(uid: key, name: name))
+        publish()
+    }
+
+    @discardableResult
+    package func importFile(at url: URL) -> Bool {
+        refreshFromDisk()
+        store.clearMessage()
+        applySummary = nil
+        localNotice = nil
+        guard let saved = store.importFile(at: url, scope: scope(onlyHere: scopeShown)) else {
+            publish()
+            return false
+        }
+        selected = saved.id
+        publish()
+        return true
+    }
+
+    @discardableResult
+    package func importText(_ text: String, name: String = SavedPresetsModel.pasteName) -> Bool {
+        refreshFromDisk()
+        store.clearMessage()
+        applySummary = nil
+        localNotice = nil
+        guard let saved = store.importText(text, name: name, scope: scope(onlyHere: scopeShown)) else {
+            publish()
+            return false
+        }
+        selected = saved.id
+        publish()
+        return true
+    }
+
+    package func exportText(of id: UUID) -> String? {
+        entry(id).map { store.exportText($0) }
+    }
+
+    @discardableResult
+    package func exportFile(_ id: UUID, to url: URL) -> Bool {
+        guard let preset = entry(id) else { return false }
+        store.clearMessage()
+        applySummary = nil
+        localNotice = nil
+        let written = store.exportFile(preset, to: url)
+        if written {
+            localNotice = "Exported \u{201C}\(preset.name)\u{201D}."
+        }
+        publish()
+        return written
+    }
+
+    package func setHeadphoneName(_ name: String) {
+        store.setHeadphoneName(name)
+        publish()
+    }
+
+    package func flushPendingWrites() {
+        store.flushPendingWrites()
+    }
+
     package func name(of id: UUID) -> String? { entry(id)?.name }
 
     package func dismissNotice() {
@@ -189,11 +345,28 @@ package final class SavedPresetsModel {
         var next = SavedPresetsState()
         let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
         let all = sorted
+        let state = output
         next.total = all.count
         next.filter = filter
-        next.presets = all
-            .filter { needle.isEmpty || $0.name.lowercased().contains(needle) }
-            .map { SavedPreset(id: $0.id, name: $0.name, detail: Self.detail($0)) }
+        next.scopeShown = state != .unavailable
+        next.outputName = state.name
+        next.outputAvailable = state.key != nil
+        next.headphoneName = store.headphoneName
+        func row(_ preset: LibraryPreset) -> SavedPreset {
+            var shown = SavedPreset(id: preset.id, name: preset.name, detail: Self.detail(preset))
+            if next.scopeShown {
+                shown.canUseEverywhere = preset.scope != .global
+                shown.canUseOnlyHere = state.key != nil && preset.scope.outputUID != state.key
+            }
+            return shown
+        }
+        let matching = all.filter { needle.isEmpty || $0.name.lowercased().contains(needle) }
+        if next.scopeShown {
+            next.presets = matching.filter { $0.matches(outputUID: state.key) }.map(row)
+            next.others = matching.filter { !$0.matches(outputUID: state.key) }.map(row)
+        } else {
+            next.presets = matching.map(row)
+        }
         if let current = selected, entry(current) == nil { selected = nil }
         next.selected = selected
         if let chosen = entry(selected) {
@@ -205,12 +378,13 @@ package final class SavedPresetsModel {
         next.saveRefusal = host.eq.liveCurve() == nil
             ? "Connect the 5K to save its current EQ."
             : nil
+        next.importRefusal = host.eq.liveCurve() == nil ? Self.connectToImport : nil
         next.suggestedName = host.eq.liveCurve()?.sourceName ?? ""
         next.notice = [store.lastMessage, localNotice, applySummary].compactMap { $0 }
             .joined(separator: " \u{00B7} ")
         if next.notice?.isEmpty == true { next.notice = nil }
-        guard next != state else { return }
-        state = next
+        guard next != self.state else { return }
+        self.state = next
         for observer in observers.values { observer(next) }
     }
 

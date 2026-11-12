@@ -152,11 +152,16 @@ extension LibraryEnvironment {
             }
         }
         return [
-            LibraryPreset(name: "Harman target", group: .b20, bands: twenty(1.0),
+            LibraryPreset(name: "Harman target",
+                          scope: .output(uid: DemoAudioBackend.fiveK.name, name: DemoAudioBackend.fiveK.description),
+                          group: .b20, bands: twenty(1.0),
                           preGain: -3.5, sourceName: "Sennheiser HD 650"),
             LibraryPreset(name: "Late night", group: .b20, bands: twenty(0.4), preGain: -1.5),
             LibraryPreset(name: "Bass boost", group: .b20, bands: twenty(1.4), preGain: -4.5),
-            LibraryPreset(name: "Podcast voice", group: .user,
+            LibraryPreset(name: "Podcast voice",
+                          scope: .output(uid: DemoAudioBackend.speakers.name,
+                                         name: DemoAudioBackend.speakers.description),
+                          group: .user,
                           bands: ten([-3, -2, 0, 1.5, 2.5, 3, 1, 0, -1, -2]), preGain: -2.5),
             LibraryPreset(name: "Studio flat", group: .b20, bands: twenty(0.7), preGain: -2),
         ]

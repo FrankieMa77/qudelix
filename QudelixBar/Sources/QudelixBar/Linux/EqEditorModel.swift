@@ -321,6 +321,33 @@ package final class EqEditorModel {
         return EqImportResult(accepted: true, summary: summary)
     }
 
+    package static let exportFileName = "QudelixEQ.txt"
+    package static let exportTitle = "Save the current EQ"
+    package static let exportHelp = "Save the curve the 5K is running now as a parametric EQ text file."
+
+    package var canExport: Bool { liveCurve() != nil }
+
+    package func exportText() -> String? {
+        liveCurve().map { QudelixController.exportText(bands: $0.bands, preGain: $0.preGain) }
+    }
+
+    @discardableResult
+    package func exportFile(to url: URL) -> Bool {
+        guard let text = exportText() else {
+            host.notify(.failure, "Connect the 5K first \u{2014} there is no EQ to save.")
+            return false
+        }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            let name = QudelixController.displayName(url.lastPathComponent)
+            host.notify(.failure, "Couldn\u{2019}t save \(name) \u{2014} check that the folder is writable "
+                + "and the disk has room.")
+            return false
+        }
+    }
+
     @discardableResult
     package func importFile(at url: URL) -> EqImportResult {
         let name = SafeText.scrubbed(url.lastPathComponent, limit: 64)
