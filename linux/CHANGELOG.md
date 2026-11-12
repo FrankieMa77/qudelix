@@ -19,11 +19,16 @@ Bluetooth control works now. In 0.7.0 the 5K's control link never came up over B
   shortly after a previous control link ends. Qudelix waits for that in the background and
   connects within about a second. If the 5K is already on and nothing connects, switch it off,
   wait two minutes, switch it on again and let it reconnect by itself.
+- A small background process, started by the app or by the `qudelix` command, now holds the 5K's
+  Bluetooth control link. Quitting, reopening or updating the app keeps the link, so the app
+  reconnects at once instead of waiting for the 5K's next window. `qudelix --ble` works while
+  the app is open. The process stops when you log out.
 - Qudelix no longer asks BlueZ to connect the 5K or to scan for it, so waiting for the control
   link can no longer push your Bluetooth audio over to the headset (call) profile.
 - While another program searches for Bluetooth devices, usually the Bluetooth page in Settings, the
   app now says so and how to fix it, instead of waiting silently.
-- `qudelix probe` says whether this machine can open a Bluetooth LE control link.
+- `qudelix probe` says whether this machine can open a Bluetooth LE control link, and whether the
+  background process is running and holds it.
 - The app no longer leaks system bus connections while it waits for the 5K over Bluetooth.
 - Clicking a sidebar page opens it.
 - Changes are no longer lost when you quit the app, or when `eq on` or `eq off` ends right after

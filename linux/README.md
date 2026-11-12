@@ -116,7 +116,8 @@ bar, even with its window closed, so quit it from the top-bar menu or the app me
 command again. The message names the program and its pid when it can find it.
 
 `qudelix probe` needs no device access. It reports the hidraw nodes it can see, their
-permissions and what the machine offers for each link.
+permissions and what the machine offers for each link, and says whether the Bluetooth
+background process is running and holds the 5K's control link.
 
 ## Commands
 
@@ -237,8 +238,9 @@ Bluetooth when you want to leave the cable out.
   seconds in which the 5K accepts the control link, and the app says so while it waits.
   Clicking Connect there while the 5K powers on can make it miss the 5K too; let the 5K
   reconnect on its own.
-- Only one program can hold the 5K's Bluetooth control link at a time. Quit the app before
-  you use `qudelix --ble`.
+- A small background process, started by the app or by the `qudelix` command, holds the 5K's
+  Bluetooth control link. Quitting, reopening or updating the app keeps the link, and
+  `qudelix --ble` works while the app is open. The process stops when you log out.
 
 Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output in
 a bug report; its Bluetooth section lists what this computer knows about the 5K without
