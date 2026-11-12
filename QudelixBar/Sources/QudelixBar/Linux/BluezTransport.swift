@@ -84,6 +84,7 @@ final class BluezTransport: QxLink {
     private var announcedUnusable = false
     private var lastWaitLog: Date?
     private var announcedNoDevice = false
+    private var running = false
     private var armTarget: ArmTarget?
     private var lastListing: TimeInterval = 0
     private var relistRequested = false
@@ -199,11 +200,39 @@ final class BluezTransport: QxLink {
         try? (path + "\n").write(to: file, atomically: true, encoding: .utf8)
     }
 
+    var keepsArmed: Bool { true }
+
+    var attachedName: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return up ? storedDeviceAlias : nil
+    }
+
+    func recycle() {
+        lock.lock()
+        let wasUp = up
+        let gen = generation
+        lock.unlock()
+        guard wasUp else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let same = self.generation == gen && !self.stopping
+            self.lock.unlock()
+            guard same else { return }
+            self.teardown(reason: "released", notify: false)
+            self.rearmNow()
+        }
+    }
+
     func start() {
         lock.lock()
         stopping = false
         bringUpPending = false
+        let already = running
+        running = true
         lock.unlock()
+        guard !already else { return }
         queue.async { [weak self] in self?.bringUp() }
     }
 
@@ -220,6 +249,7 @@ final class BluezTransport: QxLink {
     private func stop(completion: (() -> Void)?) {
         lock.lock()
         stopping = true
+        running = false
         lastDrop = nil
         lock.unlock()
         queue.async { [weak self] in
@@ -909,6 +939,7 @@ final class BluezTransport: QxLink {
         let firstAnnouncement = !announcedUnusable
         announcedUnusable = true
         lock.unlock()
+        setFailure(message)
         if firstAnnouncement {
             log(message)
             onLinkUnusable?(message)

@@ -6,6 +6,7 @@ package enum AppConnection: Equatable {
     case searching
     case busy
     case connecting
+    case waiting(String)
     case connected(QxLinkKind)
     case unsupported(String)
     case error(String)
@@ -41,10 +42,12 @@ package struct AppNotice: Equatable {
 package struct AppDeviceProbe: Sendable {
     package var present: Bool
     package var advice: String?
+    package var usbPresent: Bool?
 
-    package init(present: Bool, advice: String? = nil) {
+    package init(present: Bool, advice: String? = nil, usbPresent: Bool? = nil) {
         self.present = present
         self.advice = advice
+        self.usbPresent = usbPresent
     }
 
     package static func system() -> AppDeviceProbe {
@@ -52,7 +55,7 @@ package struct AppDeviceProbe: Sendable {
         let usb = report.nodes.contains { $0.isQudelix }
         let present = BluezPresence.resolve(usb: usb, pinned: BluezTransport.pinnedDevicePath() != nil,
                                             bluez: { BluezPresence.system().qudelixPresent() })
-        return AppDeviceProbe(present: present, advice: Probe.permissionAdvice(report))
+        return AppDeviceProbe(present: present, advice: Probe.permissionAdvice(report), usbPresent: usb)
     }
 }
 
@@ -88,6 +91,7 @@ package extension QxStatusSnapshot {
 @MainActor
 package final class AppModel {
     package static let saveDelay: TimeInterval = 5
+    static let armedRetryDelay: TimeInterval = 0.25
     package static let echoWindow: TimeInterval = 1.5
 
     package static var dacFilters: [String] { QxStatusParser.dacFilters }
@@ -134,6 +138,9 @@ package final class AppModel {
     private var failureStreak = 0
     private var retryDelay: TimeInterval
     private var lastProbe: (present: Bool, advice: String?)?
+    private var armedLink: QxLink?
+    private var armedLock: QxInstanceLock?
+    private var armedStarted = false
 
     package private(set) lazy var eq = EqEditorModel(host: self)
     package private(set) lazy var presets = PresetSlotsModel(host: self)
@@ -162,7 +169,7 @@ package final class AppModel {
                  clock: AppClock = SystemClock(),
                  retryInterval: TimeInterval = 2,
                  connectTimeout: TimeInterval = 3,
-                 bluetoothConnectTimeout: TimeInterval = QxLinkTimeouts.bluetoothAppearance) {
+                 bluetoothConnectTimeout: TimeInterval = QxLinkTimeouts.bluetoothSlice) {
         self.linkFactory = makeLinks
         self.acquireLock = acquireLock
         self.lockProblem = lockProblem
@@ -227,6 +234,7 @@ package final class AppModel {
         notificationTask?.cancel()
         notificationTask = nil
         releaseSession()
+        stopArmedLink()
         publish { $0.status = nil; $0.connection = .searching }
         batteryLog.appWillTerminate(at: clock.now())
     }
@@ -359,8 +367,37 @@ package final class AppModel {
 
     package var beforeCompatibilityCheck: (() async -> Void)?
 
+    private func adopt(_ links: [QxLink]) -> [QxLink] {
+        links.map { link in
+            guard link.keepsArmed else { return link }
+            if let held = armedLink { return held }
+            armedLink = link
+            return link
+        }
+    }
+
+    private func stopArmedLink() {
+        guard let link = armedLink else { return }
+        armedLink = nil
+        armedStarted = false
+        armedLock?.release()
+        armedLock = nil
+        link.stopAndWait(timeout: QxSession.linkStopWait)
+    }
+
+    private func lockForArmedLink(_ link: QxLink) throws {
+        if let held = acquireLock() {
+            armedLock = held
+            return
+        }
+        link.recycle()
+        if let problem = lockProblem() { throw QxSessionError.linkUnusable(problem) }
+        throw QxSessionError.deviceBusy("the device is in use by another process")
+    }
+
     private func connectOnce() async {
-        let links = linkFactory()
+        let links = adopt(linkFactory())
+        if !links.contains(where: { $0.keepsArmed }) { stopArmedLink() }
         let probe = await runProbe()
         guard !stopped, session == nil else { return }
         retryDelay = retryInterval
@@ -380,48 +417,98 @@ package final class AppModel {
             publish { $0.status = nil; $0.connection = .searching }
             return
         }
-        guard let held = acquireLock() else {
-            if let problem = lockProblem() {
-                backOff()
-                publish { $0.status = nil; $0.connection = .error(problem) }
-            } else {
-                publish { $0.status = nil; $0.connection = .busy }
-            }
-            return
-        }
-        switch state.connection {
-        case .searching, .noTransport, .permissionDenied:
-            publish { $0.connection = .connecting }
-        default:
-            break
-        }
+        let armed = links.filter { $0.keepsArmed }
+        let direct = links.filter { !$0.keepsArmed }
+        let tryDirect = !direct.isEmpty && (armed.isEmpty || probe.usbPresent != false)
 
+        var held: QxInstanceLock?
         var connected: QxSession?
         var failures: [Error] = []
         var attention: String?
         var bluetoothFailed = false
-        for link in links {
-            let candidate = QxSession(link: link, timeout: connectTimeout)
-            do {
-                try await candidate.connect(timeout: QxLinkTimeouts.appearance(
-                    kind: link.kind, explicit: nil, fallback: connectTimeout,
-                    bluetooth: bluetoothConnectTimeout))
-                connected = candidate
-                break
-            } catch {
-                failures.append(error)
-                if link.kind == .bluetooth {
-                    bluetoothFailed = true
-                    if link.failureNeedsAttention, let reason = link.failureReason { attention = reason }
+        if tryDirect {
+            guard let acquired = acquireLock() else {
+                if let problem = lockProblem() {
+                    backOff()
+                    publish { $0.status = nil; $0.connection = .error(problem) }
+                } else {
+                    publish { $0.status = nil; $0.connection = .busy }
                 }
-                candidate.close()
+                return
+            }
+            held = acquired
+            switch state.connection {
+            case .searching, .noTransport, .permissionDenied, .waiting:
+                publish { $0.connection = .connecting }
+            default:
+                break
+            }
+            for link in direct {
+                let candidate = QxSession(link: link, timeout: connectTimeout)
+                do {
+                    try await candidate.connect(timeout: QxLinkTimeouts.appearance(
+                        kind: link.kind, explicit: nil, fallback: connectTimeout,
+                        bluetooth: bluetoothConnectTimeout))
+                    connected = candidate
+                    break
+                } catch {
+                    failures.append(error)
+                    if link.kind == .bluetooth {
+                        bluetoothFailed = true
+                        if link.failureNeedsAttention, let reason = link.failureReason { attention = reason }
+                    }
+                    candidate.close()
+                }
+            }
+            if connected != nil {
+                stopArmedLink()
+            } else {
+                held?.release()
+                held = nil
             }
         }
+
+        var waitingText: String?
+        if connected == nil, !stopped, let link = armed.first {
+            if !link.isConnected {
+                let text = link.failureReason ?? BluezLinkFailure.waitingForLink
+                publish { $0.status = nil; $0.connection = .waiting(text) }
+            }
+            if !armedStarted {
+                armedStarted = true
+                link.start()
+            }
+            let candidate = QxSession(link: link, timeout: connectTimeout, ownsLink: false)
+            do {
+                try await candidate.connect(timeout: bluetoothConnectTimeout,
+                                            beforeHandshake: { [weak self] in
+                    guard let self else { return }
+                    try await self.lockForArmedLink(link)
+                })
+                connected = candidate
+                held = armedLock
+                armedLock = nil
+            } catch {
+                failures.append(error)
+                candidate.close()
+                armedLock?.release()
+                armedLock = nil
+                if QudelixCLI.isMissingTransport(error) {
+                    waitingText = link.failureReason ?? BluezLinkFailure.waitingForLink
+                }
+            }
+        }
+
         guard let opened = connected, !stopped else {
             connected?.close()
-            held.release()
+            held?.release()
             if failures.contains(where: { QudelixCLI.isDeviceBusy($0) }) {
                 publish { $0.status = nil; $0.connection = .busy }
+                return
+            }
+            if let waitingText {
+                retryDelay = Self.armedRetryDelay
+                publish { $0.status = nil; $0.connection = .waiting(waitingText) }
                 return
             }
             let missing = failures.allSatisfy { QudelixCLI.isMissingTransport($0) }
@@ -443,14 +530,14 @@ package final class AppModel {
         await beforeCompatibilityCheck?()
         if let reason = await opened.compatibilityRefusal() {
             opened.close()
-            held.release()
+            held?.release()
             backOff()
             publish { $0.status = nil; $0.connection = .unsupported(reason) }
             return
         }
         guard !stopped else {
             opened.close()
-            held.release()
+            held?.release()
             return
         }
 
@@ -546,8 +633,10 @@ package final class AppModel {
     private func releaseSession() {
         eq.sessionClosed()
         presets.sessionClosed()
+        let ended = session?.link
         session?.close()
         session = nil
+        if let ended, ended.keepsArmed, !stopped { ended.recycle() }
         lock?.release()
         lock = nil
         volumeHold = nil

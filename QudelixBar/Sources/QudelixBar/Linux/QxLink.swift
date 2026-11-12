@@ -15,6 +15,9 @@ package protocol QxLink: AnyObject {
     var onPacket: (([UInt8]) -> Void)? { get set }
     var failureReason: String? { get }
     var failureNeedsAttention: Bool { get }
+    var keepsArmed: Bool { get }
+    var attachedName: String? { get }
+    func recycle()
     func start()
     func stop()
     func stopAndWait(timeout: TimeInterval)
@@ -24,11 +27,15 @@ package protocol QxLink: AnyObject {
 package extension QxLink {
     var failureReason: String? { nil }
     var failureNeedsAttention: Bool { false }
+    var keepsArmed: Bool { false }
+    var attachedName: String? { nil }
+    func recycle() {}
     func stopAndWait(timeout: TimeInterval) { stop() }
 }
 
 package enum QxLinkTimeouts {
     package static let bluetoothAppearance: TimeInterval = 40
+    package static let bluetoothSlice: TimeInterval = 5
 
     static func appearance(kind: QxLinkKind, explicit: TimeInterval?, fallback: TimeInterval,
                            bluetooth: TimeInterval = QxLinkTimeouts.bluetoothAppearance) -> TimeInterval {

@@ -454,6 +454,58 @@ final class BluezTransportTests: XCTestCase {
         until("a third listing") { bus.listings >= 3 }
     }
 
+    func testStartingTwiceArmsOnlyOneConnect() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.silent) })
+        transport.start()
+        transport.start()
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count >= 1 }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(bus.listings, 1)
+        XCTAssertTrue(transport.keepsArmed)
+    }
+
+    func testRecyclingAnUpLinkDropsOurSocketAndReArmsWithoutNotifying() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.fiveK) })
+        transport.start()
+        defer { transport.stop() }
+        until("connected") { events.connectCount == 1 }
+        XCTAssertEqual(transport.attachedName, "Qudelix-5K")
+        transport.recycle()
+        until("second socket") { events.socketList.count == 2 }
+        XCTAssertGreaterThan(events.socketList[0].closes, 0)
+        XCTAssertEqual(events.disconnectCount, 0)
+        until("second link") { events.connectCount == 2 }
+        XCTAssertEqual(bus.listings, 1)
+    }
+
+    func testRecyclingALinkThatIsNotUpDoesNothing() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.refuse(ECONNREFUSED)) })
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count >= 2 }
+        transport.recycle()
+        XCTAssertNil(transport.attachedName)
+        XCTAssertFalse(transport.isConnected)
+    }
+
+    func testAGenuineErrorIsAlsoTheFailureReason() {
+        let bus = FakeBus(objects: objects(adapter: false))
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.fiveK) })
+        transport.start()
+        defer { transport.stop() }
+        until("announced") { !events.unusableTexts.isEmpty }
+        XCTAssertEqual(transport.failureReason, events.unusableTexts[0])
+    }
+
     func testARandomAddressTypeIsPassedThrough() {
         let bus = FakeBus(objects: objects(addressType: "random"))
         let events = Events()

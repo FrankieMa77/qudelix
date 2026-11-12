@@ -197,6 +197,141 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(bluetooth.started)
     }
 
+    private final class ArmedLinks {
+        private(set) var created: [FakeLink] = []
+        var failureReason: String? = BluezLinkFailure.waitingForLink
+
+        func make() -> FakeLink {
+            let link = QxFixtures.answeringLink(kind: .bluetooth)
+            link.keepsArmed = true
+            link.failureReason = failureReason
+            created.append(link)
+            return link
+        }
+    }
+
+    @MainActor
+    private func armedModel(_ armed: ArmedLinks, usb: @escaping () -> FakeLink? = { nil },
+                            usbPresent: @escaping () -> Bool = { false }) -> AppModel {
+        let url = lockURL
+        let model = AppModel(makeLinks: { (usb().map { [$0 as QxLink] } ?? []) + [armed.make()] },
+                             acquireLock: { QxInstanceLock.acquire(at: url) },
+                             lockProblem: { QxInstanceLock.unavailability(at: url) },
+                             probeDevice: { AppDeviceProbe(present: true, usbPresent: usbPresent()) },
+                             clock: clock,
+                             retryInterval: 2,
+                             connectTimeout: 2,
+                             bluetoothConnectTimeout: 0.05)
+        model.addObserver { [weak self] state in self?.states.append(state.connection) }
+        return model
+    }
+
+    @MainActor
+    func testTheBluetoothLinkArmsWhileTheFiveKIsOffAndShowsTheWaitingText() async {
+        let armed = ArmedLinks()
+        let model = armedModel(armed)
+        model.start()
+        await until("waiting") { model.state.connection == .waiting(BluezLinkFailure.waitingForLink) }
+        XCTAssertEqual(armed.created[0].startCount, 1)
+        XCTAssertTrue(lockIsFree())
+        XCTAssertFalse(states.contains(.connecting))
+        armed.failureReason = nil
+        await model.shutdown()
+        XCTAssertEqual(armed.created[0].stopCount, 1)
+    }
+
+    @MainActor
+    func testAnUnknownDeviceTextFromTheTransportIsShownAsIs() async {
+        let armed = ArmedLinks()
+        armed.failureReason = BluezLinkFailure.noDeviceKnown
+        let model = armedModel(armed)
+        model.start()
+        await until("text") { model.state.connection == .waiting(BluezLinkFailure.noDeviceKnown) }
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testRepeatedBluetoothTimeoutsNeverRestartOrRecreateTheLink() async {
+        let armed = ArmedLinks()
+        let model = armedModel(armed)
+        model.start()
+        for round in 1...4 {
+            await until("cycle \(round)") { armed.created.count >= round }
+            await settle()
+            clock.advance(0.25)
+        }
+        await until("fifth cycle") { armed.created.count >= 5 }
+        let first = armed.created[0]
+        XCTAssertEqual(first.startCount, 1)
+        XCTAssertEqual(first.stopCount, 0)
+        XCTAssertFalse(first.stopped)
+        for other in armed.created.dropFirst() {
+            XCTAssertEqual(other.startCount, 0)
+            XCTAssertEqual(other.stopCount, 0)
+        }
+        XCTAssertEqual(model.state.connection, .waiting(BluezLinkFailure.waitingForLink))
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testTheArmedLinkIsAdoptedTheMomentItComesUpAndTheLockIsTakenThen() async {
+        let armed = ArmedLinks()
+        let model = armedModel(armed)
+        model.start()
+        await until("waiting") { model.state.connection == .waiting(BluezLinkFailure.waitingForLink) }
+        XCTAssertTrue(lockIsFree())
+        armed.created[0].bringUp()
+        await until("connected") { model.state.connection.isConnected }
+        XCTAssertEqual(model.state.connection, .connected(.bluetooth))
+        XCTAssertFalse(lockIsFree())
+        XCTAssertEqual(armed.created[0].stopCount, 0)
+        XCTAssertEqual(armed.created[0].startCount, 1)
+        await model.shutdown()
+        XCTAssertTrue(lockIsFree())
+    }
+
+    @MainActor
+    func testABusyLockTearsTheLinkDownAndKeepsItArmed() async {
+        let armed = ArmedLinks()
+        let model = armedModel(armed)
+        let foreign = QxInstanceLock.acquire(at: lockURL)
+        XCTAssertNotNil(foreign)
+        model.start()
+        await until("waiting") { model.state.connection == .waiting(BluezLinkFailure.waitingForLink) }
+        armed.created[0].bringUp()
+        await until("busy") { model.state.connection == .busy }
+        XCTAssertEqual(armed.created[0].recycles, 1)
+        XCTAssertEqual(armed.created[0].stopCount, 0)
+        XCTAssertFalse(model.state.connection.isConnected)
+        foreign?.release()
+        clock.advance(2)
+        await until("armed again") { model.state.connection == .waiting(BluezLinkFailure.waitingForLink) }
+        armed.created[0].bringUp()
+        await until("connected") { model.state.connection.isConnected }
+        XCTAssertEqual(armed.created[0].startCount, 1)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testAUsbSessionConnectingStopsTheArmedBluetoothLink() async {
+        let armed = ArmedLinks()
+        var usbReady = false
+        let usb = autoLink(volumeDb: -14)
+        let model = armedModel(armed, usb: { usb }, usbPresent: { usbReady })
+        model.start()
+        await until("waiting") { model.state.connection == .waiting(BluezLinkFailure.waitingForLink) }
+        let link = armed.created[0]
+        XCTAssertEqual(link.startCount, 1)
+        XCTAssertFalse(usb.started)
+        usbReady = true
+        await settle()
+        clock.advance(0.25)
+        await until("usb connected") { model.state.connection == .connected(.usb) }
+        XCTAssertEqual(link.stopCount, 1)
+        XCTAssertTrue(link.stopped)
+        await model.shutdown()
+    }
+
     @MainActor
     func testShutdownDuringTheCompatibilityCheckReleasesTheLinkAndTheLock() async {
         let link = autoLink()

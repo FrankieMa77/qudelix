@@ -35,9 +35,16 @@ final class BluezPresenceTests: XCTestCase {
         XCTAssertTrue(presence(objects: objects).qudelixPresent())
     }
 
-    func testAPairedQudelixThatIsOffIsNotPresent() {
+    func testAPairedQudelixThatIsOffCountsSoTheLinkCanArmBeforePowerOn() {
         let objects: BluezPresence.Objects = [
             "/org/bluez/hci0/dev_5K": device(uuids: [GaiaFraming.serviceUUID], connected: false),
+        ]
+        XCTAssertTrue(presence(objects: objects).qudelixPresent())
+    }
+
+    func testAnUnpairedQudelixThatIsOffIsNotPresentUntilItAdvertises() {
+        let objects: BluezPresence.Objects = [
+            "/org/bluez/hci0/dev_5K": device(uuids: [GaiaFraming.serviceUUID], paired: false, connected: false),
         ]
         XCTAssertFalse(presence(objects: objects).qudelixPresent())
         var advertising = objects

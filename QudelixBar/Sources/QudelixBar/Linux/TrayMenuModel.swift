@@ -116,6 +116,7 @@ package enum TrayMenuBuilder {
         switch connection {
         case .searching: return "Looking for your Qudelix 5K"
         case .connecting: return "Connecting"
+        case .waiting: return "Waiting for your Qudelix 5K"
         case .busy: return "The device is in use"
         case .noTransport: return "No way to reach the device"
         case .permissionDenied: return "Cannot open the device"

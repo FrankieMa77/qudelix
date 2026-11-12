@@ -51,6 +51,11 @@ final class ConnectionStatusPage {
             title = "Connecting"
             detail = "Talking to the device."
             busy = true
+        case .waiting(let text):
+            icon = "audio-headphones-symbolic"
+            title = "Waiting for your Qudelix 5K"
+            detail = text
+            busy = true
         case .busy:
             icon = "dialog-information-symbolic"
             title = "The device is in use"

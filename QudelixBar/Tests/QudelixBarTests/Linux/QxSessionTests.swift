@@ -18,13 +18,24 @@ final class FakeLink: QxLink {
     var autoConnectOnStart = false
     var started = false
     var stopped = false
+    var keepsArmed = false
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    private(set) var recycles = 0
+    var attachedName: String? { isConnected ? "Qudelix 5K" : nil }
 
     init(kind: QxLinkKind = .usb) {
         self.kind = kind
     }
 
+    func recycle() {
+        recycles += 1
+        isConnected = false
+    }
+
     func start() {
         started = true
+        startCount += 1
         if let busyText {
             onLinkBusy?(busyText)
             return
@@ -36,11 +47,15 @@ final class FakeLink: QxLink {
     var failureNeedsAttention = false
     private(set) var stopWaits: [TimeInterval] = []
 
-    func stop() { stopped = true }
+    func stop() {
+        stopped = true
+        stopCount += 1
+    }
 
     func stopAndWait(timeout: TimeInterval) {
         stopWaits.append(timeout)
         stopped = true
+        stopCount += 1
     }
 
     func send(_ cmd: QxCmd, _ data: [UInt8]) {
@@ -173,8 +188,9 @@ extension QxFixtures {
                               preGain: Double = -3,
                               bands: [QxEqBandValue] = QxFixtures.tenBands,
                               dacFilter: Int = 3,
-                              eqEnabled: Bool = true) -> FakeLink {
-        let link = FakeLink()
+                              eqEnabled: Bool = true,
+                              kind: QxLinkKind = .usb) -> FakeLink {
+        let link = FakeLink(kind: kind)
         link.onSend = { [weak link] cmd, data in
             guard let link else { return }
             switch cmd {

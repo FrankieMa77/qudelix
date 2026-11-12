@@ -51,6 +51,7 @@ final class QxSession {
 
     let link: QxLink
     let timeout: TimeInterval
+    private let ownsLink: Bool
 
     private let queue = DispatchQueue(label: "qudelix.session")
 
@@ -86,9 +87,10 @@ final class QxSession {
         }
     }
 
-    init(link: QxLink, timeout: TimeInterval = 5) {
+    init(link: QxLink, timeout: TimeInterval = 5, ownsLink: Bool = true) {
         self.link = link
         self.timeout = timeout
+        self.ownsLink = ownsLink
         link.onConnected = { [weak self] name in
             guard let self else { return }
             self.queue.async { self.linkCameUp(name) }
@@ -118,16 +120,22 @@ final class QxSession {
         }
     }
 
-    func connect(timeout: TimeInterval) async throws {
+    func connect(timeout: TimeInterval,
+                 beforeHandshake: (() async throws -> Void)? = nil) async throws {
         try await perform {
             guard !self.started else { return }
             self.started = true
-            self.link.start()
+            if self.ownsLink { self.link.start() }
+            if self.connectedName == nil, self.link.isConnected,
+               let name = self.link.attachedName {
+                self.connectedName = name
+            }
         }
         let deadline = Date().addingTimeInterval(timeout)
         try await wait(Self.deviceAppearance, timeout: timeout) {
             self.connectedName != nil
         }
+        try await beforeHandshake?()
         var attempt = 0
         while attempt < 3 {
             attempt += 1
@@ -159,6 +167,14 @@ final class QxSession {
             self.failPending(QxSessionError.linkClosed)
             for continuation in self.streams.values { continuation.finish() }
             self.streams.removeAll()
+        }
+        guard ownsLink else {
+            link.onConnected = nil
+            link.onDisconnected = nil
+            link.onLinkUnusable = nil
+            link.onLinkBusy = nil
+            link.onPacket = nil
+            return
         }
         if waitForLink {
             link.stopAndWait(timeout: Self.linkStopWait)

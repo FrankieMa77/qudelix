@@ -31,6 +31,11 @@ enum BluezLinkPlan {
         return device[presenceProperty] != nil
     }
 
+    static func isArmable(_ interfaces: [String: [String: DBusValue]]) -> Bool {
+        guard looksLikeQudelix(interfaces), let device = interfaces[deviceInterface] else { return false }
+        return device["Paired"]?.boolValue == true
+    }
+
     static func isConnected(_ path: String, in objects: Objects) -> Bool {
         objects[path]?[deviceInterface]?["Connected"]?.boolValue ?? false
     }
