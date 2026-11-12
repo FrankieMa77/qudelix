@@ -15,10 +15,16 @@ final class BluezTransport: QxLink {
     private static let connectTickMilliseconds: Int32 = 500
     private static let writeCallTimeoutMs: Int32 = 5_000
     private static let waitLogInterval: TimeInterval = 60
+    private static let drainSeconds: TimeInterval = 1.5
+    private static let reviewTimeoutMs: Int32 = 2_000
 
     static let armedPause: TimeInterval = 0.1
     static let relistSeconds: TimeInterval = 300
     static let noDeviceRetryDelay: TimeInterval = 3
+    static let poweredOffRetryDelay: TimeInterval = 5
+    static let progressSeconds: TimeInterval = 1
+    static let backoffFloorSeconds: TimeInterval = 1
+    static let backoffCeilingSeconds: TimeInterval = 10
 
     static let armedFailureCodes: Set<Int32> = [ECONNREFUSED, ENOSYS, EHOSTDOWN, ETIMEDOUT, EBUSY,
                                                 ECONNRESET, ECONNABORTED, EHOSTUNREACH, EINTR]
@@ -52,6 +58,10 @@ final class BluezTransport: QxLink {
     private let armedDelay: TimeInterval
     private let relistInterval: TimeInterval
     private let noDeviceDelay: TimeInterval
+    private let poweredOffDelay: TimeInterval
+    private let progressSeconds: TimeInterval
+    private let backoffFloor: TimeInterval
+    private let backoffCeiling: TimeInterval
     private let uptime: () -> TimeInterval
 
     private var bus: BluezBus?
@@ -88,11 +98,14 @@ final class BluezTransport: QxLink {
     private var armTarget: ArmTarget?
     private var lastListing: TimeInterval = 0
     private var relistRequested = false
+    private var adapterOff = false
+    private var rearmToken = 0
 
     private struct ArmTarget {
         let device: String
         let address: String
         let addressType: String?
+        let paired: Bool
     }
 
     private enum Attempt {
@@ -102,6 +115,11 @@ final class BluezTransport: QxLink {
         case relist
     }
 
+    private enum Review {
+        case keep
+        case replace
+    }
+
     init(bus: @escaping () throws -> BluezBus = { try SystemBluezBus() },
          socket: @escaping () -> LEAttSocket = { LEAttSystemSocket() },
          pinnedPath: @escaping () -> String? = { BluezTransport.pinnedDevicePath() },
@@ -109,6 +127,10 @@ final class BluezTransport: QxLink {
          armedDelay: TimeInterval = BluezTransport.armedPause,
          relistInterval: TimeInterval = BluezTransport.relistSeconds,
          noDeviceDelay: TimeInterval = BluezTransport.noDeviceRetryDelay,
+         poweredOffDelay: TimeInterval = BluezTransport.poweredOffRetryDelay,
+         progressSeconds: TimeInterval = BluezTransport.progressSeconds,
+         backoffFloor: TimeInterval = BluezTransport.backoffFloorSeconds,
+         backoffCeiling: TimeInterval = BluezTransport.backoffCeilingSeconds,
          uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         makeBus = bus
         makeSocket = socket
@@ -117,6 +139,10 @@ final class BluezTransport: QxLink {
         self.armedDelay = armedDelay
         self.relistInterval = relistInterval
         self.noDeviceDelay = noDeviceDelay
+        self.poweredOffDelay = poweredOffDelay
+        self.progressSeconds = progressSeconds
+        self.backoffFloor = backoffFloor
+        self.backoffCeiling = backoffCeiling
         self.uptime = uptime
     }
 
@@ -130,6 +156,12 @@ final class BluezTransport: QxLink {
         lock.lock()
         defer { lock.unlock() }
         return storedNeedsAttention
+    }
+
+    private var storedFailureText: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedFailure
     }
 
     private func setFailure(_ reason: String?, needsAttention: Bool = false) {
@@ -220,6 +252,7 @@ final class BluezTransport: QxLink {
             let same = self.generation == gen && !self.stopping
             self.lock.unlock()
             guard same else { return }
+            self.drainWrites()
             self.teardown(reason: "released", notify: false)
             self.rearmNow()
         }
@@ -255,6 +288,7 @@ final class BluezTransport: QxLink {
         queue.async { [weak self] in
             defer { completion?() }
             guard let self else { return }
+            self.drainWrites()
             self.teardown(reason: "stopped", notify: false)
             self.bus?.close()
             self.bus = nil
@@ -296,13 +330,13 @@ final class BluezTransport: QxLink {
         case .le:
             drive(gen) { session, now in session.send(frame, now: now) }
         case .bluez:
-            writeThroughBlueZ(frame, to: path, cmd: cmd)
+            writeThroughBlueZ(frame, to: path, cmd: cmd, generation: gen)
         case .none:
             return
         }
     }
 
-    private func writeThroughBlueZ(_ frame: [UInt8], to path: String?, cmd: QxCmd) {
+    private func writeThroughBlueZ(_ frame: [UInt8], to path: String?, cmd: QxCmd, generation gen: Int) {
         guard let path, let bus else { return }
         let value = DBusValue.array(element: "y", items: frame.map { .byte($0) })
         let options = DBusValue.dictionary([("type", .string("request"))])
@@ -314,28 +348,61 @@ final class BluezTransport: QxLink {
             consecutiveTxErrors = 0
             lock.unlock()
         } catch {
-            recordTxError("\(error)", cmd: cmd)
+            recordTxError("\(error)", cmd: cmd, generation: gen)
         }
         Thread.sleep(forTimeInterval: Self.writeSpacing)
     }
 
-    private func recordTxError(_ detail: String, cmd: QxCmd?) {
+    private func recordTxError(_ detail: String, cmd: QxCmd?, generation gen: Int) {
         lock.lock()
         consecutiveTxErrors += 1
         let count = consecutiveTxErrors
+        let live = generation == gen
         lock.unlock()
         log("BLE write error \(detail)" + (cmd.map { " cmd=\($0)" } ?? "")
-            + (count >= Self.txErrorLimit ? " — suspending TX until the link comes back" : ""))
-        if count == Self.txErrorLimit {
-            onLinkUnusable?("Bluetooth writes keep failing (\(detail)); the link is suspended until it comes back")
+            + (count >= Self.txErrorLimit ? " — dropping the link so it can start over" : ""))
+        guard count == Self.txErrorLimit, live else { return }
+        onLinkUnusable?("Bluetooth writes keep failing (\(detail)); the link is being restarted")
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let same = self.generation == gen
+            self.lock.unlock()
+            guard same else { return }
+            self.teardown(reason: "writes kept failing", notify: true)
+            self.rearmNow()
         }
+    }
+
+    private func drainWrites() {
+        lock.lock()
+        let viaLE = mode == .le && up
+        lock.unlock()
+        guard viaLE else { return }
+        let deadline = Date().addingTimeInterval(Self.drainSeconds)
+        while Date() < deadline {
+            sessionLock.lock()
+            let idle = session.isIdle
+            sessionLock.unlock()
+            if idle { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        log("BLE queued writes were still pending after \(Self.drainSeconds) s; closing anyway")
+    }
+
+    private func dropBus() {
+        bus?.close()
+        bus = nil
     }
 
     private func bringUp() {
         lock.lock()
         bringUpPending = false
         lock.unlock()
-        guard !isStopping, !isConnected else { return }
+        lock.lock()
+        let linkOpen = mode != .none
+        lock.unlock()
+        guard !isStopping, !isConnected, !linkOpen else { return }
         let bus: BluezBus
         do {
             bus = try openBus()
@@ -359,13 +426,25 @@ final class BluezTransport: QxLink {
                            listingSeconds, objects.count))
             }
         } catch {
+            if let callError = error as? DBusCallError, callError.isTransportFailure { dropBus() }
             reportUnusable("Bluetooth is unavailable: BlueZ is not answering on the system bus "
                 + "(\(error)). Install and start bluetoothd, or use the USB link.")
             return
         }
 
-        guard BluezLinkPlan.adapterPath(in: objects) != nil else {
+        guard let adapter = BluezLinkPlan.adapterPath(in: objects) else {
             reportUnusable("No Bluetooth adapter is present, so there is no link to open.")
+            return
+        }
+
+        let powered = objects[adapter]?[BluezLinkPlan.adapterInterface]?["Powered"]?.boolValue != false
+        lock.lock()
+        adapterOff = !powered
+        lock.unlock()
+        guard powered else {
+            if storedFailureText != BluezLinkFailure.adapterOff { log("BLE the Bluetooth adapter is powered off") }
+            setFailure(BluezLinkFailure.adapterOff)
+            scheduleRearm(after: poweredOffDelay)
             return
         }
 
@@ -400,7 +479,8 @@ final class BluezTransport: QxLink {
             return
         }
         armLE(ArmTarget(device: candidate, address: address,
-                        addressType: BluezLinkPlan.addressType(of: candidate, in: objects)))
+                        addressType: BluezLinkPlan.addressType(of: candidate, in: objects),
+                        paired: objects[candidate]?[Self.deviceInterface]?["Paired"]?.boolValue == true))
     }
 
     private func rearmNow() {
@@ -423,7 +503,11 @@ final class BluezTransport: QxLink {
     }
 
     private func openBus() throws -> BluezBus {
-        if let bus { return bus }
+        if let existing = bus {
+            if existing.isAlive { return existing }
+            log("BLE the system bus connection is gone; opening a new one")
+            dropBus()
+        }
         let created = try makeBus()
         created.onSignal { [weak self] signal in self?.handle(signal) }
         bus = created
@@ -519,8 +603,10 @@ final class BluezTransport: QxLink {
         armTarget = target
         setFailure(BluezLinkFailure.waitingForLink)
         log("BLE armed: waiting for the 5K to accept an LE control link at \(target.address)")
+        var quickFailures = 0
         while !isStopping {
             let candidate = makeSocket()
+            let began = Date()
             switch attempt(candidate, target) {
             case .connected:
                 linkConnected(candidate)
@@ -533,15 +619,54 @@ final class BluezTransport: QxLink {
             case .failed:
                 break
             }
-            let resume = Date().addingTimeInterval(armedDelay)
+            if Date().timeIntervalSince(began) >= progressSeconds {
+                quickFailures = 0
+            } else {
+                quickFailures += 1
+            }
+            let pause = quickFailures == 0
+                ? armedDelay
+                : min(backoffCeiling, backoffFloor * pow(2, Double(quickFailures - 1)))
+            let resume = Date().addingTimeInterval(pause)
             while !isStopping, Date() < resume {
-                if relistDue() {
+                if relistDue(), reviewTarget(target) == .replace {
                     scheduleRearm(after: 0)
                     return
                 }
                 Thread.sleep(forTimeInterval: min(0.05, max(0, resume.timeIntervalSinceNow)))
             }
         }
+    }
+
+    private func reviewTarget(_ target: ArmTarget) -> Review {
+        lock.lock()
+        relistRequested = false
+        lock.unlock()
+        guard let bus else { return .replace }
+        let objects: BluezLinkPlan.Objects
+        do {
+            objects = try bus.managedObjects(timeoutMs: Self.reviewTimeoutMs)
+        } catch {
+            lastListing = uptime()
+            if let callError = error as? DBusCallError, callError.isTransportFailure {
+                dropBus()
+                return .replace
+            }
+            log("BLE re-listing BlueZ objects failed (\(error)); keeping the pending connect")
+            return .keep
+        }
+        lastListing = uptime()
+        if let adapter = BluezLinkPlan.adapterPath(in: objects),
+           objects[adapter]?[BluezLinkPlan.adapterInterface]?["Powered"]?.boolValue == false {
+            return .replace
+        }
+        guard BluezLinkPlan.pickDevice(in: objects, pinned: pinnedPath()) == target.device,
+              BluezLinkPlan.address(of: target.device, in: objects) == target.address,
+              BluezLinkPlan.addressType(of: target.device, in: objects) == target.addressType,
+              (objects[target.device]?[Self.deviceInterface]?["Paired"]?.boolValue == true) == target.paired
+        else { return .replace }
+        if BluezLinkPlan.ready(target.device, in: objects) != nil, !linkStale { return .replace }
+        return .keep
     }
 
     private func attempt(_ candidate: LEAttSocket, _ target: ArmTarget) -> Attempt {
@@ -577,7 +702,7 @@ final class BluezTransport: QxLink {
                     + "Use the USB link.")
                 return .fatal
             case .pending:
-                if relistDue() {
+                if relistDue(), reviewTarget(target) == .replace {
                     candidate.close()
                     return .relist
                 }
@@ -621,12 +746,19 @@ final class BluezTransport: QxLink {
     private func drive(_ gen: Int,
                        _ body: (inout LEGaiaSession, TimeInterval) -> [LEGaiaOutput]) {
         lock.lock()
-        let target = generation == gen ? socket : nil
+        let early = generation == gen
         lock.unlock()
-        guard let target else { return }
+        guard early else { return }
         var rest: [LEGaiaOutput] = []
         var writeFailed = false
         sessionLock.lock()
+        lock.lock()
+        let target = generation == gen ? socket : nil
+        lock.unlock()
+        guard let target else {
+            sessionLock.unlock()
+            return
+        }
         let outputs = body(&session, uptime())
         for output in outputs {
             if case .send(let pdu) = output {
@@ -636,7 +768,7 @@ final class BluezTransport: QxLink {
             }
         }
         sessionLock.unlock()
-        if writeFailed { recordTxError("the LE socket refused a write", cmd: nil) }
+        if writeFailed { recordTxError("the LE socket refused a write", cmd: nil, generation: gen) }
         for output in rest { handle(output, generation: gen) }
     }
 
@@ -663,8 +795,13 @@ final class BluezTransport: QxLink {
             onConnected?(deviceAlias)
         case .packet(let raw):
             deliver(raw, generation: gen)
+        case .writeAccepted:
+            lock.lock()
+            if generation == gen { consecutiveTxErrors = 0 }
+            lock.unlock()
         case .writeRejected(let code):
-            recordTxError(String(format: "the 5K rejected a write (ATT error 0x%02X)", code), cmd: nil)
+            recordTxError(String(format: "the 5K rejected a write (ATT error 0x%02X)", code),
+                          cmd: nil, generation: gen)
         case .failed(let reason):
             log("BLE link failed: \(reason)")
             queue.async { [weak self] in
@@ -692,7 +829,9 @@ final class BluezTransport: QxLink {
                 }
                 switch link.read(timeoutMs: Self.readPollTimeoutMilliseconds) {
                 case .pdu(let pdu):
-                    self.drive(gen) { session, now in session.receive(pdu, now: now) }
+                    self.drive(gen) { session, now in
+                        session.receive(pdu, now: now) + session.tick(now: now)
+                    }
                 case .timeout:
                     self.drive(gen) { session, now in session.tick(now: now) }
                 case .closed(let text):
@@ -820,9 +959,13 @@ final class BluezTransport: QxLink {
     private func handle(_ signal: DBusSignal) {
         switch signal.member {
         case "PropertiesChanged":
-            guard signal.arguments.count >= 2,
-                  signal.arguments[0].stringValue == Self.deviceInterface,
+            guard signal.arguments.count >= 2, let interface = signal.arguments[0].stringValue,
                   let changed = signal.arguments[1].dictionaryValue else { return }
+            if interface == BluezLinkPlan.adapterInterface {
+                handleAdapterChange(changed)
+                return
+            }
+            guard interface == Self.deviceInterface else { return }
             guard signal.path == devicePath else {
                 guard devicePath == nil, !isConnected,
                       BluezLinkPlan.looksLikeQudelix(properties: changed) else { return }
@@ -875,6 +1018,21 @@ final class BluezTransport: QxLink {
         }
     }
 
+    private func handleAdapterChange(_ changed: [String: DBusValue]) {
+        guard let powered = changed["Powered"]?.boolValue else { return }
+        lock.lock()
+        relistRequested = true
+        let wake = powered && adapterOff && !stopping
+        lock.unlock()
+        guard wake else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.rearmToken &+= 1
+            self.reconnectScheduled = false
+            self.bringUp()
+        }
+    }
+
     private func requestBringUp() {
         lock.lock()
         let alreadyQueued = bringUpPending || stopping
@@ -923,8 +1081,9 @@ final class BluezTransport: QxLink {
     private func scheduleRearm(after delay: TimeInterval) {
         guard !isStopping, !reconnectScheduled else { return }
         reconnectScheduled = true
+        let token = rearmToken
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
+            guard let self, self.rearmToken == token else { return }
             self.reconnectScheduled = false
             self.bringUp()
         }

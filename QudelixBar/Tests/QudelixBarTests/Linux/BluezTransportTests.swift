@@ -24,6 +24,39 @@ final class FakeBus: BluezBus {
     var replies: [String: [DBusValue]] = [:]
     private(set) var closed = false
     private(set) var listings = 0
+    var listingDelay: TimeInterval = 0
+    var listingFailures: [Error] = []
+    var alive = true
+
+    var isAlive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return alive
+    }
+
+    func setObjects(_ updated: BluezLinkPlan.Objects) {
+        lock.lock()
+        objects = updated
+        lock.unlock()
+    }
+
+    func setListingDelay(_ delay: TimeInterval) {
+        lock.lock()
+        listingDelay = delay
+        lock.unlock()
+    }
+
+    func setAlive(_ value: Bool) {
+        lock.lock()
+        alive = value
+        lock.unlock()
+    }
+
+    func failNextListings(_ errors: [Error]) {
+        lock.lock()
+        listingFailures = errors
+        lock.unlock()
+    }
 
     init(objects: BluezLinkPlan.Objects) {
         self.objects = objects
@@ -31,9 +64,14 @@ final class FakeBus: BluezBus {
 
     func managedObjects() throws -> BluezLinkPlan.Objects {
         lock.lock()
-        defer { lock.unlock() }
         listings += 1
-        return objects
+        let delay = listingDelay
+        let failure = listingFailures.isEmpty ? nil : listingFailures.removeFirst()
+        let current = objects
+        lock.unlock()
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        if let failure { throw failure }
+        return current
     }
 
     func call(path: String, interface: String, method: String, arguments: [DBusValue],
@@ -90,6 +128,7 @@ final class FakeFiveKSocket: LEAttSocket {
         case refuse(Int32)
         case silent
         case fiveK
+        case pending
     }
 
     private let condition = NSCondition()
@@ -102,6 +141,9 @@ final class FakeFiveKSocket: LEAttSocket {
     private(set) var connectAddress: String?
     private(set) var connectType: String?
     var failOnBegin: LEAttSocketError?
+    var rejectWrite: ((Int) -> Bool)?
+    private var muteWrites = false
+    private var commandWrites = 0
     var greetsOnConnect = false
 
     init(_ behavior: Behavior) {
@@ -129,6 +171,11 @@ final class FakeFiveKSocket: LEAttSocket {
         switch behavior {
         case .refuse(let code):
             return .failed(code)
+        case .pending:
+            condition.unlock()
+            Thread.sleep(forTimeInterval: 0.05)
+            condition.lock()
+            return shut ? .failed(EBADF) : .pending
         case .silent, .fiveK:
             connected = true
             if greetsOnConnect {
@@ -169,6 +216,12 @@ final class FakeFiveKSocket: LEAttSocket {
         closeCount += 1
         shut = true
         condition.broadcast()
+        condition.unlock()
+    }
+
+    func setMute(_ value: Bool) {
+        condition.lock()
+        muteWrites = value
         condition.unlock()
     }
 
@@ -227,6 +280,11 @@ final class FakeFiveKSocket: LEAttSocket {
         case 0x04:
             return [[0x05, 0x01, 0x11, 0x00, 0x02, 0x29]]
         case 0x12:
+            if LEAtt.u16(pdu, 1) == 0x000E {
+                commandWrites += 1
+                if muteWrites { return [] }
+                if rejectWrite?(commandWrites) == true { return [[0x01, 0x12, 0x0E, 0x00, 0x03]] }
+            }
             var out: [[UInt8]] = [[0x13]]
             if LEAtt.u16(pdu, 1) == 0x000E, pdu.count > 5, pdu[3] == 0xF0 {
                 out.append([0x1B, 0x10, 0x00, 0xF0, 0x01, 0x81, pdu[5], 0x00, 0x01, 0x02])
@@ -296,11 +354,16 @@ final class BluezTransportTests: XCTestCase {
     private func make(bus: FakeBus, events: Events,
                       sockets: @escaping (Int) -> FakeFiveKSocket,
                       relist: TimeInterval = 60,
+                      progress: TimeInterval = 0.05,
+                      floor: TimeInterval = 0.05,
+                      ceiling: TimeInterval = 0.2,
+                      poweredOffDelay: TimeInterval = 30,
+                      busFactory: (() -> FakeBus)? = nil,
                       uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })
         -> BluezTransport {
         var made = 0
         let lock = NSLock()
-        let transport = BluezTransport(bus: { bus },
+        let transport = BluezTransport(bus: { busFactory?() ?? bus },
                                        socket: {
                                            lock.lock()
                                            made += 1
@@ -315,6 +378,10 @@ final class BluezTransportTests: XCTestCase {
                                        armedDelay: 0.05,
                                        relistInterval: relist,
                                        noDeviceDelay: 0.05,
+                                       poweredOffDelay: poweredOffDelay,
+                                       progressSeconds: progress,
+                                       backoffFloor: floor,
+                                       backoffCeiling: ceiling,
                                        uptime: uptime)
         transport.onConnected = { events.connected($0) }
         transport.onDisconnected = { events.disconnected() }
@@ -815,6 +882,234 @@ final class BluezTransportTests: XCTestCase {
         until("disconnect") { events.disconnectCount == 1 }
         until("armed own socket") { events.socketList.count >= 1 }
         until("connected again") { events.connectCount == 2 }
+    }
+
+    private func powered(_ on: Bool, _ base: BluezLinkPlan.Objects) -> BluezLinkPlan.Objects {
+        var out = base
+        out["/org/bluez/hci0"] = ["org.bluez.Adapter1": ["Powered": .boolean(on)]]
+        return out
+    }
+
+    func testQueuedWritesAreDrainedBeforeStopAndWaitClosesTheSocket() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.fiveK) })
+        transport.start()
+        until("connected") { events.connectCount == 1 }
+        transport.send(.setEqEnable, [1])
+        transport.send(.saveAll, [])
+        transport.stopAndWait(timeout: 3)
+        let commandWrites = events.socketList[0].written.filter { $0.first == 0x12 && LEAtt.u16($0, 1) == 0x000E }
+        XCTAssertEqual(commandWrites.count, 2)
+        XCTAssertGreaterThan(events.socketList[0].closes, 0)
+    }
+
+    func testRejectedWritesInterleavedWithAcceptedOnesNeverEndTheLink() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in
+            let socket = FakeFiveKSocket(.fiveK)
+            socket.rejectWrite = { $0 % 2 == 0 }
+            return socket
+        })
+        transport.start()
+        defer { transport.stop() }
+        until("connected") { events.connectCount == 1 }
+        for _ in 0..<24 { transport.send(.setVolume, [0, 0]) }
+        let socket = events.socketList[0]
+        until("all writes sent") {
+            socket.written.filter { $0.first == 0x12 && LEAtt.u16($0, 1) == 0x000E }.count == 24
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(events.disconnectCount, 0)
+        XCTAssertTrue(events.unusableTexts.isEmpty)
+        XCTAssertTrue(transport.isConnected)
+    }
+
+    func testFiveRejectionsInARowEndTheLinkAndTheAppSeesIt() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { index in
+            let socket = FakeFiveKSocket(.fiveK)
+            if index == 1 { socket.rejectWrite = { _ in true } }
+            return socket
+        })
+        transport.start()
+        defer { transport.stop() }
+        until("connected") { events.connectCount == 1 }
+        for _ in 0..<8 { transport.send(.setVolume, [0, 0]) }
+        until("link ended") { events.disconnectCount == 1 }
+        XCTAssertEqual(events.unusableTexts.count, 1)
+        until("armed again") { events.socketList.count >= 2 }
+        until("second link") { events.connectCount == 2 }
+    }
+
+    func testTimersStillRunWhileNotificationsKeepArriving() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.fiveK) })
+        transport.start()
+        defer { transport.stop() }
+        until("connected") { events.connectCount == 1 }
+        let socket = events.socketList[0]
+        socket.setMute(true)
+        transport.send(.setVolume, [0, 0])
+        let deadline = Date().addingTimeInterval(7)
+        while events.disconnectCount == 0, Date() < deadline {
+            socket.push([0x1B, 0x10, 0x00, 0xAA, 0xBB])
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertEqual(events.disconnectCount, 1)
+    }
+
+    func testAnArmedConnectThatKeepsFailingAtOnceBacksOff() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events,
+                             sockets: { _ in FakeFiveKSocket(.refuse(EHOSTUNREACH)) },
+                             progress: 0.2, floor: 0.2, ceiling: 1)
+        transport.start()
+        defer { transport.stop() }
+        Thread.sleep(forTimeInterval: 3)
+        let count = events.socketList.count
+        XCTAssertGreaterThanOrEqual(count, 3)
+        XCTAssertLessThanOrEqual(count, 6)
+        let times = events.madeTimes
+        XCTAssertGreaterThan(times[3].timeIntervalSince(times[2]), times[2].timeIntervalSince(times[1]))
+    }
+
+    func testAPoweredOffAdapterGivesTheReasonOpensNoSocketAndPoweringOnArmsAtOnce() {
+        let base = objects()
+        let bus = FakeBus(objects: powered(false, base))
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) })
+        transport.start()
+        defer { transport.stop() }
+        until("reason") { transport.failureReason == BluezLinkFailure.adapterOff }
+        XCTAssertEqual(BluezLinkFailure.adapterOff,
+                       "Bluetooth is turned off on this computer. Turn it on and Qudelix finds the 5K again; "
+                       + "if it doesn't within a minute, switch the 5K off and on.")
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(events.socketList.isEmpty)
+        bus.setObjects(powered(true, base))
+        bus.emit(DBusSignal(path: "/org/bluez/hci0", interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Adapter1"),
+                                        .dictionary([("Powered", .boolean(true))])]))
+        until("armed", timeout: 2) { events.socketList.count == 1 }
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+    }
+
+    func testAnAdapterSwitchedOffWhilePendingClosesTheSocketAndShowsTheReason() {
+        let base = objects()
+        let bus = FakeBus(objects: base)
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) })
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        bus.setObjects(powered(false, base))
+        bus.emit(DBusSignal(path: "/org/bluez/hci0", interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Adapter1"),
+                                        .dictionary([("Powered", .boolean(false))])]))
+        until("reason") { transport.failureReason == BluezLinkFailure.adapterOff }
+        XCTAssertGreaterThan(events.socketList[0].closes, 0)
+    }
+
+    func testADeadBusIsDroppedAndTheNextListingOpensANewOne() {
+        let first = FakeBus(objects: objects())
+        first.failNextListings([DBusCallError(name: "org.freedesktop.DBus.Error.Disconnected",
+                                              message: "Connection is closed")])
+        let second = FakeBus(objects: objects())
+        let lock = NSLock()
+        var opened = 0
+        let events = Events()
+        let transport = make(bus: first, events: events,
+                             sockets: { _ in FakeFiveKSocket(.pending) },
+                             busFactory: {
+                                 lock.lock()
+                                 defer { lock.unlock() }
+                                 opened += 1
+                                 return opened == 1 ? first : second
+                             })
+        transport.start()
+        defer { transport.stop() }
+        until("armed on the new bus", timeout: 15) { events.socketList.count == 1 }
+        XCTAssertTrue(first.closed)
+        XCTAssertGreaterThan(second.listings, 0)
+    }
+
+    func testABusThatReportsItselfDeadIsReplacedBeforeTheNextListing() {
+        let first = FakeBus(objects: objects(qudelix: false))
+        let second = FakeBus(objects: objects())
+        let lock = NSLock()
+        var opened = 0
+        let events = Events()
+        let transport = make(bus: first, events: events,
+                             sockets: { _ in FakeFiveKSocket(.pending) },
+                             busFactory: {
+                                 lock.lock()
+                                 defer { lock.unlock() }
+                                 opened += 1
+                                 return opened == 1 ? first : second
+                             })
+        transport.start()
+        defer { transport.stop() }
+        until("watching") { first.listings >= 2 }
+        first.setAlive(false)
+        until("armed on the new bus") { events.socketList.count == 1 }
+        XCTAssertEqual(opened, 2)
+        XCTAssertTrue(first.closed)
+    }
+
+    func testARelistLeavesThePendingConnectAloneWhileTheTargetIsUnchanged() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) },
+                             relist: 0.5)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        bus.setListingDelay(0.6)
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertGreaterThanOrEqual(bus.listings, 3)
+        XCTAssertEqual(events.socketList.count, 1)
+        XCTAssertEqual(events.socketList[0].closes, 0)
+        bus.setListingDelay(0)
+        var changed = objects()
+        changed[device]?["org.bluez.Device1"]?["Paired"] = .boolean(false)
+        bus.setObjects(changed)
+        until("replaced", timeout: 5) { events.socketList.count == 2 }
+        XCTAssertGreaterThan(events.socketList[0].closes, 0)
+    }
+
+    func testARelistThatFailsKeepsThePendingConnect() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) },
+                             relist: 0.3)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        bus.failNextListings([DBusCallError(name: "org.freedesktop.DBus.Error.NoReply", message: "timed out")])
+        until("relisted") { bus.listings >= 3 }
+        XCTAssertEqual(events.socketList.count, 1)
+        XCTAssertEqual(events.socketList[0].closes, 0)
+    }
+
+    func testOnlyTheGattCharacteristicCallsAreAllowedOnTheSystemBus() {
+        for method in ["AcquireNotify", "StopNotify", "WriteValue"] {
+            XCTAssertNoThrow(try SystemBluezBus.requireAllowed("org.bluez.GattCharacteristic1", method))
+        }
+        let refused = [("org.bluez.Device1", "Connect"), ("org.bluez.Device1", "Disconnect"),
+                       ("org.bluez.Device1", "Pair"), ("org.bluez.Adapter1", "StartDiscovery"),
+                       ("org.freedesktop.DBus.Properties", "Set"),
+                       ("org.bluez.GattCharacteristic1", "StartNotify"),
+                       ("org.bluez.GattCharacteristic1", "ReadValue")]
+        for (interface, method) in refused {
+            XCTAssertThrowsError(try SystemBluezBus.requireAllowed(interface, method), "\(interface).\(method)")
+        }
     }
 }
 #endif

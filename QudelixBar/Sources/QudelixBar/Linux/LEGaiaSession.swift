@@ -6,6 +6,7 @@ enum LEGaiaOutput: Equatable {
     case ready(writeBudget: Int)
     case packet([UInt8])
     case writeRejected(code: UInt8)
+    case writeAccepted
     case failed(String)
 }
 
@@ -115,6 +116,7 @@ struct LEGaiaSession {
 
     var writeBudget: Int { mtu - 3 }
     var isReady: Bool { phase == .ready }
+    var isIdle: Bool { pending != .write && writeQueue.isEmpty }
 
     mutating func linkUp(now: TimeInterval) -> [LEGaiaOutput] {
         guard phase == .idle else { return [] }
@@ -399,6 +401,7 @@ struct LEGaiaSession {
             sendNext(now, &out)
         case .write:
             pending = .none
+            out.append(.writeAccepted)
             sendNext(now, &out)
         default:
             ignoredPDUs += 1

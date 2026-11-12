@@ -440,5 +440,30 @@ final class LEGaiaSessionTests: XCTestCase {
         rig.feed([0x11, 0x14, 0x01, 0x00])
         XCTAssertEqual(rig.events, [.failed("the 5K sent a malformed service list")])
     }
+
+    func testTheSessionIsIdleOnlyWhenNoWriteIsOutstandingOrQueued() {
+        var rig = Rig()
+        discover(&rig)
+        XCTAssertTrue(rig.session.isIdle)
+        rig.send([0xF0, 0x01, 0x01, 0x10, 0x47])
+        rig.send([0xF0, 0x01, 0x01, 0x10, 0x48])
+        XCTAssertFalse(rig.session.isIdle)
+        rig.feed([0x13])
+        XCTAssertFalse(rig.session.isIdle)
+        rig.feed([0x13])
+        XCTAssertTrue(rig.session.isIdle)
+    }
+
+    func testAnAcceptedWriteIsReportedAndARejectedOneIsNot() {
+        var rig = Rig()
+        discover(&rig)
+        rig.events.removeAll()
+        rig.send([0xF0, 0x01, 0x01, 0x10, 0x47])
+        rig.feed([0x13])
+        XCTAssertEqual(rig.events, [.writeAccepted])
+        rig.send([0xF0, 0x01, 0x01, 0x10, 0x48])
+        rig.feed(errorPDU(0x12, handle: 0x000e, code: 0x03))
+        XCTAssertEqual(rig.events, [.writeAccepted, .writeRejected(code: 0x03)])
+    }
 }
 #endif

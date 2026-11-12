@@ -12,6 +12,11 @@ struct DBusCallError: Error, CustomStringConvertible {
         if message.isEmpty { return name }
         return "\(name): \(message)"
     }
+
+    var isTransportFailure: Bool {
+        name.hasSuffix(".Disconnected") || name.hasSuffix(".NoServer")
+            || message.contains("Connection is closed") || message.contains("disconnected")
+    }
 }
 
 enum DBusType {
@@ -366,6 +371,7 @@ final class DBusConnection {
     private var pumpStopped: DispatchSemaphore?
     private var running = false
     private var filterContext: UnsafeMutableRawPointer?
+    private var pumpEnded = false
 
     static let defaultTimeoutMs: Int32 = 15_000
 
@@ -446,23 +452,6 @@ final class DBusConnection {
         return out
     }
 
-    func property(destination: String, path: String, interface: String,
-                  name: String) throws -> DBusValue? {
-        let reply = try call(destination: destination, path: path,
-                             interface: "org.freedesktop.DBus.Properties",
-                             method: "Get",
-                             arguments: [.string(interface), .string(name)])
-        return reply.first?.unwrapped
-    }
-
-    func setProperty(destination: String, path: String, interface: String,
-                     name: String, value: DBusValue) throws {
-        _ = try call(destination: destination, path: path,
-                     interface: "org.freedesktop.DBus.Properties",
-                     method: "Set",
-                     arguments: [.string(interface), .string(name), .variant(value)])
-    }
-
     func addMatch(_ rule: String) throws {
         var error = DBusError()
         dbus_error_init(&error)
@@ -503,13 +492,29 @@ final class DBusConnection {
             defer { stopped.signal() }
             while true {
                 guard let self, self.isRunning else { return }
-                if dbus_connection_read_write_dispatch(self.handle, 200) == 0 { return }
+                if dbus_connection_read_write_dispatch(self.handle, 200) == 0 {
+                    self.markPumpEnded()
+                    return
+                }
             }
         }
         thread.name = "qudelix.dbus"
         thread.stackSize = 512 * 1024
         pump = thread
         thread.start()
+    }
+
+    private func markPumpEnded() {
+        lock.lock()
+        pumpEnded = true
+        lock.unlock()
+    }
+
+    var isAlive: Bool {
+        lock.lock()
+        let ended = pumpEnded
+        lock.unlock()
+        return !ended && dbus_connection_get_is_connected(handle) != 0
     }
 
     private var isRunning: Bool {

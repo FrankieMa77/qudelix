@@ -149,7 +149,8 @@ final class DBusConnectionLeakTests: XCTestCase {
         let address = try startDaemon()
         let responder = try startResponder(address: address)
         defer { responder.set() }
-        let bus = try SystemBluezBus(address: address, service: DBusConnectionLeakTests.responderName)
+        let bus = try SystemBluezBus(address: address, service: DBusConnectionLeakTests.responderName,
+                                     permit: { _, _ in })
         bus.onSignal { _ in }
         let latencies = slowCallLatencies(calls: 30, deadline: 90) {
             _ = try bus.call(path: "/", interface: DBusConnectionLeakTests.responderName,

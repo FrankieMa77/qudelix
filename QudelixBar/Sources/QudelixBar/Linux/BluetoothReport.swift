@@ -142,6 +142,9 @@ enum BluezLinkFailure {
         + "The 5K offers it for a few seconds after it is switched on. "
         + "If it is already on, switch it off, wait two minutes, switch it on again and let it reconnect by itself."
 
+    static let adapterOff = "Bluetooth is turned off on this computer. "
+        + "Turn it on and Qudelix finds the 5K again; if it doesn't within a minute, switch the 5K off and on."
+
     static let noDeviceKnown = "No Qudelix 5K is known to Bluetooth yet. "
         + "Pair it once in your Bluetooth settings, then it will be found."
 
