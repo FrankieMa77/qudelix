@@ -427,6 +427,15 @@ final class BluezTransportTests: XCTestCase {
                             member: "PropertiesChanged",
                             arguments: [.string("org.bluez.Device1"),
                                         .dictionary([("RSSI", .int16(-50))])]))
+        bus.emit(DBusSignal(path: device, interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Device1"),
+                                        .dictionary([("Connected", .boolean(true)),
+                                                     ("ServicesResolved", .boolean(true))])]))
+        bus.emit(DBusSignal(path: "/org/bluez/hci0", interface: "org.freedesktop.DBus.ObjectManager",
+                            member: "InterfacesAdded",
+                            arguments: [.objectPath(device + "/fd0"),
+                                        .dictionary([("org.bluez.MediaTransport1", .dictionary([]))])]))
         bus.emit(DBusSignal(path: "/org/bluez/hci0/dev_11_22_33_44_55_66",
                             interface: "org.freedesktop.DBus.Properties", member: "PropertiesChanged",
                             arguments: [.string("org.bluez.Device1"),
@@ -440,7 +449,8 @@ final class BluezTransportTests: XCTestCase {
         until("a second listing") { bus.listings >= 2 }
         bus.emit(DBusSignal(path: "/org/bluez/hci0", interface: "org.freedesktop.DBus.ObjectManager",
                             member: "InterfacesAdded",
-                            arguments: [.objectPath(device + "/service000c"), .dictionary([])]))
+                            arguments: [.objectPath(device + "/service000c"),
+                                        .dictionary([("org.bluez.GattService1", .dictionary([]))])]))
         until("a third listing") { bus.listings >= 3 }
     }
 

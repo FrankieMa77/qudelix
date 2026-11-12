@@ -794,10 +794,10 @@ final class BluezTransport: QxLink {
                 requestBringUp()
                 return
             }
-            let noise: Set<String> = ["RSSI", "TxPower", "ManufacturerData", "ServiceData"]
+            let identity: Set<String> = ["Address", "AddressType", "Paired"]
             lock.lock()
             let viaBlueZ = mode == .bluez
-            if !Set(changed.keys).isSubset(of: noise) { relistRequested = true }
+            if !Set(changed.keys).isDisjoint(with: identity) { relistRequested = true }
             lock.unlock()
             if viaBlueZ, changed["Connected"]?.boolValue == false {
                 queue.async { [weak self] in
@@ -810,9 +810,14 @@ final class BluezTransport: QxLink {
             guard signal.arguments.count >= 2 else { return }
             if let added = signal.arguments[0].stringValue, let path = devicePath,
                added == path || added.hasPrefix(path + "/") {
-                lock.lock()
-                relistRequested = true
-                lock.unlock()
+                let interfaces = signal.arguments[1].dictionaryValue ?? [:]
+                let relevant = interfaces[Self.deviceInterface] != nil
+                    || interfaces.keys.contains { $0.hasPrefix("org.bluez.Gatt") }
+                if relevant {
+                    lock.lock()
+                    relistRequested = true
+                    lock.unlock()
+                }
                 return
             }
             guard devicePath == nil, !isConnected,
