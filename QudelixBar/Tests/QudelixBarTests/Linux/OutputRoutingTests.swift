@@ -126,13 +126,13 @@ final class OutputRoutingTests: XCTestCase {
         XCTAssertEqual(backend.setDefaultCalls, [nil])
     }
 
-    func testAMissingPreviousSinkFallsBackToClearing() throws {
+    func testAMissingPreviousSinkIsWrittenBackByName() throws {
         backend.defaultSinkName = LinuxAudioNames.stageSinkName
         backend.configuredDefaultSinkName = LinuxAudioNames.stageSinkName
         try writeMemory(target: "qx_5k", previous: "unplugged_dac")
         let routing = makeRouting()
         routing.start()
-        XCTAssertEqual(backend.setDefaultCalls, [nil])
+        XCTAssertEqual(backend.setDefaultCalls, ["unplugged_dac"])
     }
 
     func testAStageSinkOwnedByAnotherClientIsNotTouched() throws {

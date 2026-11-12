@@ -1,19 +1,45 @@
 import Foundation
 
+package struct DeferredHandover: Codable, Equatable {
+    package var target: String
+    package var gain: Float
+    package var muted: Bool
+
+    package init(target: String, gain: Float, muted: Bool) {
+        self.target = target
+        self.gain = gain
+        self.muted = muted
+    }
+}
+
 package struct RoutingMemory: Codable, Equatable {
     package var target: String
     package var previousConfigured: String?
     package var stageGain: Float?
     package var stageMuted: Bool?
     package var handedOver: Bool?
+    package var deferred: [DeferredHandover]?
 
     package init(target: String, previousConfigured: String?,
-                 stageGain: Float? = nil, stageMuted: Bool? = nil, handedOver: Bool? = nil) {
+                 stageGain: Float? = nil, stageMuted: Bool? = nil, handedOver: Bool? = nil,
+                 deferred: [DeferredHandover]? = nil) {
         self.target = target
         self.previousConfigured = previousConfigured
         self.stageGain = stageGain
         self.stageMuted = stageMuted
         self.handedOver = handedOver
+        self.deferred = deferred
+    }
+
+    package var pendingEntries: [DeferredHandover] {
+        (deferred ?? []) + (primaryPending.map { [$0] } ?? [])
+    }
+
+    package var primaryPending: DeferredHandover? {
+        guard handedOver != true, let gain = stageGain, gain.isFinite else { return nil }
+        let muted = stageMuted == true
+        guard gain < 0.9999 || muted else { return nil }
+        return DeferredHandover(target: target, gain: gain, muted: muted)
     }
 }
 
@@ -33,6 +59,7 @@ package final class OutputRouting {
 
     package static let restoreRetry: TimeInterval = 3
     package static let memoryCap = 16_384
+    package static let deferredCap = 4
     package static let maxVolumeFactor: Float = 16
     package static let restoreCheckDelay: TimeInterval = 3
     package static let volumeSaveGap: TimeInterval = 0.1
@@ -171,6 +198,7 @@ package final class OutputRouting {
         snapshot = next
         if insertHeld, next.defaultName == LinuxAudioNames.stageSinkName { activationConfirmed = true }
         observeStageVolume()
+        applyPendingHandover()
         settleMemory()
         checkRestoreOutcome()
         restoreStaleDefault()
@@ -189,7 +217,9 @@ package final class OutputRouting {
         restoreCheckAt = nil
         let stale = snapshot.configuredName == LinuxAudioNames.stageSinkName
         let previous = stale ? memory?.previousConfigured : snapshot.configuredName
-        memory = RoutingMemory(target: target, previousConfigured: previous, stageGain: 1, stageMuted: false)
+        let carried = (memory?.pendingEntries ?? []).filter { $0.target != target }
+        memory = RoutingMemory(target: target, previousConfigured: previous, stageGain: 1, stageMuted: false,
+                               deferred: carried.isEmpty ? nil : Array(carried.suffix(Self.deferredCap)))
         guard saveMemory() else {
             memory = nil
             insertHeld = false
@@ -230,7 +260,7 @@ package final class OutputRouting {
         activationConfirmed = false
         if staged {
             if !restoredRecently { requestRestore() }
-        } else {
+        } else if memory?.deferred == nil {
             clearMemory()
         }
     }
@@ -244,11 +274,7 @@ package final class OutputRouting {
         guard backend.connected else { return }
         handOverVolume()
         lastRestore = clock.now()
-        let previous = memory?.previousConfigured
-        let usable = previous.flatMap { name in
-            snapshot.sinks.contains { $0.name == name } ? name : nil
-        }
-        if backend.setDefaultSink(named: usable) {
+        if backend.setDefaultSink(named: memory?.previousConfigured) {
             restoreCheckAt = clock.now().addingTimeInterval(Self.restoreCheckDelay)
         } else {
             restoreCheckAt = nil
@@ -263,7 +289,13 @@ package final class OutputRouting {
         let live = backend.sinkVolume(named: stage)
         guard let gain = live?.gain ?? current.stageGain, gain.isFinite else { return }
         let muted = live?.muted ?? current.stageMuted ?? false
-        guard snapshot.sinks.contains(where: { $0.name == current.target }) else { return }
+        guard snapshot.sinks.contains(where: { $0.name == current.target }) else {
+            current.stageGain = gain
+            current.stageMuted = muted
+            memory = current
+            saveMemory()
+            return
+        }
         let factor = min(max(gain, 0), 1)
         var delivered = true
         if factor < 0.9999 || muted {
@@ -336,8 +368,38 @@ package final class OutputRouting {
         requestRestore()
     }
 
+    private var stageIsLive: Bool {
+        insertHeld || activationRequested
+            || snapshot.configuredName == LinuxAudioNames.stageSinkName
+            || snapshot.defaultName == LinuxAudioNames.stageSinkName
+    }
+
+    private func applyPendingHandover() {
+        guard started, var current = memory else { return }
+        let live = stageIsLive
+        var entries = current.deferred ?? []
+        if !live, let primary = current.primaryPending { entries.append(primary) }
+        var applied: [String] = []
+        for entry in entries {
+            guard snapshot.sinks.contains(where: { $0.name == entry.target }),
+                  backend.sinkVolume(named: entry.target) != nil else { continue }
+            let factor = min(max(entry.gain, 0), 1)
+            if !backend.scaleSinkVolume(named: entry.target, by: factor, muted: entry.muted ? true : nil) {
+                DebugLog.shared.log("carrying the Stage volume over to the returning output failed")
+                publishNotice(Self.volumeHandoverFailedNotice)
+            }
+            applied.append(entry.target)
+        }
+        guard !applied.isEmpty else { return }
+        let rest = (current.deferred ?? []).filter { !applied.contains($0.target) }
+        current.deferred = rest.isEmpty ? nil : rest
+        if !live, applied.contains(current.target) { current.handedOver = true }
+        memory = current
+        saveMemory()
+    }
+
     private func settleMemory() {
-        guard memory != nil, !insertHeld, !activationRequested else { return }
+        guard let current = memory, !insertHeld, !activationRequested, current.pendingEntries.isEmpty else { return }
         guard snapshot.configuredName != LinuxAudioNames.stageSinkName,
               snapshot.defaultName != LinuxAudioNames.stageSinkName else { return }
         clearMemory()
