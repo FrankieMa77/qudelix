@@ -386,6 +386,7 @@ package final class AppModel {
     }
 
     private func lockForArmedLink(_ link: QxLink) throws {
+        guard link.needsInstanceLock else { return }
         if let held = acquireLock() {
             armedLock = held
             return

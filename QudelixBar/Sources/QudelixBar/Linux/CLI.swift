@@ -364,7 +364,9 @@ package enum QudelixCLI {
             StdIO.out("qudelix \(CLI.version)")
             return CLIExit.ok
         case .probe:
-            let report = Probe.report(.system())
+            var environment = ProbeEnvironment.system()
+            environment.linkService = LinkServiceQuery.system
+            let report = Probe.report(environment)
             if invocation.options.json {
                 StdIO.out(QxFormat.json(Probe.object(report)))
             } else {
@@ -397,18 +399,20 @@ package enum QudelixCLI {
             return CLIExit.noTransport
         }
 
-        let lock: QxInstanceLock
-        switch QxInstanceLock.attempt(at: QxInstanceLock.defaultURL) {
-        case .acquired(let acquired):
-            lock = acquired
-        case .busy:
-            reportBusy()
-            return CLIExit.deviceBusy
-        case .unavailable(let message):
-            StdIO.error("qudelix: " + message)
-            return CLIExit.deviceError
+        var lock: QxInstanceLock?
+        if links.contains(where: { $0.needsInstanceLock }) {
+            switch QxInstanceLock.attempt(at: QxInstanceLock.defaultURL) {
+            case .acquired(let acquired):
+                lock = acquired
+            case .busy:
+                reportBusy()
+                return CLIExit.deviceBusy
+            case .unavailable(let message):
+                StdIO.error("qudelix: " + message)
+                return CLIExit.deviceError
+            }
         }
-        defer { lock.release() }
+        defer { lock?.release() }
 
         var connected: QxSession?
         var failures: [(kind: QxLinkKind, error: Error, reason: String?)] = []

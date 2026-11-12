@@ -104,7 +104,19 @@ final class ServiceLink: QxLink {
         self.timing = timing
     }
 
-    func recycle() {}
+    func recycle() {
+        lock.lock()
+        let connected = state?.connected ?? false
+        lock.unlock()
+        guard connected else { return }
+        writeQueue.async { [weak self] in
+            guard let self else { return }
+            self.descriptorLock.lock()
+            defer { self.descriptorLock.unlock() }
+            guard self.descriptor >= 0 else { return }
+            _ = LinkServiceSocket.write(self.descriptor, .recycle)
+        }
+    }
 
     func start() {
         lock.lock()

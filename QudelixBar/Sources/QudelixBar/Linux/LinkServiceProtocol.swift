@@ -15,6 +15,7 @@ enum LinkServiceFrame: Equatable {
     case hello(version: UInt8)
     case send(cmd: UInt16, data: [UInt8])
     case shutdown
+    case recycle
     case welcome(version: UInt8)
     case state(LinkServiceState)
     case packet([UInt8])
@@ -26,6 +27,7 @@ enum LinkServiceFrame: Equatable {
         static let hello: UInt8 = 0x01
         static let send: UInt8 = 0x02
         static let shutdown: UInt8 = 0x03
+        static let recycle: UInt8 = 0x04
         static let welcome: UInt8 = 0x81
         static let state: UInt8 = 0x82
         static let packet: UInt8 = 0x83
@@ -39,6 +41,8 @@ enum LinkServiceFrame: Equatable {
             return [Tag.send, UInt8(cmd & 0xFF), UInt8(cmd >> 8)] + data
         case .shutdown:
             return [Tag.shutdown]
+        case .recycle:
+            return [Tag.recycle]
         case .welcome(let version):
             return [Tag.welcome, version]
         case .state(let state):
@@ -61,6 +65,8 @@ enum LinkServiceFrame: Equatable {
             return .send(cmd: UInt16(body[0]) | UInt16(body[1]) << 8, data: Array(body.dropFirst(2)))
         case Tag.shutdown:
             return body.isEmpty ? .shutdown : nil
+        case Tag.recycle:
+            return body.isEmpty ? .recycle : nil
         case Tag.welcome:
             guard body.count == 1 else { return nil }
             return .welcome(version: body[0])

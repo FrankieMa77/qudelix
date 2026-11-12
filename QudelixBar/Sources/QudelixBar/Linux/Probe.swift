@@ -22,6 +22,11 @@ struct HidrawNode: Equatable {
     }
 }
 
+enum LinkServiceProbe: Equatable {
+    case notRunning
+    case running(holdsLink: Bool)
+}
+
 struct ProbeReport: Equatable {
     var kernelRelease: String
     var hidrawClassExists: Bool
@@ -31,6 +36,7 @@ struct ProbeReport: Equatable {
     var bluezOnDBus: Bool?
     var bluezActivatable: Bool = false
     var bluetooth: BluetoothReport = .unavailable
+    var linkService: LinkServiceProbe?
     var logPath: String
 }
 
@@ -46,6 +52,7 @@ struct ProbeEnvironment {
     var runTool: (String, [String]) -> String?
     var bluezHasOwner: () -> Bool = { false }
     var bluetooth: () -> BluetoothReport = { .unavailable }
+    var linkService: () -> LinkServiceProbe? = { nil }
 
     static func system() -> ProbeEnvironment {
         ProbeEnvironment(
@@ -112,6 +119,7 @@ enum Probe {
             bluezOnDBus: (busctl == nil && !owned) ? nil : owned,
             bluezActivatable: activatable,
             bluetooth: env.bluetooth(),
+            linkService: env.linkService(),
             logPath: env.logPath)
     }
 
@@ -149,6 +157,7 @@ enum Probe {
         out.append("bluetoothctl  \(report.bluetoothctlVersion ?? "not installed")")
         out.append("org.bluez     \(bluezText(report))")
         out += BluetoothProbe.lines(report.bluetooth)
+        if let linkService = report.linkService { out.append("link service  " + linkServiceText(linkService)) }
         out.append("log           \(report.logPath)")
         return out
     }
@@ -157,6 +166,15 @@ enum Probe {
         if report.bluezOnDBus == true { return "running" }
         if report.bluezOnDBus == nil { return "unknown (busctl not installed)" }
         return report.bluezActivatable ? "installed, not running" : "not installed"
+    }
+
+    static func linkServiceText(_ probe: LinkServiceProbe) -> String {
+        switch probe {
+        case .notRunning: return "not running"
+        case .running(let holdsLink):
+            return holdsLink ? "running, holds the 5K's Bluetooth control link"
+                : "running, waiting for the 5K's Bluetooth control link"
+        }
     }
 
     static func object(_ report: ProbeReport) -> [String: Any] {
@@ -181,6 +199,14 @@ enum Probe {
         QxFormat.put(&object, "bluetoothctl_version", report.bluetoothctlVersion)
         QxFormat.put(&object, "bluez_on_dbus", report.bluezOnDBus)
         object["bluetooth"] = BluetoothProbe.object(report.bluetooth)
+        if let linkService = report.linkService {
+            switch linkService {
+            case .notRunning:
+                object["link_service"] = ["running": false, "holds_link": false]
+            case .running(let holdsLink):
+                object["link_service"] = ["running": true, "holds_link": holdsLink]
+            }
+        }
         return object
     }
 

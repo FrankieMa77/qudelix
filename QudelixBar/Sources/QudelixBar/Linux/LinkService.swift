@@ -251,6 +251,13 @@ final class LinkService {
             sendQueue.async { link.send(command, data) }
         case .shutdown:
             requestShutdown("a client asked for it")
+        case .recycle:
+            guard client.greeted, let link = transport else {
+                log("dropped an unexpected message from a client")
+                return
+            }
+            log("a client asked to restart the link")
+            sendQueue.async { link.recycle() }
         case .welcome, .state, .packet, nil:
             log("dropped an unexpected message from a client")
         }
