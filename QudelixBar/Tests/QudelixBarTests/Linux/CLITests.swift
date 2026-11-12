@@ -287,6 +287,13 @@ final class CLITests: XCTestCase {
                                                      reason: ""), waiting.description)
     }
 
+    func testTheSearchNoticeIsWhatTheCLIPrintsWhenTheLinkNeverComesUp() {
+        let waiting = QxSessionError.timedOut(QxSession.deviceAppearance)
+        XCTAssertEqual(QudelixCLI.connectFailureText(waiting, kind: .bluetooth, sawUsbNode: false,
+                                                     reason: BluezLinkFailure.otherProgramSearching),
+                       BluezLinkFailure.otherProgramSearching)
+    }
+
     func testTheCLIWaitsForTheLinkToStopBeforeItReturns() async {
         let failing = FakeLink(kind: .bluetooth)
         failing.onSend = { _, _ in }

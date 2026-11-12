@@ -332,9 +332,13 @@ private final class Events: @unchecked Sendable {
 final class BluezTransportTests: XCTestCase {
     private func objects(connected: Bool = false, resolved: Bool = false, characteristics: Bool = false,
                          adapter: Bool = true, qudelix: Bool = true,
-                         addressType: String = "public") -> BluezLinkPlan.Objects {
+                         addressType: String = "public", searching: Bool? = nil) -> BluezLinkPlan.Objects {
         var out: BluezLinkPlan.Objects = [:]
-        if adapter { out["/org/bluez/hci0"] = ["org.bluez.Adapter1": ["Powered": .boolean(true)]] }
+        if adapter {
+            var props: [String: DBusValue] = ["Powered": .boolean(true)]
+            if let searching { props["Discovering"] = .boolean(searching) }
+            out["/org/bluez/hci0"] = ["org.bluez.Adapter1": props]
+        }
         if qudelix {
             out[device] = ["org.bluez.Device1": [
                 "Name": .string("Qudelix-5K"), "Alias": .string("Qudelix-5K"),
@@ -358,6 +362,7 @@ final class BluezTransportTests: XCTestCase {
                       floor: TimeInterval = 0.05,
                       ceiling: TimeInterval = 0.2,
                       poweredOffDelay: TimeInterval = 30,
+                      searchDelay: TimeInterval = 0.2,
                       busFactory: (() -> FakeBus)? = nil,
                       uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })
         -> BluezTransport {
@@ -376,6 +381,7 @@ final class BluezTransportTests: XCTestCase {
                                        pinnedPath: { nil },
                                        savePin: { events.pinned($0) },
                                        armedDelay: 0.05,
+                                       searchNoticeDelay: searchDelay,
                                        relistInterval: relist,
                                        noDeviceDelay: 0.05,
                                        poweredOffDelay: poweredOffDelay,
@@ -998,6 +1004,109 @@ final class BluezTransportTests: XCTestCase {
                                         .dictionary([("Powered", .boolean(true))])]))
         until("armed", timeout: 2) { events.socketList.count == 1 }
         XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+    }
+
+    private let searchingLog = "BLE another program is searching for Bluetooth devices; "
+        + "the 5K's connection window can be missed until it stops"
+    private let stoppedLog = "BLE the other program stopped searching for Bluetooth devices"
+
+    private func logCount(_ needle: String) -> Int {
+        DebugLog.shared.flush()
+        guard let url = DebugLog.shared.fileURL,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        return text.components(separatedBy: needle).count - 1
+    }
+
+    private func discovering(_ on: Bool, _ bus: FakeBus) {
+        bus.emit(DBusSignal(path: "/org/bluez/hci0", interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Adapter1"),
+                                        .dictionary([("Discovering", .boolean(on))])]))
+    }
+
+    func testASearchLongerThanTheDebounceShowsTheNoticeOnceAndStoppingRestoresTheWaitingText() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) })
+        let searchingBefore = logCount(searchingLog)
+        let stoppedBefore = logCount(stoppedLog)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+        discovering(true, bus)
+        until("the notice") { transport.failureReason == BluezLinkFailure.otherProgramSearching }
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.otherProgramSearching)
+        XCTAssertFalse(transport.failureNeedsAttention)
+        XCTAssertEqual(logCount(searchingLog) - searchingBefore, 1)
+        discovering(false, bus)
+        until("the waiting text") { transport.failureReason == BluezLinkFailure.waitingForLink }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(logCount(stoppedLog) - stoppedBefore, 1)
+        XCTAssertEqual(logCount(searchingLog) - searchingBefore, 1)
+    }
+
+    func testAListingThatAlreadySearchesShowsTheNoticeAfterTheDebounce() {
+        let bus = FakeBus(objects: objects(searching: true))
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) },
+                             searchDelay: 0.4)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+        until("the notice") { transport.failureReason == BluezLinkFailure.otherProgramSearching }
+    }
+
+    func testASearchChangeNeitherRelistsNorStartsANewConnect() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) })
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        let listings = bus.listings
+        discovering(true, bus)
+        until("the notice") { transport.failureReason == BluezLinkFailure.otherProgramSearching }
+        discovering(false, bus)
+        until("the waiting text") { transport.failureReason == BluezLinkFailure.waitingForLink }
+        Thread.sleep(forTimeInterval: 0.4)
+        XCTAssertEqual(bus.listings, listings)
+        XCTAssertEqual(events.socketList.count, 1)
+        XCTAssertEqual(events.socketList[0].closes, 0)
+    }
+
+    func testASearchShorterThanTheDebounceNeverChangesTheText() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) },
+                             searchDelay: 1.0)
+        let searchingBefore = logCount(searchingLog)
+        let stoppedBefore = logCount(stoppedLog)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        discovering(true, bus)
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+        discovering(false, bus)
+        Thread.sleep(forTimeInterval: 1.3)
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+        XCTAssertEqual(logCount(searchingLog) - searchingBefore, 0)
+        XCTAssertEqual(logCount(stoppedLog) - stoppedBefore, 0)
+    }
+
+    func testTheSearchNoticeNeverReplacesTheAdapterOffText() {
+        let base = objects(searching: true)
+        let bus = FakeBus(objects: powered(false, base))
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) })
+        transport.start()
+        defer { transport.stop() }
+        until("reason") { transport.failureReason == BluezLinkFailure.adapterOff }
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.adapterOff)
     }
 
     func testAnAdapterSwitchedOffWhilePendingClosesTheSocketAndShowsTheReason() {

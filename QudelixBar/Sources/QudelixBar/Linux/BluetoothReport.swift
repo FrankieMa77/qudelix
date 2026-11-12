@@ -66,6 +66,9 @@ enum BluetoothProbe {
             out.append("bluetooth     adapter \(adapter): "
                 + (report.powered == true ? "powered" : "not powered")
                 + ", " + (report.discovering == true ? "scanning" : "not scanning"))
+            if report.discovering == true {
+                out.append("bluetooth     " + BluezLinkFailure.otherProgramSearching)
+            }
         } else {
             out.append("bluetooth     no Bluetooth adapter known to BlueZ")
         }
@@ -141,6 +144,10 @@ enum BluezLinkFailure {
     static let waitingForLink = "Waiting for the Qudelix 5K's Bluetooth control link. "
         + "The 5K offers it for a few seconds after it is switched on. "
         + "If it is already on, switch it off, wait two minutes, switch it on again and let it reconnect by itself."
+
+    static let otherProgramSearching = "Another program is searching for Bluetooth devices, usually the Bluetooth page in Settings. "
+        + "While it searches, this computer misses the few seconds in which the 5K accepts the control link. "
+        + "Close it, then switch the 5K off, wait two minutes and switch it on again."
 
     static let adapterOff = "Bluetooth is turned off on this computer. "
         + "Turn it on and Qudelix finds the 5K again; if it doesn't within a minute, switch the 5K off and on."

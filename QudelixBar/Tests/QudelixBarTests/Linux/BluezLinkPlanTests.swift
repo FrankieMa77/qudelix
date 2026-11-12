@@ -156,6 +156,18 @@ final class BluezLinkPlanTests: XCTestCase {
         XCTAssertFalse(QxFormat.json(object).isEmpty)
     }
 
+    func testProbeReportAddsTheAdviceOnlyWhileTheAdapterSearches() {
+        func lines(_ searching: Bool) -> [String] {
+            BluetoothProbe.lines(BluezLinkPlan.report(onBus: true, objects: [
+                "/org/bluez/hci0": ["org.bluez.Adapter1": ["Powered": .boolean(true),
+                                                           "Discovering": .boolean(searching)]],
+            ]))
+        }
+        XCTAssertTrue(lines(true).contains { $0.contains("adapter /org/bluez/hci0: powered, scanning") })
+        XCTAssertTrue(lines(true).contains { $0.contains(BluezLinkFailure.otherProgramSearching) })
+        XCTAssertFalse(lines(false).contains { $0.contains(BluezLinkFailure.otherProgramSearching) })
+    }
+
     func testProbeReportForAFiveKWithCharacteristics() {
         var objects = scenario(connected: true, characteristics: true)
         objects[base]?["org.bluez.Device1"]?["UUIDs"] = .strings([GaiaFraming.serviceUUID,

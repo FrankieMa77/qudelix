@@ -19,6 +19,7 @@ final class BluezTransport: QxLink {
     private static let reviewTimeoutMs: Int32 = 2_000
 
     static let armedPause: TimeInterval = 0.1
+    static let searchNoticeSeconds: TimeInterval = 5
     static let relistSeconds: TimeInterval = 300
     static let noDeviceRetryDelay: TimeInterval = 3
     static let poweredOffRetryDelay: TimeInterval = 5
@@ -56,6 +57,7 @@ final class BluezTransport: QxLink {
     private let pinnedPath: () -> String?
     private let savePin: (String) -> Void
     private let armedDelay: TimeInterval
+    private let searchNoticeDelay: TimeInterval
     private let relistInterval: TimeInterval
     private let noDeviceDelay: TimeInterval
     private let poweredOffDelay: TimeInterval
@@ -99,6 +101,9 @@ final class BluezTransport: QxLink {
     private var lastListing: TimeInterval = 0
     private var relistRequested = false
     private var adapterOff = false
+    private var adapterSearching = false
+    private var searchingSince: TimeInterval = 0
+    private var searchNoticeLogged = false
     private var rearmToken = 0
 
     private struct ArmTarget {
@@ -125,6 +130,7 @@ final class BluezTransport: QxLink {
          pinnedPath: @escaping () -> String? = { BluezTransport.pinnedDevicePath() },
          savePin: @escaping (String) -> Void = { BluezTransport.pinDevice($0) },
          armedDelay: TimeInterval = BluezTransport.armedPause,
+         searchNoticeDelay: TimeInterval = BluezTransport.searchNoticeSeconds,
          relistInterval: TimeInterval = BluezTransport.relistSeconds,
          noDeviceDelay: TimeInterval = BluezTransport.noDeviceRetryDelay,
          poweredOffDelay: TimeInterval = BluezTransport.poweredOffRetryDelay,
@@ -137,6 +143,7 @@ final class BluezTransport: QxLink {
         self.pinnedPath = pinnedPath
         self.savePin = savePin
         self.armedDelay = armedDelay
+        self.searchNoticeDelay = searchNoticeDelay
         self.relistInterval = relistInterval
         self.noDeviceDelay = noDeviceDelay
         self.poweredOffDelay = poweredOffDelay
@@ -441,6 +448,7 @@ final class BluezTransport: QxLink {
         lock.lock()
         adapterOff = !powered
         lock.unlock()
+        recordSearching(objects[adapter]?[BluezLinkPlan.adapterInterface]?["Discovering"]?.boolValue == true)
         guard powered else {
             if storedFailureText != BluezLinkFailure.adapterOff { log("BLE the Bluetooth adapter is powered off") }
             setFailure(BluezLinkFailure.adapterOff)
@@ -629,6 +637,7 @@ final class BluezTransport: QxLink {
                 : min(backoffCeiling, backoffFloor * pow(2, Double(quickFailures - 1)))
             let resume = Date().addingTimeInterval(pause)
             while !isStopping, Date() < resume {
+                reviewSearchNotice()
                 if relistDue(), reviewTarget(target) == .replace {
                     scheduleRearm(after: 0)
                     return
@@ -702,6 +711,7 @@ final class BluezTransport: QxLink {
                     + "Use the USB link.")
                 return .fatal
             case .pending:
+                reviewSearchNotice()
                 if relistDue(), reviewTarget(target) == .replace {
                     candidate.close()
                     return .relist
@@ -711,6 +721,40 @@ final class BluezTransport: QxLink {
         }
         candidate.close()
         return .failed
+    }
+
+    private func recordSearching(_ searching: Bool) {
+        let now = uptime()
+        lock.lock()
+        if searching, !adapterSearching { searchingSince = now }
+        adapterSearching = searching
+        lock.unlock()
+    }
+
+    private func reviewSearchNotice() {
+        let now = uptime()
+        lock.lock()
+        let searching = adapterSearching
+        let long = searching && now - searchingSince >= searchNoticeDelay
+        let current = storedFailure
+        let logged = searchNoticeLogged
+        let waiting = current == BluezLinkFailure.waitingForLink
+        let noticed = current == BluezLinkFailure.otherProgramSearching
+        if long, waiting || noticed { searchNoticeLogged = true }
+        if !searching { searchNoticeLogged = false }
+        lock.unlock()
+        if long, waiting || noticed {
+            if waiting { setFailure(BluezLinkFailure.otherProgramSearching) }
+            if !logged {
+                log("BLE another program is searching for Bluetooth devices; "
+                    + "the 5K's connection window can be missed until it stops")
+            }
+        } else if !searching, logged {
+            if noticed { setFailure(BluezLinkFailure.waitingForLink) }
+            log("BLE the other program stopped searching for Bluetooth devices")
+        } else if !searching, noticed {
+            setFailure(BluezLinkFailure.waitingForLink)
+        }
     }
 
     private func armedFailure(_ detail: String) {
@@ -1019,6 +1063,7 @@ final class BluezTransport: QxLink {
     }
 
     private func handleAdapterChange(_ changed: [String: DBusValue]) {
+        if let searching = changed["Discovering"]?.boolValue { recordSearching(searching) }
         guard let powered = changed["Powered"]?.boolValue else { return }
         lock.lock()
         relistRequested = true

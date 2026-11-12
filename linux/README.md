@@ -235,6 +235,9 @@ Bluetooth when you want to leave the cable out.
 - The Bluetooth settings page of GNOME, while it is open and scanning, or clicking Connect
   there while the 5K powers on, can make it miss the 5K. Close that page and let the 5K
   reconnect on its own.
+- Keep the Bluetooth page of Settings, or any other program that searches for Bluetooth
+  devices, closed while Qudelix connects. While a search runs, this computer misses the few
+  seconds in which the 5K accepts the control link, and the app says so while it waits.
 - Only one program can hold the 5K's Bluetooth control link at a time. Quit the app before
   you use `qudelix --ble`.
 
