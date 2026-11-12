@@ -16,7 +16,8 @@ final class BluezTransport: QxLink {
     private static let writeCallTimeoutMs: Int32 = 5_000
     private static let waitLogInterval: TimeInterval = 60
 
-    static let armedRetryDelay: TimeInterval = 1
+    static let armedPause: TimeInterval = 0.1
+    static let relistSeconds: TimeInterval = 60
     static let noDeviceRetryDelay: TimeInterval = 3
 
     static let armedFailureCodes: Set<Int32> = [ECONNREFUSED, ENOSYS, EHOSTDOWN, ETIMEDOUT, EBUSY,
@@ -49,6 +50,7 @@ final class BluezTransport: QxLink {
     private let pinnedPath: () -> String?
     private let savePin: (String) -> Void
     private let armedDelay: TimeInterval
+    private let relistInterval: TimeInterval
     private let noDeviceDelay: TimeInterval
     private let uptime: () -> TimeInterval
 
@@ -82,12 +84,29 @@ final class BluezTransport: QxLink {
     private var announcedUnusable = false
     private var lastWaitLog: Date?
     private var announcedNoDevice = false
+    private var armTarget: ArmTarget?
+    private var lastListing: TimeInterval = 0
+    private var relistRequested = false
+
+    private struct ArmTarget {
+        let device: String
+        let address: String
+        let addressType: String?
+    }
+
+    private enum Attempt {
+        case connected
+        case failed
+        case fatal
+        case relist
+    }
 
     init(bus: @escaping () throws -> BluezBus = { try SystemBluezBus() },
          socket: @escaping () -> LEAttSocket = { LEAttSystemSocket() },
          pinnedPath: @escaping () -> String? = { BluezTransport.pinnedDevicePath() },
          savePin: @escaping (String) -> Void = { BluezTransport.pinDevice($0) },
-         armedDelay: TimeInterval = BluezTransport.armedRetryDelay,
+         armedDelay: TimeInterval = BluezTransport.armedPause,
+         relistInterval: TimeInterval = BluezTransport.relistSeconds,
          noDeviceDelay: TimeInterval = BluezTransport.noDeviceRetryDelay,
          uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         makeBus = bus
@@ -95,6 +114,7 @@ final class BluezTransport: QxLink {
         self.pinnedPath = pinnedPath
         self.savePin = savePin
         self.armedDelay = armedDelay
+        self.relistInterval = relistInterval
         self.noDeviceDelay = noDeviceDelay
         self.uptime = uptime
     }
@@ -291,8 +311,13 @@ final class BluezTransport: QxLink {
 
         let objects: BluezLinkPlan.Objects
         let listingStarted = Date()
+        armTarget = nil
         do {
             objects = try bus.managedObjects()
+            lock.lock()
+            relistRequested = false
+            lock.unlock()
+            lastListing = uptime()
             let listingSeconds = Date().timeIntervalSince(listingStarted)
             if listingSeconds > 1 {
                 log(String(format: "BLE listing BlueZ objects took %.1f s (%d objects)",
@@ -335,7 +360,31 @@ final class BluezTransport: QxLink {
         } else {
             linkStale = false
         }
-        armLE(device: candidate, objects: objects)
+        guard let address = BluezLinkPlan.address(of: candidate, in: objects) else {
+            reportUnusable("The Qudelix 5K's Bluetooth address is not known to BlueZ.")
+            return
+        }
+        armLE(ArmTarget(device: candidate, address: address,
+                        addressType: BluezLinkPlan.addressType(of: candidate, in: objects)))
+    }
+
+    private func rearmNow() {
+        guard !isStopping, !reconnectScheduled else { return }
+        lock.lock()
+        let requested = relistRequested
+        lock.unlock()
+        if let target = armTarget, !requested, uptime() - lastListing < relistInterval {
+            armLE(target)
+        } else {
+            bringUp()
+        }
+    }
+
+    private func relistDue() -> Bool {
+        lock.lock()
+        let requested = relistRequested
+        lock.unlock()
+        return requested || uptime() - lastListing >= relistInterval
     }
 
     private func openBus() throws -> BluezBus {
@@ -360,6 +409,7 @@ final class BluezTransport: QxLink {
             notifyBudget = max(Int(notify.mtu), 23)
             writeBudget = max(Int(notify.mtu) - 3, 20)
             commandPath = paths.command
+            armTarget = nil
             mode = .bluez
             up = true
             vendor = .qudelix
@@ -430,52 +480,77 @@ final class BluezTransport: QxLink {
         }
     }
 
-    private func armLE(device: String, objects: BluezLinkPlan.Objects) {
-        guard let address = BluezLinkPlan.address(of: device, in: objects) else {
-            reportUnusable("The Qudelix 5K's Bluetooth address is not known to BlueZ.")
-            return
-        }
-        let addressType = BluezLinkPlan.addressType(of: device, in: objects)
-        let candidate = makeSocket()
+    private func armLE(_ target: ArmTarget) {
+        armTarget = target
         setFailure(BluezLinkFailure.waitingForLink)
-        log("BLE armed: waiting for the 5K to accept an LE control link at \(address)")
+        log("BLE armed: waiting for the 5K to accept an LE control link at \(target.address)")
+        while !isStopping {
+            let candidate = makeSocket()
+            switch attempt(candidate, target) {
+            case .connected:
+                linkConnected(candidate)
+                return
+            case .fatal:
+                return
+            case .relist:
+                scheduleRearm(after: 0)
+                return
+            case .failed:
+                break
+            }
+            let resume = Date().addingTimeInterval(armedDelay)
+            while !isStopping, Date() < resume {
+                if relistDue() {
+                    scheduleRearm(after: 0)
+                    return
+                }
+                Thread.sleep(forTimeInterval: min(0.05, max(0, resume.timeIntervalSinceNow)))
+            }
+        }
+    }
+
+    private func attempt(_ candidate: LEAttSocket, _ target: ArmTarget) -> Attempt {
         var state: LEAttConnectState
         do {
-            state = try candidate.beginConnect(address: address, addressType: addressType)
+            state = try candidate.beginConnect(address: target.address, addressType: target.addressType)
         } catch let error as LEAttSocketError {
             candidate.close()
             if Self.isArmedFailure(error.code) {
                 armedFailure(error.description)
-            } else {
-                reportUnusable("Bluetooth LE control links are not available here (\(error)). "
-                    + "Use the USB link.")
+                return .failed
             }
-            return
+            reportUnusable("Bluetooth LE control links are not available here (\(error)). "
+                + "Use the USB link.")
+            return .fatal
         } catch {
             candidate.close()
             reportUnusable("Bluetooth LE control links are not available here (\(error)).")
-            return
+            return .fatal
         }
         while !isStopping {
             switch state {
             case .connected:
-                linkConnected(candidate)
-                return
+                return .connected
             case .failed(let code):
                 candidate.close()
                 let text = String(cString: strerror(code))
                 if Self.isArmedFailure(code) {
                     armedFailure(text)
-                } else {
-                    reportUnusable("Bluetooth LE control links are not available here (\(text)). "
-                        + "Use the USB link.")
+                    return .failed
                 }
-                return
+                reportUnusable("Bluetooth LE control links are not available here (\(text)). "
+                    + "Use the USB link.")
+                return .fatal
             case .pending:
+                if relistDue() {
+                    candidate.close()
+                    return .relist
+                }
                 state = candidate.pollConnect(timeoutMs: Self.connectTickMilliseconds)
             }
         }
         candidate.close()
+        return .failed
     }
 
     private func armedFailure(_ detail: String) {
@@ -484,7 +559,6 @@ final class BluezTransport: QxLink {
             lastWaitLog = now
             log(BluezLinkFailure.waitLog(detail))
         }
-        scheduleRearm(after: armedDelay)
     }
 
     private func linkConnected(_ connected: LEAttSocket) {
@@ -505,8 +579,8 @@ final class BluezTransport: QxLink {
         session = LEGaiaSession()
         sessionLock.unlock()
         log("BLE LE link is up; discovering the GAIA service")
-        startLEReader(connected, generation: gen)
         drive(gen) { session, now in session.linkUp(now: now) }
+        startLEReader(connected, generation: gen)
     }
 
     private func drive(_ gen: Int,
@@ -565,7 +639,7 @@ final class BluezTransport: QxLink {
                 self.lock.unlock()
                 guard live else { return }
                 self.teardown(reason: reason, notify: true)
-                self.scheduleRearm(after: self.armedDelay)
+                self.rearmNow()
             }
         }
     }
@@ -662,7 +736,7 @@ final class BluezTransport: QxLink {
         lock.unlock()
         guard live else { return }
         teardown(reason: reason, notify: true)
-        scheduleRearm(after: armedDelay)
+        rearmNow()
     }
 
     private func deliver(_ raw: [UInt8], generation gen: Int) {
@@ -720,20 +794,25 @@ final class BluezTransport: QxLink {
                 requestBringUp()
                 return
             }
+            let noise: Set<String> = ["RSSI", "TxPower", "ManufacturerData", "ServiceData"]
             lock.lock()
             let viaBlueZ = mode == .bluez
+            if !Set(changed.keys).isSubset(of: noise) { relistRequested = true }
             lock.unlock()
             if viaBlueZ, changed["Connected"]?.boolValue == false {
                 queue.async { [weak self] in
                     guard let self else { return }
                     self.teardown(reason: "the device disconnected", notify: true)
-                    self.scheduleRearm(after: self.armedDelay)
+                    self.rearmNow()
                 }
             }
         case "InterfacesAdded":
             guard signal.arguments.count >= 2 else { return }
             if let added = signal.arguments[0].stringValue, let path = devicePath,
                added == path || added.hasPrefix(path + "/") {
+                lock.lock()
+                relistRequested = true
+                lock.unlock()
                 return
             }
             guard devicePath == nil, !isConnected,

@@ -102,6 +102,7 @@ final class FakeFiveKSocket: LEAttSocket {
     private(set) var connectAddress: String?
     private(set) var connectType: String?
     var failOnBegin: LEAttSocketError?
+    var greetsOnConnect = false
 
     init(_ behavior: Behavior) {
         self.behavior = behavior
@@ -130,6 +131,10 @@ final class FakeFiveKSocket: LEAttSocket {
             return .failed(code)
         case .silent, .fiveK:
             connected = true
+            if greetsOnConnect {
+                inbound.append(.pdu([0x02, 0x40, 0x00]))
+                condition.broadcast()
+            }
             return .connected
         }
     }
@@ -247,13 +252,15 @@ private final class Events: @unchecked Sendable {
     private var unusable: [String] = []
     private var packets: [[UInt8]] = []
     private var sockets: [FakeFiveKSocket] = []
+    private var madeAt: [Date] = []
     private var pins: [String] = []
 
     func connected(_ name: String) { lock.lock(); connectedNames.append(name); lock.unlock() }
     func disconnected() { lock.lock(); disconnects += 1; lock.unlock() }
     func unusable(_ text: String) { lock.lock(); unusable.append(text); lock.unlock() }
     func packet(_ bytes: [UInt8]) { lock.lock(); packets.append(bytes); lock.unlock() }
-    func made(_ socket: FakeFiveKSocket) { lock.lock(); sockets.append(socket); lock.unlock() }
+    func made(_ socket: FakeFiveKSocket) { lock.lock(); sockets.append(socket); madeAt.append(Date()); lock.unlock() }
+    var madeTimes: [Date] { lock.lock(); defer { lock.unlock() }; return madeAt }
     func pinned(_ path: String) { lock.lock(); pins.append(path); lock.unlock() }
 
     var connectCount: Int { lock.lock(); defer { lock.unlock() }; return connectedNames.count }
@@ -288,6 +295,7 @@ final class BluezTransportTests: XCTestCase {
 
     private func make(bus: FakeBus, events: Events,
                       sockets: @escaping (Int) -> FakeFiveKSocket,
+                      relist: TimeInterval = 60,
                       uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })
         -> BluezTransport {
         var made = 0
@@ -305,6 +313,7 @@ final class BluezTransportTests: XCTestCase {
                                        pinnedPath: { nil },
                                        savePin: { events.pinned($0) },
                                        armedDelay: 0.05,
+                                       relistInterval: relist,
                                        noDeviceDelay: 0.05,
                                        uptime: uptime)
         transport.onConnected = { events.connected($0) }
@@ -348,6 +357,91 @@ final class BluezTransportTests: XCTestCase {
         XCTAssertEqual(socket.connectType, "public")
         XCTAssertEqual(socket.written.first, [0x02, 0xF7, 0x00])
         XCTAssertEqual(bus.calls, [])
+    }
+
+    func testAnEarlyMTURequestFromTheFiveKIsAnsweredBeforeAnythingElse() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in
+            let socket = FakeFiveKSocket(.fiveK)
+            socket.greetsOnConnect = true
+            return socket
+        })
+        transport.start()
+        defer { transport.stop() }
+        until("connected") { events.connectCount == 1 }
+        let writes = events.socketList[0].written
+        XCTAssertEqual(writes.first, [0x02, 0xF7, 0x00])
+        XCTAssertTrue(writes.contains([0x03, 0xF7, 0x00]))
+    }
+
+    func testConsecutiveArmedFailuresNeitherListBlueZNorWaitLong() {
+        let bus = FakeBus(objects: objects(connected: true))
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.refuse(ECONNREFUSED)) })
+        transport.start()
+        until("several attempts") { events.socketList.count >= 6 }
+        transport.stop()
+        XCTAssertEqual(bus.listings, 1)
+        let times = events.madeTimes
+        for index in 1..<times.count {
+            XCTAssertLessThan(times[index].timeIntervalSince(times[index - 1]), 0.3)
+        }
+    }
+
+    func testALinkEndReArmsAtOnceFromTheCachedAddressWithoutListing() {
+        let bus = FakeBus(objects: objects(connected: true))
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.fiveK) })
+        transport.start()
+        defer { transport.stop() }
+        until("connected") { events.connectCount == 1 }
+        let dropped = Date()
+        events.socketList[0].dropLink()
+        until("second socket") { events.socketList.count == 2 }
+        XCTAssertLessThan(events.madeTimes[1].timeIntervalSince(dropped), 0.5)
+        XCTAssertEqual(bus.listings, 1)
+        until("second link") { events.connectCount == 2 }
+    }
+
+    func testBlueZIsListedAgainAfterTheIntervalWhileArmed() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events,
+                             sockets: { _ in FakeFiveKSocket(.refuse(ECONNREFUSED)) }, relist: 0.3)
+        transport.start()
+        defer { transport.stop() }
+        until("a second listing") { bus.listings >= 2 }
+        until("still arming afterwards") { events.socketList.count >= 8 }
+    }
+
+    func testASignalForOurDeviceTriggersAListingAndOthersDoNot() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.refuse(ECONNREFUSED)) })
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count >= 2 }
+        XCTAssertEqual(bus.listings, 1)
+        bus.emit(DBusSignal(path: device, interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Device1"),
+                                        .dictionary([("RSSI", .int16(-50))])]))
+        bus.emit(DBusSignal(path: "/org/bluez/hci0/dev_11_22_33_44_55_66",
+                            interface: "org.freedesktop.DBus.Properties", member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Device1"),
+                                        .dictionary([("Paired", .boolean(true))])]))
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(bus.listings, 1)
+        bus.emit(DBusSignal(path: device, interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Device1"),
+                                        .dictionary([("Paired", .boolean(true))])]))
+        until("a second listing") { bus.listings >= 2 }
+        bus.emit(DBusSignal(path: "/org/bluez/hci0", interface: "org.freedesktop.DBus.ObjectManager",
+                            member: "InterfacesAdded",
+                            arguments: [.objectPath(device + "/service000c"), .dictionary([])]))
+        until("a third listing") { bus.listings >= 3 }
     }
 
     func testARandomAddressTypeIsPassedThrough() {

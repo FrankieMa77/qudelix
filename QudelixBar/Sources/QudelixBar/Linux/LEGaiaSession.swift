@@ -153,7 +153,12 @@ struct LEGaiaSession {
     }
 
     mutating func receive(_ pdu: [UInt8], now: TimeInterval) -> [LEGaiaOutput] {
-        guard phase != .idle, phase != .failed, let opcode = pdu.first else { return [] }
+        guard phase != .failed, let opcode = pdu.first else { return [] }
+        if phase == .idle {
+            guard opcode == LEAtt.mtuRequest, pdu.count >= 3 else { return [] }
+            peerMTU = Int(LEAtt.u16(pdu, 1))
+            return [.send([LEAtt.mtuResponse] + LEAtt.le16(UInt16(Self.ourMTU)))]
+        }
         var out: [LEGaiaOutput] = []
         switch opcode {
         case LEAtt.mtuRequest:

@@ -407,7 +407,8 @@ final class LEGaiaSessionTests: XCTestCase {
 
     func testNothingHappensBeforeTheLinkIsUpOrAfterAFailure() {
         var rig = Rig()
-        rig.feed([0x02, 0x40, 0x00])
+        rig.feed([0x1B, 0x10, 0x00, 0x01])
+        rig.feed([0x10, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x28])
         rig.send([1])
         rig.tick(after: 100)
         XCTAssertTrue(rig.sent.isEmpty)
@@ -415,6 +416,21 @@ final class LEGaiaSessionTests: XCTestCase {
         XCTAssertEqual(rig.session.phase, .idle)
         rig.up()
         XCTAssertTrue(rig.session.linkUp(now: 1).isEmpty)
+    }
+
+    func testTheFiveKsMTURequestBeforeLinkUpIsAnsweredAndRemembered() {
+        var rig = Rig()
+        rig.feed([0x02, 0x40, 0x00])
+        XCTAssertEqual(rig.sent, [[0x03, 0xF7, 0x00]])
+        XCTAssertEqual(rig.session.phase, .idle)
+        XCTAssertEqual(rig.session.mtu, 64)
+        rig.feed([0x02])
+        XCTAssertEqual(rig.sent.count, 1)
+        rig.up()
+        XCTAssertEqual(rig.last, [0x02, 0xF7, 0x00])
+        rig.feed([0x03, 0x40, 0x00])
+        XCTAssertEqual(rig.session.mtu, 64)
+        XCTAssertEqual(rig.last, [0x10, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x28])
     }
 
     func testMalformedDiscoveryAnswersFailInsteadOfLooping() {
