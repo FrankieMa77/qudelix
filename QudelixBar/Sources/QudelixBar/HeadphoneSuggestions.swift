@@ -45,6 +45,9 @@ final class HeadphoneSuggestions: ObservableObject {
     var limits: (() -> DeviceEQLimits)?
     var applyCorrection: ((CorrectionResult, String) -> Bool)?
     var popoverIsOpen: (() -> Bool)?
+#if os(Linux)
+    var writeRefusal: (() -> String?)?
+#endif
 
     private let library: PresetLibrary
     private let catalogue: any HeadphoneCatalogue
@@ -329,6 +332,55 @@ final class HeadphoneSuggestions: ObservableObject {
                     if let applied = controller.lastImportSummary { parts.append(applied) }
                     parts.append(contentsOf: result.warnings)
                     controller.lastImportSummary = parts.joined(separator: " \u{00B7} ")
+                } catch {
+                    self.fitNote = SafeText.scrubbed(AutoEqService.describe(error))
+                }
+            }
+        }
+    }
+#endif
+
+#if os(Linux)
+    func quickFit(name: String,
+                  openImport: @escaping @MainActor (String, String) -> Void) {
+        guard !fitting else { return }
+        guard writeRefusal?() == nil, let shape = limits?() else {
+            fitNote = "Connect the 5K to fit a correction."
+            return
+        }
+        fitting = true
+        fitNote = nil
+        quickFitTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.fitting = false }
+            self.catalogue.loadCatalogue()
+            let loaded = await self.waitFor({ self.catalogue.catalogueReady },
+                                            failed: { self.catalogue.catalogueFailed })
+            guard !Task.isCancelled else { return }
+            guard loaded else {
+                self.fitNote = "Couldn't load the AutoEq list \u{2014} check the connection."
+                return
+            }
+            switch QuickFitPlan.decide(name: name, entries: self.catalogue.catalogueEntries) {
+            case .choose(let query, let note):
+                openImport(query, note)
+            case .fit(let entry):
+                self.optimizer.prepare()
+                _ = await self.waitFor({ self.optimizer.state == .ready },
+                                       failed: {
+                                           if case .failed = self.optimizer.state { return true }
+                                           return false
+                                       })
+                guard !Task.isCancelled else { return }
+                do {
+                    let result = try await self.optimizer.correction(
+                        for: self.candidate(for: entry), shapedFor: shape,
+                        options: CorrectionOptions())
+                    guard self.applyCorrection?(result, entry.title) == true else {
+                        self.fitNote = self.writeRefusal?()
+                            ?? "Not applied \u{2014} the 5K isn't taking EQ writes right now."
+                        return
+                    }
                 } catch {
                     self.fitNote = SafeText.scrubbed(AutoEqService.describe(error))
                 }

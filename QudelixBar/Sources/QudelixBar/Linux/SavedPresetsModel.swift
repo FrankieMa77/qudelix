@@ -93,6 +93,8 @@ package final class SavedPresetsModel {
     private unowned let host: AppModel
     private let store = PresetLibrary()
 
+    var library: PresetLibrary { store }
+
     private var observers: [Int: (SavedPresetsState) -> Void] = [:]
     private var nextObserverID = 0
     package private(set) var state = SavedPresetsState()
