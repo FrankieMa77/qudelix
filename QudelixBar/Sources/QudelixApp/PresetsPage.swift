@@ -30,6 +30,7 @@ final class PresetsPage {
         presets = model.presets
         stack = gtk_stack_new()!.opaque
         group = adw_preferences_group_new()!
+        Ui.wrapHeader(of: group)
         adw_preferences_group_set_title(group.typed(AdwPreferencesGroup.self), "Presets on the device")
         adw_preferences_group_set_description(group.typed(AdwPreferencesGroup.self),
                                               "Loading a preset replaces the live EQ. Save writes the live EQ into a slot.")

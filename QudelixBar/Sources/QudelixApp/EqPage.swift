@@ -118,6 +118,7 @@ final class EqPage {
         preGainRow = adw_action_row_new()!
         preGainScale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -12, 12, 0.5)!
         bandsGroup = adw_preferences_group_new()!
+        Ui.wrapHeader(of: bandsGroup)
 
         unreadable = adw_status_page_new()!
         adw_status_page_set_icon_name(unreadable.opaque, "dialog-warning-symbolic")
@@ -234,6 +235,7 @@ final class EqPage {
         adw_preferences_row_set_title(preGainRow.typed(AdwPreferencesRow.self), "Pre-gain")
         adw_action_row_set_subtitle(preGainRow.typed(AdwActionRow.self), "")
         Accessible.setLabel(preGainScale, "Pre-gain")
+        ScaleScrolling.install(on: preGainScale)
         gtk_scale_set_draw_value(preGainScale.typed(GtkScale.self), 0)
         gtk_range_set_increments(preGainScale.typed(GtkRange.self), 0.5, 3)
         gtk_range_set_round_digits(preGainScale.typed(GtkRange.self), 1)

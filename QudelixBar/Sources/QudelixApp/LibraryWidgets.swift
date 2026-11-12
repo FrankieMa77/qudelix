@@ -69,8 +69,47 @@ enum Ui {
         return column
     }
 
+    static func wrapHeader(of group: Widget) {
+        guard let first = gtk_widget_get_first_child(group) else { return }
+        wrapLabels(from: first)
+    }
+
+    private static func wrapLabels(from start: Widget) {
+        var node: Widget? = start
+        while let current = node {
+            if g_type_check_instance_is_a(UnsafeMutableRawPointer(current).assumingMemoryBound(to: GTypeInstance.self),
+                                          gtk_label_get_type()) != 0 {
+                let label = OpaquePointer(current)
+                gtk_label_set_ellipsize(label, PANGO_ELLIPSIZE_NONE)
+                gtk_label_set_wrap(label, 1)
+                gtk_label_set_wrap_mode(label, PANGO_WRAP_WORD_CHAR)
+            } else if g_type_check_instance_is_a(UnsafeMutableRawPointer(current).assumingMemoryBound(to: GTypeInstance.self),
+                                                 gtk_list_box_get_type()) == 0,
+                      let child = gtk_widget_get_first_child(current) {
+                wrapLabels(from: child)
+            }
+            node = gtk_widget_get_next_sibling(current)
+        }
+    }
+
+    static func keepWholeLabels(in row: Widget) {
+        var pending: [Widget] = [row]
+        while let current = pending.popLast() {
+            if g_type_check_instance_is_a(UnsafeMutableRawPointer(current).assumingMemoryBound(to: GTypeInstance.self),
+                                          gtk_label_get_type()) != 0 {
+                gtk_label_set_ellipsize(OpaquePointer(current), PANGO_ELLIPSIZE_NONE)
+            }
+            var child = gtk_widget_get_first_child(current)
+            while let next = child {
+                pending.append(next)
+                child = gtk_widget_get_next_sibling(next)
+            }
+        }
+    }
+
     static func group(_ title: String?, _ description: String? = nil) -> Widget {
         let group = adw_preferences_group_new()!
+        wrapHeader(of: group)
         if let title { adw_preferences_group_set_title(group.typed(AdwPreferencesGroup.self), title) }
         if let description {
             adw_preferences_group_set_description(group.typed(AdwPreferencesGroup.self), description)

@@ -123,6 +123,7 @@ final class DevicePage {
 
     private static func group(_ title: String) -> UnsafeMutablePointer<GtkWidget> {
         let group = adw_preferences_group_new()!
+        Ui.wrapHeader(of: group)
         adw_preferences_group_set_title(group.typed(AdwPreferencesGroup.self), title)
         return group
     }

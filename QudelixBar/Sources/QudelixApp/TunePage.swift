@@ -101,6 +101,7 @@ final class TunePage {
         adw_action_row_set_subtitle_lines(methodRow.typed(AdwActionRow.self), 0)
         Accessible.setLabel(methodRow, TunePresentation.pickerLabel)
         Ui.add(picker, methodRow)
+        Signals.connect(methodRow, signal: "map") { [methodRow] in Ui.keepWholeLabels(in: methodRow) }
 
         textGroup = Ui.group(nil)
         for _ in 0..<3 {
