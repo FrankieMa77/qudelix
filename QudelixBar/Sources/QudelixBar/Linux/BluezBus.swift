@@ -10,36 +10,39 @@ protocol BluezBus: AnyObject {
 }
 
 final class SystemBluezBus: BluezBus {
-    private let connection: DBusConnection
+    private let callConnection: DBusConnection
+    private let signalConnection: DBusConnection
+    private let service: String
 
-    init() throws {
-        connection = try DBusConnection()
-        let bus = BluezTransport.bus
+    init(address: String? = nil, service: String = BluezTransport.bus) throws {
+        self.service = service
+        callConnection = try DBusConnection(address: address)
+        signalConnection = try DBusConnection(address: address)
         for (interface, member) in [("org.freedesktop.DBus.Properties", "PropertiesChanged"),
                                     ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded"),
                                     (BluezLinkPlan.deviceInterface, "Disconnected")] {
-            try? connection.addMatch("type='signal',sender='\(bus)',"
+            try? signalConnection.addMatch("type='signal',sender='\(service)',"
                 + "interface='\(interface)',member='\(member)'")
         }
-        connection.startSignalPump()
+        signalConnection.startSignalPump()
     }
 
     func managedObjects() throws -> BluezLinkPlan.Objects {
-        try connection.managedObjects(destination: BluezTransport.bus)
+        try callConnection.managedObjects(destination: service)
     }
 
     func call(path: String, interface: String, method: String, arguments: [DBusValue],
               timeoutMs: Int32) throws -> [DBusValue] {
-        try connection.call(destination: BluezTransport.bus, path: path, interface: interface,
-                            method: method, arguments: arguments, timeoutMs: timeoutMs)
+        try callConnection.call(destination: service, path: path, interface: interface,
+                                method: method, arguments: arguments, timeoutMs: timeoutMs)
     }
 
     func onSignal(_ handler: @escaping (DBusSignal) -> Void) {
-        connection.onSignal(handler)
+        signalConnection.onSignal(handler)
     }
 
     func close() {
-        connection.stopSignalPump()
+        signalConnection.stopSignalPump()
     }
 }
 #endif
