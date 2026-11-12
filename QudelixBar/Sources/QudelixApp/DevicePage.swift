@@ -71,6 +71,7 @@ final class DevicePage {
         adw_preferences_row_set_title(volumeRow.typed(AdwPreferencesRow.self), "Volume")
         adw_action_row_set_subtitle(volumeRow.typed(AdwActionRow.self), "")
         Accessible.setLabel(volumeScale, "Volume")
+        ScaleScrolling.install(on: volumeScale)
         gtk_scale_set_draw_value(volumeScale.raw.assumingMemoryBound(to: GtkScale.self), 0)
         gtk_range_set_increments(volumeScale.raw.assumingMemoryBound(to: GtkRange.self), 0.5, 3)
         gtk_range_set_round_digits(volumeScale.raw.assumingMemoryBound(to: GtkRange.self), 1)

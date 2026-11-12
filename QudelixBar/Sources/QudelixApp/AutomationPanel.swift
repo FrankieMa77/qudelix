@@ -78,6 +78,7 @@ final class AutomationPanel {
         strengthRow = adw_action_row_new()!
         adw_preferences_row_set_title(strengthRow.typed(AdwPreferencesRow.self), "Auto-trim strength")
         strengthScale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 1, 0.01)!
+        ScaleScrolling.install(on: strengthScale)
         gtk_scale_set_draw_value(strengthScale.typed(GtkScale.self), 0)
         gtk_widget_set_hexpand(strengthScale, 1)
         gtk_widget_set_valign(strengthScale, GTK_ALIGN_CENTER)

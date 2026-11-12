@@ -275,6 +275,17 @@ package enum Signals {
         gtk_widget_add_controller(widget.widget, controller)
     }
 
+    package static func addCaptureScroll(to widget: some GPointer,
+                                         handler: @escaping (Double, Double) -> Bool) {
+        let controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES)!
+        gtk_event_controller_set_propagation_phase(controller, GTK_PHASE_CAPTURE)
+        let callback = unsafeBitCast(scrollTrampoline, to: GCallback.self)
+        g_signal_connect_data(UnsafeMutableRawPointer(controller), "scroll", callback,
+                              retain(handler as ScrollHandler),
+                              releaseSignalData, GConnectFlags(rawValue: 0))
+        gtk_widget_add_controller(widget.widget, controller)
+    }
+
     package static func addKey(to widget: some GPointer,
                                handler: @escaping (UInt32, UInt32) -> Bool) {
         let controller = gtk_event_controller_key_new()!

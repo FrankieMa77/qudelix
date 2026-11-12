@@ -50,6 +50,7 @@ final class SliderRow {
 
         scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, control.range.lowerBound,
                                          control.range.upperBound, control.step)!
+        ScaleScrolling.install(on: scale)
         gtk_scale_set_draw_value(scale.typed(GtkScale.self), 0)
         gtk_range_set_increments(scale.typed(GtkRange.self), control.step, control.step * 5)
         gtk_widget_set_hexpand(scale, 1)
