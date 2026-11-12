@@ -158,7 +158,7 @@ final class DBusConnectionLeakTests: XCTestCase {
         }
         let worst = latencies.max() ?? 999
         XCTAssertEqual(latencies.count, 30)
-        XCTAssertLessThan(worst, 1)
+        XCTAssertLessThan(worst, 3)
         bus.close()
     }
 

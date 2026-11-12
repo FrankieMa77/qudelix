@@ -3,10 +3,11 @@ import XCTest
 @testable import QudelixGtk
 
 nonisolated(unsafe) private var capturedCriticals: [String] = []
+nonisolated(unsafe) private var capturing = false
 
 private let captureWriter: GLogWriterFunc = { level, fields, count, _ in
-    guard level.rawValue & (G_LOG_LEVEL_CRITICAL.rawValue | G_LOG_LEVEL_WARNING.rawValue) != 0, let fields else {
-        return G_LOG_WRITER_UNHANDLED
+    guard capturing, level.rawValue & (G_LOG_LEVEL_CRITICAL.rawValue | G_LOG_LEVEL_WARNING.rawValue) != 0, let fields else {
+        return g_log_writer_default(level, fields, count, nil)
     }
     for index in 0..<Int(count) {
         let field = fields[index]
@@ -18,6 +19,8 @@ private let captureWriter: GLogWriterFunc = { level, fields, count, _ in
 }
 
 final class SidebarSelectionTests: XCTestCase {
+    private static let installWriter: Void = g_log_set_writer_func(captureWriter, nil, nil)
+
     private let names = ["device", "eq", "presets", "library"]
 
     override func setUpWithError() throws {
@@ -91,7 +94,9 @@ final class SidebarSelectionTests: XCTestCase {
 
     func testAccessibleStatesAndSpinButtonsRaiseNoCriticals() {
         capturedCriticals = []
-        g_log_set_writer_func(captureWriter, nil, nil)
+        capturing = true
+        defer { capturing = false }
+        SidebarSelectionTests.installWriter
         let list = gtk_list_box_new()!
         let row = gtk_list_box_row_new()!
         gtk_list_box_append(list.opaque, row)
