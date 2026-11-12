@@ -38,7 +38,7 @@ final class LibraryPage {
         stack = gtk_stack_new()!.opaque
         let holder = LibraryHolder()
         let parent: () -> UnsafeMutablePointer<GtkWindow>? = { holder.window() }
-        saved = SavedSection(model: library.saved, parent: parent)
+        saved = SavedSection(model: library.saved, suggestions: library.suggestions, parent: parent)
         autoEq = AutoEqSection(model: library.autoEq, parent: parent)
         ai = AiSection(model: library.ai, parent: parent)
         gtk_stack_add_titled(stack, saved.widget, LibrarySectionName.saved.rawValue, LibrarySectionName.saved.title)
@@ -72,6 +72,8 @@ final class LibraryPage {
     }
 
     func expandOthers() { saved.expandOthers() }
+
+    func showAutoEq() { show(.autoeq) }
 
     func show(_ section: LibrarySectionName) {
         gtk_stack_set_visible_child_name(stack, section.rawValue)

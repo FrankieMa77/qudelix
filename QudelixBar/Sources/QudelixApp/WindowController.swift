@@ -9,6 +9,7 @@ final class WindowController {
     private var window: UnsafeMutablePointer<GtkWidget>?
     private var application: UnsafeMutableRawPointer?
     private var held = false
+    var shown: (() -> Void)?
 
     func attach(window: UnsafeMutablePointer<GtkWidget>, application: UnsafeMutableRawPointer) {
         self.window = window
@@ -61,6 +62,7 @@ final class WindowController {
     private func apply(_ effect: WindowLifecycle.Effect) {
         guard effect == .show, let window else { return }
         gtk_window_present(window.typed(GtkWindow.self))
+        shown?()
         release()
     }
 

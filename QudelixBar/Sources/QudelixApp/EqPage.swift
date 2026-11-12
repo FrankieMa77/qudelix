@@ -63,7 +63,8 @@ final class EqPage {
         presets = model.presets
         stack = gtk_stack_new()!.opaque
         curve = EqCurveView(model: model.eq)
-        panel = AutomationPanel(automation: audio?.automation, available: audio?.available == true)
+        panel = AutomationPanel(automation: audio?.automation, suggestions: model.library.suggestions,
+                                available: audio?.available == true)
 
         headroomLabel = Ui.label("")
         headroomButton = Ui.button("Set")
@@ -304,6 +305,8 @@ final class EqPage {
     }
 
     private var automationState = AutomationState()
+
+    func openAutomation() { panel.open() }
 
     private func automationChanged(_ next: AutomationState) {
         automationState = next

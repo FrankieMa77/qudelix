@@ -18,6 +18,7 @@ enum AppWindow {
     private static var audioDriver: AudioRenderDriver?
     private static var libraryDriver: LibraryRenderDriver?
     private static var eqDriver: EqRenderDriver?
+    private static var suggestionBanner: SuggestionBanner?
     private static var audio: AudioStack?
     private static var splitView: OpaquePointer?
     private static var contentPage: UnsafeMutablePointer<AdwNavigationPage>?
@@ -64,7 +65,9 @@ enum AppWindow {
             case .eq:
                 let eqPage = EqPage(model: model, audio: audio)
                 self.eqPage = eqPage
-                eqDriver = EqRenderDriver(options: options, model: model, audio: audio)
+                let driver = EqRenderDriver(options: options, model: model, audio: audio)
+                driver.attach(page: eqPage)
+                eqDriver = driver
                 content = eqPage.widget
             case .presets:
                 let presetsPage = PresetsPage(model: model)
@@ -133,7 +136,13 @@ enum AppWindow {
         adw_header_bar_set_title_widget(contentHeader.opaque, titleWidget.widget)
         let contentToolbar = adw_toolbar_view_new()!
         adw_toolbar_view_add_top_bar(contentToolbar.opaque, contentHeader.widget)
-        adw_toolbar_view_set_content(contentToolbar.opaque, stack.widget)
+        let suggestionBanner = SuggestionBanner(model: model.library.suggestions)
+        self.suggestionBanner = suggestionBanner
+        let contentColumn = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 0)
+        gtk_widget_set_vexpand(stack.widget, 1)
+        Ui.append(contentColumn, suggestionBanner.widget)
+        Ui.append(contentColumn, stack.widget)
+        adw_toolbar_view_set_content(contentToolbar.opaque, contentColumn)
         let page = adw_navigation_page_new(contentToolbar.widget, AppPage.device.title)!
         contentPage = page
         adw_navigation_split_view_set_content(split.opaque, page)
@@ -144,6 +153,11 @@ enum AppWindow {
         toasts = overlay.widget
         noticeObserver = model.addNoticeObserver { notice in
             onLive { showToast(notice.message, failure: notice.kind == .failure) }
+        }
+
+        model.library.suggestions.openAutoEq = {
+            navigate(to: .library, showContent: true)
+            libraryPage?.showAutoEq()
         }
 
         UiLifetime.windowDestroyed = false
@@ -161,6 +175,7 @@ enum AppWindow {
         mainWindow = window.widget
 
         if let request = options.render {
+            model.library.suggestions.uiShown()
             gtk_window_present(window.raw.assumingMemoryBound(to: GtkWindow.self))
             Renderer.schedule(window: window, application: application, request: request,
                               ready: { Self.isReady(model, options: options) },
@@ -169,6 +184,7 @@ enum AppWindow {
                                       ?? presetsPage?.dialog ?? libraryPage?.dialog ?? levelPage?.dialog ?? window.raw
                               })
         } else {
+            controller.shown = { model.library.suggestions.uiShown() }
             controller.attach(window: window.widget, application: application.raw)
             controller.launch(startHidden: options.hidden)
             tray = TrayService(model: model, controller: controller, application: application.raw)
@@ -203,6 +219,7 @@ enum AppWindow {
         guard connection.isConnected, model.eq.state.ready,
               model.presets.state.slots.count == PresetSlotsModel.slotCount,
               model.presets.state.slots[2].name != nil else { return false }
+        guard suggestionReady(model, options: options) else { return false }
         if let toast = options.toast, !renderedToast {
             renderedToast = true
             showToast(toast == "failure" ? "Could not save to slot 3. Check the connection and try again."
@@ -230,6 +247,26 @@ enum AppWindow {
             return presetsPage.dialog.map { gtk_widget_get_width($0.assumingMemoryBound(to: GtkWidget.self)) > 0 } ?? false
         }
         return true
+    }
+
+    private static var suggestionRequested = false
+
+    private static func suggestionReady(_ model: AppModel, options: LaunchOptions) -> Bool {
+        guard let name = options.suggest else { return true }
+        let suggestions = model.library.suggestions
+        if !suggestionRequested {
+            suggestionRequested = true
+            model.library.saved.setHeadphoneName(name)
+            return false
+        }
+        if options.dismissSuggestion {
+            if suggestions.state.banner != nil {
+                suggestions.dismiss()
+                return false
+            }
+            return suggestions.state.row != nil
+        }
+        return suggestions.state.banner != nil
     }
 
     private static func menuReady() -> Bool {

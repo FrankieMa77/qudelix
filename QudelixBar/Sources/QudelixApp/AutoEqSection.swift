@@ -21,6 +21,16 @@ final class AutoEqSection {
     private let cancelButton: Widget
     private let retryButton: Widget
     private let targetRow: Widget
+    private let modeButtons: [AutoEqMode: Widget]
+    private let personalGroup: Widget
+    private let bassRow: Widget
+    private let bassScale: Widget
+    private let tiltRow: Widget
+    private let tiltScale: Widget
+    private let hint: Widget
+    private let resetButton: Widget
+    private let cutoffRow: Widget
+    private let cutoffCheck: Widget
     private let resultsGroup: Widget
     private let more: Widget
     private let previewGroup: Widget
@@ -63,11 +73,58 @@ final class AutoEqSection {
         targetRow = adw_combo_row_new()!
         adw_preferences_row_set_title(targetRow.typed(AdwPreferencesRow.self), "Target curve")
         adw_combo_row_set_use_subtitle(targetRow.typed(AdwComboRow.self), 1)
+        gtk_widget_set_tooltip_text(targetRow, AutoEqSearchModel.targetHelp)
         Ui.show(targetRow, false)
+
+        let switcher = Ui.box(GTK_ORIENTATION_HORIZONTAL, spacing: 0)
+        gtk_widget_add_css_class(switcher, "linked")
+        gtk_widget_set_halign(switcher, GTK_ALIGN_START)
+        Accessible.setLabel(switcher, AutoEqSearchModel.sourceLabel)
+        var modeToggles: [AutoEqMode: Widget] = [:]
+        var first: Widget?
+        for mode in AutoEqMode.allCases {
+            let button = gtk_toggle_button_new_with_label(mode.label)!
+            if let first { gtk_toggle_button_set_group(button.typed(GtkToggleButton.self), first.typed(GtkToggleButton.self)) } else { first = button }
+            gtk_toggle_button_set_active(button.typed(GtkToggleButton.self), mode == .fit ? 1 : 0)
+            gtk_widget_set_tooltip_text(button, mode.help)
+            Ui.append(switcher, button)
+            modeToggles[mode] = button
+        }
+        modeButtons = modeToggles
+
+        bassRow = Ui.actionRow(title: "Bass")
+        bassScale = Self.scale(range: AutoEqSearchModel.bassRange, step: AutoEqSearchModel.bassStep,
+                               label: "Bass", help: AutoEqSearchModel.bassHelp)
+        Ui.suffix(bassRow, bassScale)
+        gtk_widget_set_tooltip_text(bassRow, AutoEqSearchModel.bassHelp)
+        tiltRow = Ui.actionRow(title: "Tilt")
+        tiltScale = Self.scale(range: AutoEqSearchModel.tiltRange, step: AutoEqSearchModel.tiltStep,
+                               label: "Tilt", help: AutoEqSearchModel.tiltHelp)
+        Ui.suffix(tiltRow, tiltScale)
+        gtk_widget_set_tooltip_text(tiltRow, AutoEqSearchModel.tiltHelp)
+        hint = Ui.label("")
+        resetButton = Ui.button(AutoEqSearchModel.resetLabel, classes: ["flat"])
+        gtk_widget_set_halign(resetButton, GTK_ALIGN_START)
+        cutoffCheck = gtk_check_button_new()!
+        gtk_widget_set_valign(cutoffCheck, GTK_ALIGN_CENTER)
+        cutoffRow = Ui.actionRow(title: "")
+        adw_action_row_set_title_lines(cutoffRow.typed(AdwActionRow.self), 0)
+        Ui.prefix(cutoffRow, cutoffCheck)
+        adw_action_row_set_activatable_widget(cutoffRow.typed(AdwActionRow.self), cutoffCheck)
+        gtk_widget_set_tooltip_text(cutoffRow, AutoEqSearchModel.cutoffHelp)
+        Ui.show(cutoffRow, false)
+
+        personalGroup = Ui.group(nil)
+        Ui.add(personalGroup, targetRow)
+        Ui.add(personalGroup, bassRow)
+        Ui.add(personalGroup, tiltRow)
+        Ui.add(personalGroup, Ui.extras([hint, resetButton]))
+        Ui.add(personalGroup, cutoffRow)
 
         let top = Ui.group("AutoEq",
                            "Find a measured headphone and fit AutoEq\u{2019}s correction to this device. "
                                + "Nothing is fetched until you search; the catalog then comes from autoeq.app.")
+        Ui.add(top, switcher)
         Ui.add(top, search)
         Ui.add(top, statusBox)
 
@@ -92,11 +149,10 @@ final class AutoEqSection {
         for child in [previewTitle, previewSubtitle, curve.area, provenance, warnings, preference, buttons, reason, summary] {
             Ui.append(card, child)
         }
-        Ui.add(previewGroup, targetRow)
         Ui.add(previewGroup, Ui.extras([card]))
         Ui.show(previewGroup, false)
 
-        layout = SplitLayout(top: [top], left: [resultsGroup], right: [previewGroup])
+        layout = SplitLayout(top: [top, personalGroup], left: [resultsGroup], right: [previewGroup])
         widget = layout.widget
 
         Signals.connect(search, signal: "search-changed") { [weak self] in
@@ -118,7 +174,47 @@ final class AutoEqSection {
                 self.model.setTarget(self.state.targets[index])
             }
         }
+        for (mode, button) in modeButtons {
+            Signals.onToggled(button) { [weak self] active in
+                onMain {
+                    guard active, let self, !self.updating else { return }
+                    self.model.setMode(mode)
+                }
+            }
+        }
+        Signals.onValueChanged(bassScale) { [weak self] value in
+            onMain {
+                guard let self, !self.updating else { return }
+                self.model.setBass(value)
+            }
+        }
+        Signals.onValueChanged(tiltScale) { [weak self] value in
+            onMain {
+                guard let self, !self.updating else { return }
+                self.model.setTilt(value)
+            }
+        }
+        Signals.connect(resetButton, signal: "clicked") { [weak self] in onMain { self?.model.resetPersonalization() } }
+        Signals.connect(cutoffCheck, signal: "toggled") { [weak self] in
+            onMain {
+                guard let self, !self.updating else { return }
+                self.model.setLimitToCutoff(gtk_check_button_get_active(self.cutoffCheck.typed(GtkCheckButton.self)) != 0)
+            }
+        }
         model.addObserver { [weak self] state in onLive { self?.update(state) } }
+    }
+
+    private static func scale(range: ClosedRange<Double>, step: Double, label: String, help: String) -> Widget {
+        let scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, range.lowerBound, range.upperBound, step)!
+        ScaleScrolling.install(on: scale)
+        gtk_scale_set_draw_value(scale.typed(GtkScale.self), 0)
+        gtk_range_set_increments(scale.typed(GtkRange.self), step, step * 2)
+        gtk_widget_set_hexpand(scale, 1)
+        gtk_widget_set_valign(scale, GTK_ALIGN_CENTER)
+        gtk_widget_set_size_request(scale, 120, -1)
+        Accessible.setLabel(scale, label)
+        Accessible.setDescription(scale, help)
+        return scale
     }
 
     private func update(_ next: AutoEqState) {
@@ -128,6 +224,7 @@ final class AutoEqSection {
         defer { updating = false }
 
         Ui.setText(ofEditable: search, next.query)
+        updatePersonalization(next)
         if shown != next.results { rebuild(next.results) }
         for (id, entry) in entries {
             gtk_widget_set_opacity(entry.marker, id == next.selected ? 1 : 0)
@@ -158,7 +255,7 @@ final class AutoEqSection {
             for name in next.targets { gtk_string_list_append(names, name) }
             adw_combo_row_set_model(targetRow.typed(AdwComboRow.self), names)
         }
-        Ui.show(targetRow, next.targets.count > 1 && next.selected != nil)
+        Ui.show(targetRow, next.mode == .fit && next.targets.count > 1)
         if let target = next.target, let index = next.targets.firstIndex(of: target) {
             let current = Int(adw_combo_row_get_selected(targetRow.typed(AdwComboRow.self)))
             if current != index { adw_combo_row_set_selected(targetRow.typed(AdwComboRow.self), UInt32(index)) }
@@ -177,6 +274,38 @@ final class AutoEqSection {
         Ui.enable(applyButton, next.applyRefusal == nil)
         Ui.setText(reason, next.applyRefusal)
         Ui.setText(summary, next.summary)
+    }
+
+    private func updatePersonalization(_ next: AutoEqState) {
+        for (mode, button) in modeButtons {
+            let want: Int32 = mode == next.mode ? 1 : 0
+            if gtk_toggle_button_get_active(button.typed(GtkToggleButton.self)) != want {
+                gtk_toggle_button_set_active(button.typed(GtkToggleButton.self), want)
+            }
+        }
+        let fit = next.mode == .fit
+        Ui.show(bassRow, fit)
+        Ui.show(tiltRow, fit)
+        Ui.show(hint, fit)
+        Ui.show(resetButton, fit && next.canReset)
+        Ui.setText(hint, fit ? next.fitHint : nil)
+        Ui.setRow(bassRow, title: "Bass", subtitle: next.bassText)
+        Ui.setRow(tiltRow, title: "Tilt", subtitle: next.tiltText)
+        if abs(gtk_range_get_value(bassScale.typed(GtkRange.self)) - next.bass) > 0.0001 {
+            gtk_range_set_value(bassScale.typed(GtkRange.self), next.bass)
+        }
+        if abs(gtk_range_get_value(tiltScale.typed(GtkRange.self)) - next.tilt) > 0.0001 {
+            gtk_range_set_value(tiltScale.typed(GtkRange.self), next.tilt)
+        }
+        Ui.show(cutoffRow, next.cutoffLabel != nil)
+        if let label = next.cutoffLabel {
+            adw_preferences_row_set_title(cutoffRow.typed(AdwPreferencesRow.self), Ui.escaped(label))
+        }
+        let checked: Int32 = next.limitToCutoff ? 1 : 0
+        if gtk_check_button_get_active(cutoffCheck.typed(GtkCheckButton.self)) != checked {
+            gtk_check_button_set_active(cutoffCheck.typed(GtkCheckButton.self), checked)
+        }
+        Accessible.setLabel(cutoffCheck, next.cutoffLabel ?? "Limit correction to the source cutoff")
     }
 
     private func rebuild(_ results: [AutoEqResult]) {

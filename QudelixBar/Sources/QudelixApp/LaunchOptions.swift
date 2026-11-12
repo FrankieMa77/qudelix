@@ -19,6 +19,14 @@ struct LaunchOptions {
     var selectItem: Int?
     var aiDraft = false
     var expandOthers = false
+    var mode: String?
+    var bass: Double?
+    var tilt: Double?
+    var cutoff: Double?
+    var limitCutoff = false
+    var suggest: String?
+    var dismissSuggestion = false
+    var automationOpen = false
     var hidden = false
     var menuOpen = false
     var toast: String?
@@ -131,6 +139,27 @@ struct LaunchOptions {
                 options.aiDraft = true
             case "--expand-others":
                 options.expandOthers = true
+            case "--mode":
+                options.mode = value
+                index += 1
+            case "--bass":
+                options.bass = value.flatMap { Double($0) }
+                index += 1
+            case "--tilt":
+                options.tilt = value.flatMap { Double($0) }
+                index += 1
+            case "--cutoff":
+                options.cutoff = value.flatMap { Double($0) }
+                index += 1
+            case "--limit-cutoff":
+                options.limitCutoff = true
+            case "--suggest":
+                options.suggest = value
+                index += 1
+            case "--dismiss-suggestion":
+                options.dismissSuggestion = true
+            case "--automation-open":
+                options.automationOpen = true
             case "--size":
                 let parts = (value ?? "").split(separator: "x").compactMap { Int32($0) }
                 if parts.count == 2 {

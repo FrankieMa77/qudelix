@@ -9,6 +9,7 @@ final class LibraryRenderDriver {
     private var generated = false
     private var dialogRequested = false
     private var searched = false
+    private var configured = false
 
     init(options: LaunchOptions, page: LibraryPage) {
         self.options = options
@@ -29,6 +30,14 @@ final class LibraryRenderDriver {
                 guard library.saved.state.preview != nil else { return false }
             }
         case .autoeq:
+            if !configured {
+                configured = true
+                if options.mode == "published" { library.autoEq.setMode(.published) }
+                if let kHz = options.cutoff { library.autoEq.useCutoff { kHz } }
+                if options.limitCutoff { library.autoEq.setLimitToCutoff(true) }
+                if let bass = options.bass { library.autoEq.setBass(bass) }
+                if let tilt = options.tilt { library.autoEq.setTilt(tilt) }
+            }
             if let query = options.query {
                 if !searched {
                     searched = true
@@ -93,7 +102,17 @@ final class EqRenderDriver {
         self.audio = audio
     }
 
+    private weak var page: EqPage?
+    private var opened = false
+
+    func attach(page: EqPage) { self.page = page }
+
     func ready() -> Bool {
+        if options.automationOpen, !opened {
+            opened = true
+            page?.openAutomation()
+            return false
+        }
         if options.ghost {
             if !imported {
                 imported = true

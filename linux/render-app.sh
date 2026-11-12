@@ -7,7 +7,7 @@ IMAGE="${QUDELIX_APP_IMAGE:-qudelix-app-build}"
 VOLUME="${QUDELIX_APP_VOLUME:-qudelix-app-render}"
 
 mkdir -p "$OUT"
-docker run --rm --init \
+docker run --rm --init --cpus 2 \
   --tmpfs /tmp:rw,exec,size=2g \
   -e QUDELIX_APP=1 \
   -e HOST_UID="$(id -u)" \
@@ -161,6 +161,23 @@ docker run --rm --init \
         done
         render tune-sidebar-running device "$theme" 900x640 --demo --tune-demo compare-running
         render tune-sidebar-running device "$theme" 360x640 --demo --sidebar --tune-demo compare-running
+      done
+    fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "l2" ]; then
+      for theme in light dark; do
+        for size in 900x640 360x640; do
+          render autoeq-fit library "$theme" "$size" --demo --section autoeq --query "HD 6" --select 0 --bass 2.5 --tilt -0.3 --cutoff 15.5
+          render autoeq-fit-limited library "$theme" "$size" --demo --section autoeq --query "HD 6" --select 0 --bass 2.5 --tilt -0.3 --cutoff 15.5 --limit-cutoff
+          render autoeq-published library "$theme" "$size" --demo --section autoeq --query "HD 6" --select 0 --mode published --cutoff 15.5
+          render library-suggestion library "$theme" "$size" --demo --section saved --suggest "Sennheiser HD 650" --dismiss-suggestion
+          render window-banner device "$theme" "$size" --demo --suggest "Sennheiser HD 650"
+        done
+        render autoeq-fit-tall library "$theme" 360x1700 --demo --section autoeq --query "HD 6" --select 0 --bass 2.5 --tilt -0.3 --cutoff 15.5
+        render autoeq-published-tall library "$theme" 360x1500 --demo --section autoeq --query "HD 6" --select 0 --mode published --cutoff 15.5
+        render library-suggestion-tall library "$theme" 360x1100 --demo --section saved --suggest "Sennheiser HD 650" --dismiss-suggestion
+        render window-banner-tall eq "$theme" 360x1500 --demo --suggest "Sennheiser HD 650" --automation-open
+        render eq-fit eq "$theme" 900x1100 --demo --automation-open
+        render eq-fit eq "$theme" 360x1500 --demo --automation-open
       done
     fi
     /build/debug/qudelix-app --version

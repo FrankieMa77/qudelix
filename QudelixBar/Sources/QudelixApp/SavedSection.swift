@@ -15,6 +15,12 @@ final class SavedSection {
     }
 
     private let model: SavedPresetsModel
+    private let suggestions: SuggestionsModel
+    private let suggestionRow: Widget
+    private let suggestionText: Widget
+    private let suggestionApply: Widget
+    private let suggestionSpinner = Ui.spinner()
+    private var suggestionID = ""
     private let parent: () -> UnsafeMutablePointer<GtkWindow>?
     private let search: Widget
     private let notice: Widget
@@ -39,8 +45,10 @@ final class SavedSection {
     private var updating = false
     private(set) var dialog: UnsafeMutableRawPointer?
 
-    init(model: SavedPresetsModel, parent: @escaping () -> UnsafeMutablePointer<GtkWindow>?) {
+    init(model: SavedPresetsModel, suggestions: SuggestionsModel,
+         parent: @escaping () -> UnsafeMutablePointer<GtkWindow>?) {
         self.model = model
+        self.suggestions = suggestions
         self.parent = parent
 
         saveButton = Ui.button(SavedPresetsModel.saveButtonLabel)
@@ -66,6 +74,21 @@ final class SavedSection {
         pasteButton = Ui.button(SavedPresetsModel.pasteLabel)
         Ui.add(top, headphones)
         Ui.add(top, Ui.label(SavedPresetsModel.headphonesHint))
+        suggestionRow = Ui.box(GTK_ORIENTATION_HORIZONTAL, spacing: 8)
+        let suggestionIcon = gtk_image_new_from_icon_name("starred-symbolic")!
+        gtk_widget_add_css_class(suggestionIcon, "accent")
+        suggestionText = Ui.label("", classes: ["caption", "dim-label"])
+        gtk_widget_set_hexpand(suggestionText, 0)
+        suggestionApply = Ui.button(SuggestionsModel.applyLinkLabel, classes: ["flat"])
+        gtk_widget_set_valign(suggestionApply, GTK_ALIGN_CENTER)
+        gtk_widget_set_tooltip_text(suggestionRow, SuggestionsModel.rowHelp)
+        Ui.append(suggestionRow, suggestionIcon)
+        Ui.append(suggestionRow, suggestionText)
+        Ui.append(suggestionRow, suggestionSpinner)
+        Ui.append(suggestionRow, suggestionApply)
+        Ui.setSpinning(suggestionSpinner, false)
+        Ui.show(suggestionRow, false)
+        Ui.add(top, suggestionRow)
         Ui.add(top, search)
         Ui.add(top, Ui.buttonRow([addButton, pasteButton]))
         Ui.add(top, notice)
@@ -116,7 +139,28 @@ final class SavedSection {
                 self.model.apply(id)
             }
         }
+        Signals.connect(suggestionApply, signal: "clicked") { [weak self] in
+            onMain {
+                guard let self, !self.suggestionID.isEmpty else { return }
+                self.suggestions.accept(self.suggestionID)
+            }
+        }
+        suggestions.addObserver { [weak self] state in onLive { self?.updateSuggestion(state) } }
         model.addObserver { [weak self] state in onLive { self?.update(state) } }
+    }
+
+    private func updateSuggestion(_ next: SuggestionsState) {
+        guard let offer = next.row else {
+            suggestionID = ""
+            Ui.show(suggestionRow, false)
+            return
+        }
+        suggestionID = offer.id
+        Ui.show(suggestionRow, true)
+        Ui.setText(suggestionText, offer.measuredBy)
+        Ui.setSpinning(suggestionSpinner, next.busy)
+        Ui.show(suggestionApply, !next.busy)
+        Ui.enable(suggestionApply, next.canApply, reason: next.applyHelp)
     }
 
     private func update(_ next: SavedPresetsState) {

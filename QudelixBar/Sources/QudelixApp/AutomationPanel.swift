@@ -8,6 +8,12 @@ final class AutomationPanel {
     let widget: Widget
 
     private let automation: AutomationModel?
+    private let suggestions: SuggestionsModel?
+    private let fitCorrectionRow: Widget
+    private let fitButton: Widget
+    private let fittingLabel: Widget
+    private var suggestionState = SuggestionsState()
+    private var hiddenFitNote: String?
     private let available: Bool
     private let expander: Widget
     private let unavailable: Widget
@@ -28,8 +34,9 @@ final class AutomationPanel {
     private var wasForced = false
     private var state = AutomationState()
 
-    init(automation: AutomationModel?, available: Bool) {
+    init(automation: AutomationModel?, suggestions: SuggestionsModel? = nil, available: Bool) {
         self.automation = automation
+        self.suggestions = suggestions
         self.available = available
         widget = Ui.group(nil)
         expander = adw_expander_row_new()!
@@ -50,6 +57,16 @@ final class AutomationPanel {
         showRow = adw_switch_row_new()!
         adw_preferences_row_set_title(showRow.typed(AdwPreferencesRow.self), "Show reference line")
         adw_action_row_set_subtitle(showRow.typed(AdwActionRow.self), AutomationState.showHelp)
+
+        fitCorrectionRow = Ui.actionRow(title: "Headphone correction", subtitle: "")
+        adw_action_row_set_subtitle_lines(fitCorrectionRow.typed(AdwActionRow.self), 0)
+        fitButton = Ui.button(SuggestionsModel.fitLabel)
+        fittingLabel = Ui.label(SuggestionsModel.fittingLabel, classes: ["dim-label", "caption"])
+        for widget in [fitButton, fittingLabel] { gtk_widget_set_valign(widget, GTK_ALIGN_CENTER) }
+        gtk_widget_set_hexpand(fittingLabel, 0)
+        Ui.show(fittingLabel, false)
+        Ui.suffix(fitCorrectionRow, fitButton)
+        Ui.suffix(fitCorrectionRow, fittingLabel)
 
         referenceText = Ui.actionRow(title: "", subtitle: "")
         followRow = Ui.actionRow(title: "", subtitle: "")
@@ -93,7 +110,7 @@ final class AutomationPanel {
         }
 
         let rows: [Widget] = available
-            ? [sourceRow, showRow, referenceText, followRow, fitRow, trimRow, modeRow, strengthRow, trimText, balanceText]
+            ? [sourceRow, showRow, fitCorrectionRow, referenceText, followRow, fitRow, trimRow, modeRow, strengthRow, trimText, balanceText]
             : [unavailable, sourceRow, showRow, fitRow, trimRow, modeRow, strengthRow]
         for row in rows { adw_expander_row_add_row(expander.typed(AdwExpanderRow.self), row) }
         Ui.add(widget, expander)
@@ -104,6 +121,10 @@ final class AutomationPanel {
             }
             adw_expander_row_set_subtitle(expander.typed(AdwExpanderRow.self), "Needs PipeWire")
         }
+    }
+
+    func open() {
+        adw_expander_row_set_expanded(expander.typed(AdwExpanderRow.self), 1)
     }
 
     private func connect() {
@@ -148,11 +169,42 @@ final class AutomationPanel {
                 automation.setAutoTrim(strength: (value * 100).rounded() / 100)
             }
         }
+        Signals.connect(fitButton, signal: "clicked") { [weak self] in onMain { self?.suggestions?.requestFit() } }
+        suggestions?.addObserver { [weak self] next in onLive { self?.suggestionsChanged(next) } }
         Signals.connect(keepButton, signal: "clicked") { onMain { automation.keep() } }
         Signals.connect(resumeButton, signal: "clicked") { onMain { automation.resume() } }
     }
 
+    private var visibleFitNote: String? {
+        guard let note = suggestionState.fitNote, note != hiddenFitNote else { return nil }
+        return note
+    }
+
+    private func suggestionsChanged(_ next: SuggestionsState) {
+        suggestionState = next
+        if next.fitNote == nil { hiddenFitNote = nil }
+        refreshFit()
+    }
+
+    private func refreshFit() {
+        guard available else { return }
+        let fitting = suggestionState.fitting
+        Ui.show(fitButton, !fitting)
+        Ui.show(fittingLabel, fitting)
+        gtk_button_set_label(fitButton.typed(GtkButton.self), SuggestionsModel.fitButtonLabel(hasReference: state.hasReference))
+        Ui.enable(fitButton, suggestionState.canApply, reason: suggestionState.applyHelp)
+        if suggestionState.canApply {
+            gtk_widget_set_tooltip_text(fitButton, SuggestionsModel.fitButtonHelp(hasReference: state.hasReference))
+        }
+        adw_action_row_set_subtitle(fitCorrectionRow.typed(AdwActionRow.self), Ui.escaped(visibleFitNote ?? ""))
+        Accessible.setLabel(fitButton, "\(SuggestionsModel.fitButtonLabel(hasReference: state.hasReference)) the headphone correction")
+    }
+
     func update(_ next: AutomationState) {
+        if next.hasReference != state.hasReference || next.source != state.source
+            || next.referenceTexts != state.referenceTexts {
+            hiddenFitNote = suggestionState.fitNote
+        }
         state = next
         updating = true
         defer { updating = false }
@@ -176,6 +228,7 @@ final class AutomationPanel {
         adw_action_row_set_subtitle(strengthRow.typed(AdwActionRow.self),
                                     "\(Int((next.trimStrength * 100).rounded())) percent")
         guard available else { return }
+        refreshFit()
         gtk_widget_set_sensitive(modeRow, next.autoTrimOn ? 1 : 0)
         gtk_widget_set_sensitive(strengthRow, next.strengthEnabled ? 1 : 0)
         setLine(referenceText, next.referenceTexts.first)

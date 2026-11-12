@@ -37,6 +37,8 @@ let audio: AudioStack = MainActor.assumeIsolated {
 Signals.connect(application, signal: "activate") {
     onMain {
         if let routing = audio.routing { model.library.saved.attach(routing: routing) }
+        if let stage = audio.stage { model.library.autoEq.attach(level: stage.level) }
+        model.library.suggestions.attach(automation: audio.automation)
         audio.start()
         if let path = options.trayDump {
             TrayDump.run(model: model, path: path, application: application.raw, expectsDevice: options.demo)

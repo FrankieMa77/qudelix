@@ -70,6 +70,36 @@ struct DemoCatalogueTransport: HTTPTransport {
     }
 }
 
+enum DemoPublished {
+    static let index = """
+    - [Sennheiser HD 650](./oratory1990/over-ear/Sennheiser%20HD%20650)
+    - [Sennheiser HD 650](./crinacle/over-ear/Sennheiser%20HD%20650)
+    - [Sennheiser HD 600](./oratory1990/over-ear/Sennheiser%20HD%20600)
+    - [Sennheiser HD 660S2](./oratory1990/over-ear/Sennheiser%20HD%20660S2)
+    - [Sony WH-1000XM4](./oratory1990/over-ear/Sony%20WH-1000XM4)
+    - [Moondrop Aria](./crinacle/in-ear/Moondrop%20Aria)
+    """
+
+    static let preset = """
+    Preamp: -4.3 dB
+    Filter 1: ON LSC Fc 105 Hz Gain 5.0 dB Q 0.70
+    Filter 2: ON PK Fc 240 Hz Gain -2.1 dB Q 0.90
+    Filter 3: ON PK Fc 1180 Hz Gain -1.6 dB Q 1.30
+    Filter 4: ON PK Fc 2900 Hz Gain 3.1 dB Q 1.60
+    Filter 5: ON PK Fc 4800 Hz Gain -3.4 dB Q 2.40
+    Filter 6: ON HSC Fc 10000 Hz Gain -2.4 dB Q 0.70
+    """
+
+    static func fetchIndex(_ url: URL, _ limit: Int) async throws -> Data {
+        Data(index.utf8)
+    }
+
+    static func fetchPreset(_ entry: AutoEqEntry) async throws -> ParametricEQFile {
+        guard let file = ParametricEQFile.parse(preset) else { throw URLError(.cannotParseResponse) }
+        return file
+    }
+}
+
 final class DemoAITransport: AITransport, @unchecked Sendable {
     private let bandCount: Int
 
@@ -135,7 +165,9 @@ extension LibraryEnvironment {
         runtime.readKey = { nil }
         return LibraryEnvironment(libraryFile: file,
                                   autoEqTransport: DemoCatalogueTransport(),
-                                  ai: runtime, searchDelay: 0.05)
+                                  ai: runtime, searchDelay: 0.05,
+                                  publishedIndex: DemoPublished.fetchIndex,
+                                  publishedPreset: DemoPublished.fetchPreset)
     }
 
     private static func demoPresets() -> [LibraryPreset] {
