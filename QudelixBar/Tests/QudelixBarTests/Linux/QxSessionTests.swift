@@ -869,32 +869,4 @@ final class QxSessionTests: XCTestCase {
         }
         XCTAssertTrue(logText().contains("preset read timed out; partial buffer"))
     }
-
-    func testBluetoothSegmentsOfAnOlderRequestAreIgnored() async throws {
-        let link = QxFixtures.answeringLink(kind: .bluetooth)
-        let gate = Gate()
-        gated(link, gate)
-        let session = try await connected(link, timeout: 0.4)
-        defer { session.close() }
-        gate.set(false)
-        let segments = QxFixtures.presetSegments(preGain: -3, bands: QxFixtures.tenBands)
-        XCTAssertGreaterThan(segments.count, 1)
-        let before = gate.stamped(.reqEqPreset)
-        async let reading = session.readPreset()
-        let deadline = Date().addingTimeInterval(2)
-        while gate.stamped(.reqEqPreset) == before, Date() < deadline {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        for segment in segments.dropFirst() { link.deliver(.rspEqPreset, segment) }
-        do {
-            _ = try await reading
-            XCTFail("a read answered only by stale segments must not complete")
-        } catch let error as QxSessionError {
-            XCTAssertEqual(error, .timedOut("the EQ preset"))
-        }
-        XCTAssertTrue(logText().contains("preset segment ignored: it answers an older request"))
-        gate.set(true)
-        let preset = try await session.readPreset()
-        XCTAssertEqual(preset.bands.count, QxFixtures.tenBands.count)
-    }
 }

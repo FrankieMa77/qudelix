@@ -69,8 +69,6 @@ final class QxSession {
     private var started = false
     private var closed = false
     private var presetEpoch = 0
-    private var presetRequestGeneration = 0
-    private var presetStreamGeneration: Int?
     private var statusEpoch = 0
     private var configEpoch = 0
 
@@ -215,7 +213,6 @@ final class QxSession {
     func readPreset() async throws -> QxUserEqPreset {
         let start = try await perform { () -> Int in
             self.assembler.reset()
-            self.markPresetRequest()
             try self.transmit(.reqEqPreset, [self.eqGroup.requestMask])
             return self.presetEpoch
         }
@@ -524,13 +521,7 @@ final class QxSession {
         try transmit(.reqDevConfig, [QxConfigMask.sys2 | QxConfigMask.eq])
         try transmit(.reqDevStatus, [QxStatusMask.audio | QxStatusMask.power
                                      | QxStatusMask.conn | QxStatusMask.vol])
-        markPresetRequest()
         try transmit(.reqEqPreset, [eqGroup.requestMask])
-    }
-
-    private func markPresetRequest() {
-        presetRequestGeneration += 1
-        presetStreamGeneration = nil
     }
 
     private static func hexDump(_ bytes: [UInt8]) -> String {
@@ -540,15 +531,6 @@ final class QxSession {
     private static func describe(_ preset: QxUserEqPreset) -> String {
         let bands = preset.bands.map { "\($0.filter) \($0.freq) Hz \($0.gain) dB Q \($0.q)" }
         return "preGain \(preset.preGain)/\(preset.preGainCh1) crossfeed \(preset.crossfeedLevel) bands [\(bands.joined(separator: "; "))]"
-    }
-
-    private func belongsToCurrentRequest(_ data: [UInt8]) -> Bool {
-        guard link.kind == .bluetooth, data.count >= 2 else { return true }
-        if data[1] & 0x0F == 0 {
-            presetStreamGeneration = presetRequestGeneration
-            return true
-        }
-        return presetStreamGeneration == presetRequestGeneration
     }
 
     private func checkSlot(_ index: Int) throws {
@@ -604,10 +586,6 @@ final class QxSession {
     }
 
     private func ingestPresetSegment(_ data: [UInt8]) {
-        guard belongsToCurrentRequest(data) else {
-            Trace.log("preset segment ignored: it answers an older request")
-            return
-        }
         guard assembler.ingest(data) else { return }
         let buffer = assembler.buffer
         assembler.reset()
