@@ -399,9 +399,12 @@ package final class EqEditorModel {
             guard shape != .bypass else { return }
             var band = bands[index]
             band.filter = .bypass
-            commitBand(index, band, persist: false, record: false, force: false)
-            guard bands[index].filter == .bypass else { return }
             muted[index] = shape
+            commitBand(index, band, persist: false, record: false, force: false)
+            guard bands[index].filter == .bypass else {
+                muted[index] = nil
+                return
+            }
         } else {
             guard state.isMuted(index), let shape = muted[index] else { return }
             var band = bands[index]

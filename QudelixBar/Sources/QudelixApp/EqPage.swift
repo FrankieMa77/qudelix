@@ -37,7 +37,6 @@ final class EqPage {
     private let placeholder = ConnectionStatusPage()
     private let loading = ConnectionStatusPage()
     private let scroller: UnsafeMutablePointer<GtkWidget>
-    private let scrollContent: UnsafeMutablePointer<GtkWidget>
     private let refusal: UnsafeMutablePointer<GtkWidget>
     private let retryButton: UnsafeMutablePointer<GtkWidget>
     private let banner: UnsafeMutablePointer<GtkWidget>
@@ -140,7 +139,6 @@ final class EqPage {
                                      automation: panel.widget)
         editor = built.outer
         scroller = built.scroller
-        scrollContent = built.content
 
         gtk_stack_add_named(stack, placeholder.widget, "status")
         gtk_stack_add_named(stack, loading.widget, "loading")
@@ -149,7 +147,6 @@ final class EqPage {
         widget = UnsafeMutableRawPointer(stack).assumingMemoryBound(to: GtkWidget.self)
 
         loading.showProgress(title: "Reading the EQ\u{2026}", detail: "Asking the 5K for its equalizer settings.")
-        curve.onSettled = { [weak self] index in onMain { self?.reveal(index) } }
         connectControls()
         eq.addObserver { [weak self] state in onLive { self?.update(state) } }
         model.addObserver { [weak self] state in onLive { self?.connectionChanged(state) } }
@@ -395,38 +392,6 @@ final class EqPage {
         }
     }
 
-    private func reveal(_ index: Int) {
-        guard rows.indices.contains(index) else { return }
-        let job = RevealJob(page: self, row: rows[index].row)
-        g_timeout_add(350, { data in
-            let job = Unmanaged<RevealJob>.fromOpaque(data!).takeRetainedValue()
-            MainActor.assumeIsolated { job.page.scroll(to: job.row) }
-            return 0
-        }, Unmanaged.passRetained(job).toOpaque())
-    }
-
-    private final class RevealJob {
-        let page: EqPage
-        let row: UnsafeMutablePointer<GtkWidget>
-
-        init(page: EqPage, row: UnsafeMutablePointer<GtkWidget>) {
-            self.page = page
-            self.row = row
-        }
-    }
-
-    private func scroll(to row: UnsafeMutablePointer<GtkWidget>) {
-        guard !UiLifetime.windowDestroyed, gtk_widget_get_mapped(row) != 0 else { return }
-        var origin = graphene_point_t(x: 0, y: 0)
-        var found = graphene_point_t()
-        guard gtk_widget_compute_point(row, scrollContent, &origin, &found) != 0 else { return }
-        let adjustment = gtk_scrolled_window_get_vadjustment(scroller.opaque)
-        let top = Double(found.y) - gtk_adjustment_get_value(adjustment)
-        let visible = gtk_adjustment_get_page_size(adjustment)
-        guard top < 0 || top > visible - 160 else { return }
-        gtk_adjustment_set_value(adjustment, Double(found.y) - 8)
-    }
-
     private func buildRows(count: Int) {
         for existing in rows {
             adw_preferences_group_remove(bandsGroup.typed(AdwPreferencesGroup.self), existing.row)
@@ -564,8 +529,9 @@ final class EqPage {
         for (index, band) in next.bands.enumerated() where rows.indices.contains(index) {
             let row = rows[index]
             let muted = next.isMuted(index)
+            let shown = muted ? (next.muted[index] ?? band.filter) : band.filter
             adw_preferences_row_set_title(row.row.typed(AdwPreferencesRow.self),
-                                          "Band \(index + 1) \u{00B7} \(band.filter.label)")
+                                          "Band \(index + 1) \u{00B7} \(shown.label)")
             adw_expander_row_set_subtitle(row.row.typed(AdwExpanderRow.self),
                                           band.summary + (muted ? " \u{00B7} muted" : ""))
             adw_combo_row_set_selected(row.type.typed(AdwComboRow.self), UInt32(band.filter.rawValue))
@@ -607,7 +573,8 @@ final class EqPage {
             return "\(state.bandCount) bands \u{00B7} \(kind)"
         }
         let band = state.bands[selected]
-        return "Band \(selected + 1) \u{00B7} \(band.filter.label) \u{00B7} \(band.summary)"
+        let shown = state.isMuted(selected) ? (state.muted[selected] ?? band.filter) : band.filter
+        return "Band \(selected + 1) \u{00B7} \(shown.label) \u{00B7} \(band.summary)"
     }
 }
 

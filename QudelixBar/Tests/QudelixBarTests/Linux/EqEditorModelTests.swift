@@ -394,6 +394,31 @@ final class EqEditorModelTests: XCTestCase {
     }
 
     @MainActor
+    func testMutingPublishesOneConsistentStateAndKeepsTheSelection() async {
+        var bands = EqTestSupport.shaped()
+        bands[3] = QxEqBandValue(filter: .lowShelf, freq: 250, gain: 5, q: 0.75)
+        let device = EqTestDevice(bands: bands)
+        let model = await open(device)
+        model.eq.select(3)
+        await settle(model)
+        var seen: [EqEditorState] = []
+        model.eq.addObserver { seen.append($0) }
+        seen = []
+        model.eq.setBandMuted(3, true)
+        await settle(model)
+        XCTAssertFalse(seen.isEmpty)
+        for state in seen where state.bands[3].filter == .bypass {
+            XCTAssertTrue(state.isMuted(3))
+        }
+        XCTAssertEqual(model.eq.state.selected, 3)
+        XCTAssertEqual(model.eq.state.muted[3], .lowShelf)
+        model.eq.setBandMuted(3, false)
+        await settle(model)
+        XCTAssertEqual(model.eq.state.selected, 3)
+        await model.shutdown()
+    }
+
+    @MainActor
     func testMutingBypassesTheBandAndRemembersItsShape() async {
         var bands = EqTestSupport.shaped()
         bands[3] = QxEqBandValue(filter: .lowShelf, freq: 250, gain: 5, q: 0.75)
