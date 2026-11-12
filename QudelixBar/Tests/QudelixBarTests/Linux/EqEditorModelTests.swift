@@ -643,6 +643,7 @@ final class EqEditorModelTests: XCTestCase {
            probeDevice: { AppDeviceProbe(present: true) }, clock: clock)
         model.start()
         await until("first") { model.eq.state.ready }
+        await model.eq.waitForIdle()
         model.eq.setBand(0, EqBand(filter: .peak, freq: 31, gain: 4, q: 1))
         first.link.drop()
         await until("lost") { !model.eq.state.ready }

@@ -145,6 +145,7 @@ final class LibraryModelTests: XCTestCase {
         let model = makeModel(device, env)
         model.start()
         await until("connected") { model.state.connection.isConnected && model.eq.state.ready }
+        await model.eq.waitForIdle()
         device.link.clearSends()
         return model
     }

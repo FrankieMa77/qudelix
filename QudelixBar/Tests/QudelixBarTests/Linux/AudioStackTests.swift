@@ -75,6 +75,8 @@ final class AudioStackTests: XCTestCase {
         stack.start()
         app.start()
         await until("connected") { app.state.connection.isConnected && app.eq.state.ready }
+        await app.eq.waitForIdle()
+        await app.waitForIdle()
         XCTAssertFalse(stack.automation.state.following)
         XCTAssertNil(stack.tune.state.busy)
         await stack.shutdown()
@@ -94,6 +96,8 @@ final class AudioStackTests: XCTestCase {
         hops.drain()
         app.start()
         await until("connected") { app.state.connection.isConnected && app.eq.state.ready }
+        await app.eq.waitForIdle()
+        await app.waitForIdle()
         var settings = StageSettings.music
         settings.enabled = true
         stack.stage?.setStage(settings, editedFor: stack.stage?.outputKey)
@@ -189,6 +193,8 @@ final class AudioStackTests: XCTestCase {
         XCTAssertEqual(stack.status, .unavailable)
         XCTAssertEqual(stack.status.message, AudioStack.unavailableMessage)
         await until("connected") { app.state.connection.isConnected && app.eq.state.ready }
+        await app.eq.waitForIdle()
+        await app.waitForIdle()
         clock.advance(4)
         XCTAssertTrue(queue.pending.isEmpty)
         clock.advance(1.5)
