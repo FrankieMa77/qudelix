@@ -489,7 +489,7 @@ final class BluezTransportTests: XCTestCase {
         until("a second attempt") { events.socketList.count >= 2 }
         XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
         XCTAssertFalse(transport.failureNeedsAttention)
-        XCTAssertTrue(BluezLinkFailure.waitingForLink.contains("switch it off and on again"))
+        XCTAssertTrue(BluezLinkFailure.waitingForLink.contains("wait two minutes"))
         until("connected") { events.connectCount == 1 }
         XCTAssertGreaterThanOrEqual(events.socketList.count, 3)
         XCTAssertNil(transport.failureReason)
