@@ -45,6 +45,7 @@ xcuserdata/
 /dist/
 .build-test/
 /private/
+scripts/__pycache__/
 /scratch/
 secrets*
 *.pem

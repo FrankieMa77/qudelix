@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libdbus-1-dev pkg-config libcurl4-openssl-dev binutils
+          apt-get install -y --no-install-recommends libdbus-1-dev pkg-config libcurl4-openssl-dev binutils dbus
 
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
