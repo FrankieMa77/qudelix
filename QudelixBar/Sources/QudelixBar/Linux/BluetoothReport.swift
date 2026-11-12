@@ -139,8 +139,8 @@ struct BluezDrop: Equatable {
 
 enum BluezLinkFailure {
     static let waitingForLink = "Waiting for the Qudelix 5K's Bluetooth control link. "
-        + "The 5K offers it for a few seconds after it is switched on; "
-        + "if it is already on, switch it off and on again."
+        + "The 5K offers it for a few seconds after it is switched on. "
+        + "If it is already on, switch it off, wait two minutes and switch it on again."
 
     static let noDeviceKnown = "No Qudelix 5K is known to Bluetooth yet. "
         + "Pair it once in your Bluetooth settings, then it will be found."

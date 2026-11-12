@@ -9,6 +9,20 @@ an installed 1.6.x normally. AUR packagers need `epoch=1` in their PKGBUILDs.
 Linux releases are tagged `linux-v<version>` and titled "Qudelix for Linux". Mac releases keep
 the `v<version>` tags and the Mac changelog in the main README.
 
+## 0.7.1
+
+Bluetooth control works now. In 0.7.0 the 5K's control link never came up over Bluetooth.
+
+- Qudelix opens the 5K's Bluetooth LE control link itself. It works with any BlueZ version,
+  including the one in Ubuntu, and needs no experimental BlueZ settings.
+- The 5K accepts a new control link only for a few seconds after it is switched on, and again
+  shortly after a previous control link ends. Qudelix waits for that in the background and
+  connects within about a second. If the 5K is already on and nothing connects, switch it off,
+  wait two minutes and switch it on again.
+- Qudelix no longer asks BlueZ to connect the 5K or to scan for it, so waiting for the control
+  link can no longer push your Bluetooth audio over to the headset (call) profile.
+- `qudelix probe` says whether this machine can open a Bluetooth LE control link.
+
 ## 0.7.0
 
 New in the app:

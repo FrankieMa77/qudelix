@@ -34,6 +34,11 @@
     <category>Settings</category>
   </categories>
   <releases>
+    <release version="0.7.1" date="2026-11-12">
+      <description>
+        <p>Bluetooth control works: Qudelix opens the 5K's Bluetooth LE control link itself, on any BlueZ version, and no longer disturbs Bluetooth audio while it waits for the 5K.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-11-11">
       <description>
         <p>New Stage, Level and Tune pages, Auto-fit and Auto-trim, a sidebar, more on the EQ and Presets pages, loading presets from a file, and Bluetooth fixes. Stage, Level and the Tune tones need PipeWire.</p>

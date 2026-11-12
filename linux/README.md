@@ -27,7 +27,7 @@ the command-line package and the app together; the app package depends on `qudel
 carries the udev rule:
 
 ```
-sudo apt install ./qudelix_0.7.0_amd64.deb ./qudelix-app_0.7.0_amd64.deb
+sudo apt install ./qudelix_0.7.1_amd64.deb ./qudelix-app_0.7.1_amd64.deb
 ```
 
 On Arch Linux install `qudelix-cli-bin` and `qudelix-app-bin` from the AUR
@@ -36,8 +36,8 @@ On Arch Linux install `qudelix-cli-bin` and `qudelix-app-bin` from the AUR
 unpack the tarball and run its installer:
 
 ```
-tar xzf qudelix-app-0.7.0-linux-x86_64.tar.gz
-cd qudelix-app-0.7.0-linux-x86_64
+tar xzf qudelix-app-0.7.1-linux-x86_64.tar.gz
+cd qudelix-app-0.7.1-linux-x86_64
 sudo ./install.sh
 ```
 
@@ -63,7 +63,7 @@ does not block `qudelix`. USB is the supported link; the Bluetooth link is untes
 Debian and Ubuntu (amd64):
 
 ```
-sudo apt install ./qudelix_0.7.0_amd64.deb
+sudo apt install ./qudelix_0.7.1_amd64.deb
 ```
 
 Arch Linux: install `qudelix-cli-bin` from the AUR
@@ -72,8 +72,8 @@ Arch Linux: install `qudelix-cli-bin` from the AUR
 Other distributions: unpack the tarball and run its installer.
 
 ```
-tar xzf qudelix-0.7.0-linux-x86_64.tar.gz
-cd qudelix-0.7.0-linux-x86_64
+tar xzf qudelix-0.7.1-linux-x86_64.tar.gz
+cd qudelix-0.7.1-linux-x86_64
 sudo ./install.sh
 ```
 
