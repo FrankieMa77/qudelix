@@ -17,7 +17,7 @@ final class BluezTransport: QxLink {
     private static let waitLogInterval: TimeInterval = 60
 
     static let armedPause: TimeInterval = 0.1
-    static let relistSeconds: TimeInterval = 60
+    static let relistSeconds: TimeInterval = 300
     static let noDeviceRetryDelay: TimeInterval = 3
 
     static let armedFailureCodes: Set<Int32> = [ECONNREFUSED, ENOSYS, EHOSTDOWN, ETIMEDOUT, EBUSY,
