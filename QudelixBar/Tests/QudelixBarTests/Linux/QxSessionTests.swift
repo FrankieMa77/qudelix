@@ -789,4 +789,112 @@ final class QxSessionTests: XCTestCase {
         XCTAssertEqual(device.link.payloads(for: .setEqMode), [[1]])
         XCTAssertEqual(device.link.payloads(for: .reqDevConfig).count, 1)
     }
+
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var open = true
+        private var stamps: [QxCmd: Date] = [:]
+
+        var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return open }
+        func set(_ value: Bool) { lock.lock(); open = value; lock.unlock() }
+        func stamp(_ cmd: QxCmd) { lock.lock(); stamps[cmd] = Date(); lock.unlock() }
+        func stamped(_ cmd: QxCmd) -> Date? { lock.lock(); defer { lock.unlock() }; return stamps[cmd] }
+    }
+
+    private func gated(_ link: FakeLink, _ gate: Gate) {
+        let original = link.onSend
+        link.onSend = { cmd, data in
+            gate.stamp(cmd)
+            if cmd == .reqEqPreset, !gate.isOpen { return }
+            original?(cmd, data)
+        }
+    }
+
+    private func logText() -> String {
+        guard let url = DebugLog.shared.fileURL,
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return text
+    }
+
+    func testABluetoothLoadWaitsBeforeReadingTheSlotBack() async throws {
+        let link = answeringLink()
+        let bluetooth = QxFixtures.answeringLink(kind: .bluetooth)
+        let gate = Gate()
+        gated(bluetooth, gate)
+        let session = try await connected(bluetooth)
+        defer { session.close() }
+        _ = try await session.loadPreset(index: 4)
+        let load = try XCTUnwrap(gate.stamped(.loadEqPreset))
+        let read = try XCTUnwrap(gate.stamped(.reqEqPreset))
+        XCTAssertGreaterThanOrEqual(read.timeIntervalSince(load), 0.14)
+        let usbGate = Gate()
+        gated(link, usbGate)
+        let usb = try await connected(link)
+        defer { usb.close() }
+        _ = try await usb.loadPreset(index: 4)
+        let usbLoad = try XCTUnwrap(usbGate.stamped(.loadEqPreset))
+        let usbRead = try XCTUnwrap(usbGate.stamped(.reqEqPreset))
+        XCTAssertLessThan(usbRead.timeIntervalSince(usbLoad), 0.1)
+    }
+
+    func testAnImplausiblePresetLogsTheRawBufferAndTheDecodedValues() async throws {
+        let wild = QxFixtures.tenBands.map { QxEqBandValue(filter: .peak, freq: $0.freq, gain: 40, q: 1.0) }
+        let link = answeringLink(bands: wild)
+        let session = try await connected(link)
+        defer { session.close() }
+        do {
+            _ = try await session.readPreset()
+            XCTFail("an implausible preset should not decode")
+        } catch let error as QxSessionError {
+            guard case .rejectedValue = error else { return XCTFail("\(error)") }
+        }
+        let text = logText()
+        XCTAssertTrue(text.contains("preset decode implausible for group"))
+        XCTAssertTrue(text.contains("raw "))
+        XCTAssertTrue(text.contains("decoded preGain"))
+    }
+
+    func testAPresetReadTimeoutLogsThePartialBuffer() async throws {
+        let link = answeringLink()
+        let gate = Gate()
+        gated(link, gate)
+        let session = try await connected(link, timeout: 0.3)
+        defer { session.close() }
+        gate.set(false)
+        do {
+            _ = try await session.readPreset()
+            XCTFail("nothing answered")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .timedOut("the EQ preset"))
+        }
+        XCTAssertTrue(logText().contains("preset read timed out; partial buffer"))
+    }
+
+    func testBluetoothSegmentsOfAnOlderRequestAreIgnored() async throws {
+        let link = QxFixtures.answeringLink(kind: .bluetooth)
+        let gate = Gate()
+        gated(link, gate)
+        let session = try await connected(link, timeout: 0.4)
+        defer { session.close() }
+        gate.set(false)
+        let segments = QxFixtures.presetSegments(preGain: -3, bands: QxFixtures.tenBands)
+        XCTAssertGreaterThan(segments.count, 1)
+        let before = gate.stamped(.reqEqPreset)
+        async let reading = session.readPreset()
+        let deadline = Date().addingTimeInterval(2)
+        while gate.stamped(.reqEqPreset) == before, Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        for segment in segments.dropFirst() { link.deliver(.rspEqPreset, segment) }
+        do {
+            _ = try await reading
+            XCTFail("a read answered only by stale segments must not complete")
+        } catch let error as QxSessionError {
+            XCTAssertEqual(error, .timedOut("the EQ preset"))
+        }
+        XCTAssertTrue(logText().contains("preset segment ignored: it answers an older request"))
+        gate.set(true)
+        let preset = try await session.readPreset()
+        XCTAssertEqual(preset.bands.count, QxFixtures.tenBands.count)
+    }
 }

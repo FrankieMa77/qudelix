@@ -69,6 +69,8 @@ final class QxSession {
     private var started = false
     private var closed = false
     private var presetEpoch = 0
+    private var presetRequestGeneration = 0
+    private var presetStreamGeneration: Int?
     private var statusEpoch = 0
     private var configEpoch = 0
 
@@ -184,6 +186,7 @@ final class QxSession {
     }
 
     static let linkStopWait: TimeInterval = 2
+    static let loadSettleNanoseconds: UInt64 = 150_000_000
 
     var isConnected: Bool { link.isConnected }
 
@@ -212,10 +215,19 @@ final class QxSession {
     func readPreset() async throws -> QxUserEqPreset {
         let start = try await perform { () -> Int in
             self.assembler.reset()
+            self.markPresetRequest()
             try self.transmit(.reqEqPreset, [self.eqGroup.requestMask])
             return self.presetEpoch
         }
-        try await wait("the EQ preset", timeout: timeout) { self.presetEpoch > start }
+        do {
+            try await wait("the EQ preset", timeout: timeout) { self.presetEpoch > start }
+        } catch QxSessionError.timedOut(let what) {
+            await read {
+                Trace.log("preset read timed out; partial buffer "
+                          + Self.hexDump(Array(self.assembler.buffer.prefix(self.eqGroup.presetBytes))))
+            }
+            throw QxSessionError.timedOut(what)
+        }
         return try await perform {
             guard let preset = self.lastPreset else {
                 throw QxSessionError.rejectedValue(
@@ -428,6 +440,9 @@ final class QxSession {
             try self.transmit(.loadEqPreset, [UInt8(index)])
             self.state.eqPresetIdx = index
         }
+        if link.kind == .bluetooth {
+            try? await Task.sleep(nanoseconds: Self.loadSettleNanoseconds)
+        }
         let preset = try await readPreset()
         await read {
             ActiveSlotFile.record(slot: index, group: self.eqGroup, preset: preset,
@@ -509,7 +524,31 @@ final class QxSession {
         try transmit(.reqDevConfig, [QxConfigMask.sys2 | QxConfigMask.eq])
         try transmit(.reqDevStatus, [QxStatusMask.audio | QxStatusMask.power
                                      | QxStatusMask.conn | QxStatusMask.vol])
+        markPresetRequest()
         try transmit(.reqEqPreset, [eqGroup.requestMask])
+    }
+
+    private func markPresetRequest() {
+        presetRequestGeneration += 1
+        presetStreamGeneration = nil
+    }
+
+    private static func hexDump(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    private static func describe(_ preset: QxUserEqPreset) -> String {
+        let bands = preset.bands.map { "\($0.filter) \($0.freq) Hz \($0.gain) dB Q \($0.q)" }
+        return "preGain \(preset.preGain)/\(preset.preGainCh1) crossfeed \(preset.crossfeedLevel) bands [\(bands.joined(separator: "; "))]"
+    }
+
+    private func belongsToCurrentRequest(_ data: [UInt8]) -> Bool {
+        guard link.kind == .bluetooth, data.count >= 2 else { return true }
+        if data[1] & 0x0F == 0 {
+            presetStreamGeneration = presetRequestGeneration
+            return true
+        }
+        return presetStreamGeneration == presetRequestGeneration
     }
 
     private func checkSlot(_ index: Int) throws {
@@ -565,6 +604,10 @@ final class QxSession {
     }
 
     private func ingestPresetSegment(_ data: [UInt8]) {
+        guard belongsToCurrentRequest(data) else {
+            Trace.log("preset segment ignored: it answers an older request")
+            return
+        }
         guard assembler.ingest(data) else { return }
         let buffer = assembler.buffer
         assembler.reset()
@@ -579,7 +622,9 @@ final class QxSession {
         } else {
             lastPreset = nil
             lastPresetIsPEQ = nil
-            Trace.log("preset decode implausible for group \(eqGroup)")
+            Trace.log("preset decode implausible for group \(eqGroup): raw "
+                      + Self.hexDump(Array(buffer.prefix(eqGroup.presetBytes)))
+                      + " decoded " + Self.describe(decoded))
         }
         presetEpoch += 1
         emit(stateLine("preset"))
