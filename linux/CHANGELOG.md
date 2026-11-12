@@ -18,7 +18,7 @@ Bluetooth control works now. In 0.7.0 the 5K's control link never came up over B
 - The 5K accepts a new control link only for a few seconds after it is switched on, and again
   shortly after a previous control link ends. Qudelix waits for that in the background and
   connects within about a second. If the 5K is already on and nothing connects, switch it off,
-  wait two minutes and switch it on again.
+  wait two minutes, switch it on again and let it reconnect by itself.
 - Qudelix no longer asks BlueZ to connect the 5K or to scan for it, so waiting for the control
   link can no longer push your Bluetooth audio over to the headset (call) profile.
 - `qudelix probe` says whether this machine can open a Bluetooth LE control link.

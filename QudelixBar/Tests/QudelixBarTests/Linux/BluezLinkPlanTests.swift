@@ -184,7 +184,7 @@ final class BluezLinkPlanTests: XCTestCase {
         XCTAssertEqual(BluezLinkFailure.waitingForLink,
                        "Waiting for the Qudelix 5K's Bluetooth control link. "
                        + "The 5K offers it for a few seconds after it is switched on. "
-                       + "If it is already on, switch it off, wait two minutes and switch it on again.")
+                       + "If it is already on, switch it off, wait two minutes, switch it on again and let it reconnect by itself.")
         XCTAssertTrue(BluezLinkFailure.noDeviceKnown.contains("Pair it once"))
         XCTAssertEqual(BluezLinkFailure.waitLog("Connection refused"),
                        "BLE waiting for the 5K to offer its control link (Connection refused)")
