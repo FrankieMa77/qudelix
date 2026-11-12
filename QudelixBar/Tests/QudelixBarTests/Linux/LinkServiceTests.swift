@@ -34,7 +34,7 @@ final class LinkServiceTests: XCTestCase {
                                      unusable: "bad", busy: "other")
         let frames: [LinkServiceFrame] = [
             .hello(version: 1), .send(cmd: QxCmd.setVolume.rawValue, data: [1, 2, 3]),
-            .shutdown, .welcome(version: 1), .state(state), .packet([9, 8, 7]),
+            .shutdown, .recycle, .welcome(version: 1), .state(state), .packet([9, 8, 7]),
         ]
         for frame in frames {
             XCTAssertEqual(LinkServiceFrame.decode(frame.encoded()), frame)
@@ -43,6 +43,8 @@ final class LinkServiceTests: XCTestCase {
         XCTAssertNil(LinkServiceFrame.decode([]))
         XCTAssertNil(LinkServiceFrame.decode([0x7F]))
         XCTAssertNil(LinkServiceFrame.decode([0x01]))
+        XCTAssertNil(LinkServiceFrame.decode([0x04, 0x00]))
+        XCTAssertEqual(LinkServiceFrame.recycle.encoded(), [0x04])
         XCTAssertNil(LinkServiceFrame.decode([0x82, 0x00]))
     }
 
@@ -132,6 +134,42 @@ final class LinkServiceTests: XCTestCase {
         peer.send(.send(cmd: QxCmd.setDacFilter.rawValue, data: [6]))
         XCTAssertTrue(awaitCondition { !self.harness.transport.sent.isEmpty })
         XCTAssertEqual(harness.transport.sentCommands, [.setDacFilter])
+    }
+
+    func testRecycleFromAClientReachesTheTransportOnceAndIsLogged() throws {
+        harness.transport.bringUp()
+        harness.start()
+        let peer = try XCTUnwrap(TestPeer(path: harness.socketPath))
+        XCTAssertNotNil(peer.greet())
+        peer.send(.recycle)
+        XCTAssertTrue(awaitCondition { harness.transport.recycles == 1 })
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(harness.transport.recycles, 1)
+        XCTAssertEqual(harness.transport.stopCount, 0)
+        XCTAssertTrue(harness.logLines.contains("a client asked to restart the link"))
+    }
+
+    func testRecycleBeforeHelloIsIgnored() throws {
+        harness.transport.bringUp()
+        harness.start()
+        let peer = try XCTUnwrap(TestPeer(path: harness.socketPath))
+        peer.send(.recycle)
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(harness.transport.recycles, 0)
+    }
+
+    func testAMessageTheServiceDoesNotKnowIsLoggedAndTheClientStaysAttached() throws {
+        harness.transport.bringUp()
+        harness.start()
+        let peer = try XCTUnwrap(TestPeer(path: harness.socketPath))
+        XCTAssertNotNil(peer.greet())
+        XCTAssertTrue(LinkServiceSocket.write(peer.descriptor, .recycle))
+        var raw: [UInt8] = [0x7F]
+        XCTAssertEqual(send(peer.descriptor, &raw, 1, Int32(MSG_NOSIGNAL)), 1)
+        XCTAssertTrue(awaitCondition { harness.logLines.contains("dropped an unexpected message from a client") })
+        peer.send(.send(cmd: QxCmd.setVolume.rawValue, data: [5]))
+        XCTAssertTrue(awaitCondition { harness.transport.sentCommands.contains(.setVolume) })
+        XCTAssertNil(harness.status)
     }
 
     func testClientDetachingLeavesTheTransportRunning() throws {

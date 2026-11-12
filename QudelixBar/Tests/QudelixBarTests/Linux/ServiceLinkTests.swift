@@ -150,6 +150,33 @@ final class ServiceLinkTests: XCTestCase {
         XCTAssertEqual(spawns, 0)
     }
 
+    func testRecycleWhileConnectedReachesTheTransportOnce() {
+        let service = makeHarness()
+        service.transport.bringUp()
+        service.start()
+        let link = makeLink { nil }
+        link.start()
+        XCTAssertTrue(awaitCondition { link.isConnected })
+        link.recycle()
+        XCTAssertTrue(awaitCondition { service.transport.recycles == 1 })
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(service.transport.recycles, 1)
+        XCTAssertEqual(service.transport.stopCount, 0)
+    }
+
+    func testRecycleWhileNotConnectedSendsNothing() {
+        let service = makeHarness()
+        service.start()
+        let link = makeLink { nil }
+        link.start()
+        link.recycle()
+        XCTAssertTrue(awaitCondition { service.logLines.contains { $0.hasPrefix("client attached") } })
+        link.recycle()
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(service.transport.recycles, 0)
+        XCTAssertFalse(service.logLines.contains("a client asked to restart the link"))
+    }
+
     func testReconnectsWhenTheServiceGoesAwayAndComesBack() {
         let first = makeHarness()
         first.transport.bringUp()

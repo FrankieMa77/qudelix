@@ -313,6 +313,45 @@ final class AppModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAnArmedServiceLinkSessionHoldsNoInstanceLockAndQuittingKeepsTheServiceLink() async {
+        let transport = QxFixtures.answeringLink(kind: .bluetooth)
+        let harness = ServiceHarness(transport: transport)
+        defer { harness.cleanUp() }
+        harness.start()
+        transport.bringUp()
+        let link = ServiceLink(socketPath: { harness.socketPath }, spawner: { true },
+                               timing: ServiceLink.Timing(retryInterval: 0.02, spawnWindow: 1,
+                                                          reconnectPause: 0.1, welcomeTimeout: 2,
+                                                          shutdownWait: 2, writeTimeout: 1,
+                                                          shutdownPoll: 0.02))
+        let url = lockURL
+        let foreign = QxInstanceLock.acquire(at: url)
+        XCTAssertNotNil(foreign)
+        let model = AppModel(makeLinks: { [link] },
+                             acquireLock: { QxInstanceLock.acquire(at: url) },
+                             lockProblem: { QxInstanceLock.unavailability(at: url) },
+                             probeDevice: { AppDeviceProbe(present: true, usbPresent: false) },
+                             clock: clock,
+                             retryInterval: 2,
+                             connectTimeout: 2,
+                             bluetoothConnectTimeout: 3)
+        model.start()
+        await until("connected through the service", timeout: 8) { model.state.connection.isConnected }
+        XCTAssertEqual(model.state.connection, .connected(.bluetooth))
+        XCTAssertEqual(transport.recycles, 0)
+        foreign?.release()
+        XCTAssertTrue(lockIsFree())
+        await model.shutdown()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(transport.stopCount, 0)
+        XCTAssertTrue(transport.isConnected)
+        XCTAssertNil(harness.status)
+        XCTAssertTrue(harness.acceptsConnections())
+        harness.stop()
+        XCTAssertEqual(transport.stopCount, 1)
+    }
+
+    @MainActor
     func testAUsbSessionConnectingStopsTheArmedBluetoothLink() async {
         let armed = ArmedLinks()
         var usbReady = false

@@ -18,6 +18,23 @@ func makeTemporaryDirectory() -> URL {
     return directory
 }
 
+final class LockedLines {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func add(_ line: String) {
+        lock.lock()
+        lines.append(line)
+        lock.unlock()
+    }
+
+    var all: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines
+    }
+}
+
 final class ServiceHarness {
     let directory: URL
     let socketPath: String
@@ -27,6 +44,9 @@ final class ServiceHarness {
     private let finished = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var exitStatus: Int32?
+    private let sink = LockedLines()
+
+    var logLines: [String] { sink.all }
 
     init(directory: URL = makeTemporaryDirectory(),
          transport: FakeLink = FakeLink(kind: .bluetooth),
@@ -35,10 +55,11 @@ final class ServiceHarness {
         self.transport = transport
         socketPath = directory.appendingPathComponent("link.sock").path
         lockURL = directory.appendingPathComponent("link-service.lock")
+        let sink = self.sink
         service = LinkService(socketPath: socketPath, lockURL: lockURL,
                               makeTransport: { transport },
                               pollInterval: 0.02, stopWait: 1,
-                              handlesSignals: handlesSignals, log: { _ in })
+                              handlesSignals: handlesSignals, log: { sink.add($0) })
     }
 
     var status: Int32? {

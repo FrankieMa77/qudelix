@@ -19,6 +19,7 @@ final class FakeLink: QxLink {
     var started = false
     var stopped = false
     var keepsArmed = false
+    var needsInstanceLock = true
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private(set) var recycles = 0
