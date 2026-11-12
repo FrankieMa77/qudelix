@@ -369,12 +369,23 @@ final class DBusConnection {
 
     static let defaultTimeoutMs: Int32 = 15_000
 
-    init() throws {
+    init(address: String? = nil) throws {
         _ = dbus_threads_init_default()
         var error = DBusError()
         dbus_error_init(&error)
         defer { dbus_error_free(&error) }
-        guard let handle = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error) else {
+        let opened: OpaquePointer?
+        if let address {
+            opened = dbus_connection_open_private(address, &error)
+            if let opened, dbus_bus_register(opened, &error) == 0 {
+                dbus_connection_close(opened)
+                dbus_connection_unref(opened)
+                throw DBusConnection.failure(&error, fallback: "cannot register on the bus")
+            }
+        } else {
+            opened = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error)
+        }
+        guard let handle = opened else {
             throw DBusConnection.failure(&error, fallback: "cannot reach the system bus")
         }
         dbus_connection_set_exit_on_disconnect(handle, 0)
@@ -490,9 +501,9 @@ final class DBusConnection {
         pumpStopped = stopped
         let thread = Thread { [weak self] in
             defer { stopped.signal() }
-            guard let self else { return }
-            while self.isRunning {
-                if dbus_connection_read_write_dispatch(self.handle, 200) == 0 { break }
+            while true {
+                guard let self, self.isRunning else { return }
+                if dbus_connection_read_write_dispatch(self.handle, 200) == 0 { return }
             }
         }
         thread.name = "qudelix.dbus"
@@ -514,7 +525,9 @@ final class DBusConnection {
         handlers = []
         lock.unlock()
         guard wasRunning else { return }
-        _ = pumpStopped?.wait(timeout: .now() + 2)
+        if Thread.current !== pump {
+            _ = pumpStopped?.wait(timeout: .now() + 2)
+        }
         pumpStopped = nil
         if let filterContext {
             dbus_connection_remove_filter(handle, dbusSignalFilter, filterContext)

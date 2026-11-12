@@ -262,6 +262,11 @@ final class BluezTransport: QxLink {
         }
     }
 
+    deinit {
+        bus?.close()
+        bus = nil
+    }
+
     func send(_ cmd: QxCmd, _ data: [UInt8]) {
         queue.async { [weak self] in self?.sendNow(cmd, data) }
     }

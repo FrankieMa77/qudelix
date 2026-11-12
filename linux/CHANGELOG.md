@@ -22,6 +22,7 @@ Bluetooth control works now. In 0.7.0 the 5K's control link never came up over B
 - Qudelix no longer asks BlueZ to connect the 5K or to scan for it, so waiting for the control
   link can no longer push your Bluetooth audio over to the headset (call) profile.
 - `qudelix probe` says whether this machine can open a Bluetooth LE control link.
+- The app no longer leaks system bus connections while it waits for the 5K over Bluetooth.
 
 ## 0.7.0
 

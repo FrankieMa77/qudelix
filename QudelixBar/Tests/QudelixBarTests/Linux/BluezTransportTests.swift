@@ -343,6 +343,29 @@ final class BluezTransportTests: XCTestCase {
         }
     }
 
+    func testReleasingAStartedTransportWithoutStopClosesItsBus() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        var transport: BluezTransport? = make(bus: bus, events: events,
+                                              sockets: { _ in FakeFiveKSocket(.silent) })
+        transport?.start()
+        until("bus used") { bus.listings > 0 }
+        transport = nil
+        until("bus closed") { bus.closed }
+    }
+
+    func testStopFollowedByAnImmediateReleaseClosesTheBus() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        var transport: BluezTransport? = make(bus: bus, events: events,
+                                              sockets: { _ in FakeFiveKSocket(.silent) })
+        transport?.start()
+        until("bus used") { bus.listings > 0 }
+        transport?.stop()
+        transport = nil
+        until("bus closed") { bus.closed }
+    }
+
     func testTheLinkComesUpOverOurOwnSocketAndReportsConnected() {
         let bus = FakeBus(objects: objects(connected: true))
         let events = Events()
