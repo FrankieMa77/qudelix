@@ -44,7 +44,7 @@ final class ConnectionStatusPage {
         case .searching:
             icon = "audio-headphones-symbolic"
             title = "Looking for your Qudelix 5K"
-            detail = "Connect it with a USB cable (recommended). Bluetooth is untested. This window connects by itself."
+            detail = "Connect it with a USB cable, or switch it on near this computer to use Bluetooth. This window connects by itself."
             busy = true
         case .connecting:
             icon = "audio-headphones-symbolic"

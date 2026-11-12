@@ -294,9 +294,9 @@ package final class EqEditorModel {
         request.preamp = preamp
         request.bands = fitted.bands
         let dropped = fitted.droppedBands
-        let summary = (["Applied \(fitted.bands.count) band(s), pre-gain "
+        let summary = (["Applied \(Self.bandCount(fitted.bands.count)), pre-gain "
             + DisplayFormat.decibels(preamp)
-            + (dropped > 0 ? " \u{00B7} \(dropped) band(s) dropped"
+            + (dropped > 0 ? " \u{00B7} \(Self.bandCount(dropped)) dropped"
                 + (file.bands.count > capacity && group != .b20 ? " (fit in 20-band mode)" : "")
                 : "")] + fitted.notes).joined(separator: " \u{00B7} ")
         DebugLog.shared.log("import: \(summary)")
@@ -358,6 +358,10 @@ package final class EqEditorModel {
 
     func flushWrites() async {
         await waitForIdle()
+    }
+
+    static func bandCount(_ count: Int) -> String {
+        count == 1 ? "1 band" : "\(count) bands"
     }
 
     package func select(_ index: Int?) {

@@ -371,7 +371,7 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertTrue(model.eq.state.canUndo)
         XCTAssertEqual(model.eq.state.undoLabel, "apply Warm")
         XCTAssertTrue(model.hasPendingSave)
-        XCTAssertTrue(saved.state.notice?.hasPrefix("Applied 10 band(s)") == true)
+        XCTAssertTrue(saved.state.notice?.hasPrefix("Applied 10 bands") == true)
 
         clock.advance(5.1)
         await until("saveAll") { device.link.sentCommands.contains(.saveAll) }
@@ -568,7 +568,7 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(model.eq.state.bands[9].filter, .bypass)
         XCTAssertEqual(model.eq.state.undoLabel, "import")
         XCTAssertTrue(model.hasPendingSave)
-        XCTAssertTrue(autoEq.state.summary?.contains("Applied 8 band(s)") == true)
+        XCTAssertTrue(autoEq.state.summary?.contains("Applied 8 bands") == true)
         XCTAssertTrue(autoEq.state.summary?.contains("Sennheiser HD 600") == true)
         let curve = model.eq.liveCurve()
         XCTAssertEqual(curve?.sourceName, "Sennheiser HD 600")
@@ -782,7 +782,7 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(device.link.payloads(for: .setEqBandParam).count, 10)
         XCTAssertEqual(model.eq.state.undoLabel, "apply Airy 650")
         XCTAssertTrue(model.hasPendingSave)
-        XCTAssertTrue(ai.state.summary?.hasPrefix("Applied 10 band(s)") == true)
+        XCTAssertTrue(ai.state.summary?.hasPrefix("Applied 10 bands") == true)
         XCTAssertTrue(ai.saveDraftToLibrary())
         XCTAssertEqual(stored().map(\.name), ["Airy 650"])
         await model.shutdown()

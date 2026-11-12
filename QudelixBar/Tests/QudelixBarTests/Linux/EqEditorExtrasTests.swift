@@ -59,6 +59,13 @@ final class EqEditorExtrasTests: XCTestCase {
         await model.waitForIdle()
     }
 
+    @MainActor
+    func testTheBandCountCopyIsSingularForOneBand() {
+        XCTAssertEqual(EqEditorModel.bandCount(1), "1 band")
+        XCTAssertEqual(EqEditorModel.bandCount(0), "0 bands")
+        XCTAssertEqual(EqEditorModel.bandCount(20), "20 bands")
+    }
+
     private static let boosted = """
         Preamp: -6 dB
         Filter 1: ON PK Fc 60 Hz Gain 16 dB Q 1.0
@@ -81,7 +88,7 @@ final class EqEditorExtrasTests: XCTestCase {
         XCTAssertNotNil(divergence)
         XCTAssertGreaterThan(abs(divergence?.peak ?? 0), 1)
         XCTAssertEqual(notices.last?.kind, .success)
-        XCTAssertTrue(notices.last?.message.hasPrefix("Applied 2 band(s)") ?? false)
+        XCTAssertTrue(notices.last?.message.hasPrefix("Applied 2 bands") ?? false)
         await model.shutdown()
     }
 
