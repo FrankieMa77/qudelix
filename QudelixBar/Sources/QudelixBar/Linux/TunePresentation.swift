@@ -45,7 +45,7 @@ package enum TunePresentation {
     package static let startLabel = "Start"
     package static let heardLabel = "I hear it"
     package static let heardHelp = "Press the moment you hear anything, however faint. Silence is normal."
-    package static let switchHelp = "Switch as often as you like, then choose. Space switches, Enter confirms the focused button."
+    package static let switchHelp = "Switch as often as you like, then choose. Space switches, Enter confirms the focused button, and Space presses Stop when Stop has focus."
     package static let toneSessionHelp = "Press Space or the button the moment you hear anything, however faint. Silence is normal."
     package static let sessionBadge = "Session running"
     package static let restoreText = "Your EQ was put back the way it was before the session."
@@ -438,6 +438,23 @@ package enum TunePresentation {
     }
 }
 
+package enum TuneKeyFocus: Equatable {
+    case sessionControl
+    case other
+}
+
+package struct TuneRoundMark: Equatable {
+    package let method: TuneMethod
+    package let phase: TunePhase
+    package let progress: String
+}
+
+package enum TuneFocusTarget: Equatable {
+    case sessionMain
+    case keep
+    case discard
+}
+
 package enum TuneKeyAction: Equatable {
     case toggleSide
     case heard
@@ -446,14 +463,29 @@ package enum TuneKeyAction: Equatable {
 extension TunePresentation {
     package static let spaceKey: UInt32 = 0x20
 
-    package static func keyAction(keyval: UInt32, modified: Bool, buttonFocused: Bool = false, state: TuneState) -> TuneKeyAction? {
-        guard keyval == spaceKey, !modified, !buttonFocused, let method = state.active else { return nil }
+    package static func keyAction(keyval: UInt32, modified: Bool, focus: TuneKeyFocus = .sessionControl, state: TuneState) -> TuneKeyAction? {
+        guard keyval == spaceKey, !modified, focus == .sessionControl, let method = state.active else { return nil }
         switch method {
         case .compare: return state.compare.phase == .running ? .toggleSide : nil
         case .shape: return state.shape.phase == .running ? .toggleSide : nil
         case .check: return state.check.phase == .running ? .toggleSide : nil
         case .trim: return state.trim.phase == .running ? .toggleSide : nil
         case .tones: return state.tones.phase == .running ? .heard : nil
+        }
+    }
+
+    package static func roundMark(_ screen: TuneScreen) -> TuneRoundMark {
+        TuneRoundMark(method: screen.method, phase: screen.phase, progress: screen.progressText)
+    }
+
+    package static func focusTarget(from previous: TuneRoundMark?, to mark: TuneRoundMark,
+                                    screen: TuneScreen, focus: TuneKeyFocus) -> TuneFocusTarget? {
+        guard previous != mark else { return nil }
+        let fresh = previous?.phase != mark.phase || previous?.method != mark.method
+        switch mark.phase {
+        case .running: return fresh || focus == .sessionControl ? .sessionMain : nil
+        case .finished: return fresh ? (screen.keepLabel == nil ? .discard : .keep) : nil
+        default: return nil
         }
     }
 

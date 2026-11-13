@@ -13,6 +13,8 @@ final class NoticeRows {
     let group: Widget
     private var slots: [Slot] = []
 
+    var rows: [Widget] { slots.map(\.row) }
+
     init(count: Int, title: String? = nil) {
         group = Ui.group(title)
         for _ in 0..<count {

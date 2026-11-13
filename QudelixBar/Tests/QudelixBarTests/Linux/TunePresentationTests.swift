@@ -196,14 +196,75 @@ final class TunePresentationTests: XCTestCase {
         XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, state: TuneState()))
     }
 
-    func testSpaceIsLeftToAFocusedButtonInEveryRunningSession() {
+    func testSpaceIsLeftToAFocusedOtherControlInEveryRunningSession() {
         let space = TunePresentation.spaceKey
         let running: [DemoTuneScenario] = [.compareRunning, .shapeRunning, .blindRunning, .trimRunning, .tonesRunning]
         for scenario in running {
             let state = DemoTuneData.state(scenario)
-            XCTAssertNotNil(TunePresentation.keyAction(keyval: space, modified: false, buttonFocused: false, state: state))
-            XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, buttonFocused: true, state: state))
+            XCTAssertNotNil(TunePresentation.keyAction(keyval: space, modified: false, focus: .sessionControl, state: state))
+            XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, focus: .other, state: state))
         }
+    }
+
+    func testSpaceSwitchesWhateverSessionControlHasFocusPerMethod() {
+        let space = TunePresentation.spaceKey
+        let expected: [(DemoTuneScenario, TuneKeyAction)] = [
+            (.compareRunning, .toggleSide), (.shapeRunning, .toggleSide), (.blindRunning, .toggleSide),
+            (.trimRunning, .toggleSide), (.tonesRunning, .heard)
+        ]
+        for (scenario, action) in expected {
+            let state = DemoTuneData.state(scenario)
+            XCTAssertEqual(TunePresentation.keyAction(keyval: space, modified: false, focus: .sessionControl, state: state), action)
+            XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, focus: .other, state: state))
+        }
+    }
+
+    func testSpaceDoesNothingOutsideARunningSessionWhateverHasFocus() {
+        let space = TunePresentation.spaceKey
+        for scenario in [DemoTuneScenario.compareIdle, .compareFinished, .shapeFinished] {
+            for focus in [TuneKeyFocus.sessionControl, .other] {
+                XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, focus: focus, state: DemoTuneData.state(scenario)))
+            }
+        }
+    }
+
+    private func mark(_ scenario: DemoTuneScenario) -> (TuneRoundMark, TuneScreen) {
+        let state = DemoTuneData.state(scenario)
+        let screen = TunePresentation.screen(state.active ?? .compare, state)
+        return (TunePresentation.roundMark(screen), screen)
+    }
+
+    func testFocusGoesToTheMainActionWhenASessionStarts() {
+        for scenario in [DemoTuneScenario.compareRunning, .shapeRunning, .blindRunning, .trimRunning, .tonesRunning] {
+            let (current, screen) = mark(scenario)
+            XCTAssertEqual(TunePresentation.focusTarget(from: nil, to: current, screen: screen, focus: .other), .sessionMain)
+            let idle = mark(.compareIdle).0
+            XCTAssertEqual(TunePresentation.focusTarget(from: idle, to: current, screen: screen, focus: .other), .sessionMain)
+        }
+    }
+
+    func testFocusReturnsToTheMainActionOnANewRoundOnlyFromASessionControl() {
+        let (current, screen) = mark(.compareRunning)
+        let earlier = TuneRoundMark(method: current.method, phase: .running, progress: "earlier")
+        XCTAssertEqual(TunePresentation.focusTarget(from: earlier, to: current, screen: screen, focus: .sessionControl), .sessionMain)
+        XCTAssertNil(TunePresentation.focusTarget(from: earlier, to: current, screen: screen, focus: .other))
+        XCTAssertNil(TunePresentation.focusTarget(from: current, to: current, screen: screen, focus: .sessionControl))
+    }
+
+    func testFocusGoesToKeepOrDiscardWhenASessionEnds() {
+        for scenario in [DemoTuneScenario.compareFinished, .shapeFinished, .blindFinished, .trimFinished, .tonesFinished, .tonesUnreliable] {
+            let (finished, screen) = mark(scenario)
+            let running = TuneRoundMark(method: finished.method, phase: .running, progress: "x")
+            let target = TunePresentation.focusTarget(from: running, to: finished, screen: screen, focus: .other)
+            XCTAssertEqual(target, screen.keepLabel == nil ? .discard : .keep, "\(scenario)")
+            XCTAssertNil(TunePresentation.focusTarget(from: finished, to: finished, screen: screen, focus: .other))
+        }
+    }
+
+    func testFocusStaysPutWhenIdle() {
+        let (idle, screen) = mark(.compareIdle)
+        let running = TuneRoundMark(method: idle.method, phase: .running, progress: "x")
+        XCTAssertNil(TunePresentation.focusTarget(from: running, to: idle, screen: screen, focus: .sessionControl))
     }
 
     func testAccessibleRowNamesIncludeTheValue() {

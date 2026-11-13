@@ -86,8 +86,7 @@ final class TunePage {
     private var selected = TuneMethod.compare
     private var state = TuneState()
     private var updating = false
-    private var lastPhase: TunePhase?
-    private var lastMethod: TuneMethod?
+    private var lastMark: TuneRoundMark?
 
     init(tune: TuneModel) {
         self.tune = tune
@@ -220,7 +219,8 @@ final class TunePage {
         gtk_widget_set_margin_bottom(actionsBox, 12)
         gtk_widget_set_margin_start(actionsBox, 12)
 
-        let staticRows = textSlots + footSlots + resultSlots.map(\.row) + [sessionRow, catchRow]
+        let staticRows = textSlots + footSlots + resultSlots.map(\.row) + notices.rows
+            + [sessionRow, catchRow, playingRow, progressHolder]
         for row in staticRows { gtk_widget_set_focusable(row, 0) }
 
         let page = Ui.page([picker, notices.group, textGroup, sessionGroup, resultsGroup, footGroup])
@@ -265,7 +265,7 @@ final class TunePage {
             guard let self else { return false }
             let modified = modifiers & (GDK_CONTROL_MASK.rawValue | GDK_ALT_MASK.rawValue | GDK_SUPER_MASK.rawValue) != 0
             guard let action = TunePresentation.keyAction(keyval: keyval, modified: modified,
-                                                              buttonFocused: Self.buttonHasFocus(self.widget), state: self.state) else {
+                                                              focus: self.keyFocus(), state: self.state) else {
                 return false
             }
             switch action {
@@ -276,11 +276,15 @@ final class TunePage {
         }
     }
 
-    private static func buttonHasFocus(_ page: Widget) -> Bool {
-        guard let root = gtk_widget_get_root(page),
-              let focus = gtk_root_get_focus(root) else { return false }
-        return g_type_check_instance_is_a(UnsafeMutableRawPointer(focus).assumingMemoryBound(to: GTypeInstance.self),
-                                          gtk_button_get_type()) != 0
+    private func keyFocus() -> TuneKeyFocus {
+        guard let root = gtk_widget_get_root(widget),
+              let focus = gtk_root_get_focus(root) else { return .sessionControl }
+        let choices = [switchButton, heardButton, preferA, preferB, sameButton]
+        if choices.contains(where: { $0 == focus }) { return .sessionControl }
+        if focus == methodRow || gtk_widget_is_ancestor(focus, methodRow) != 0 { return .other }
+        let isButton = g_type_check_instance_is_a(UnsafeMutableRawPointer(focus).assumingMemoryBound(to: GTypeInstance.self),
+                                                  gtk_button_get_type()) != 0
+        return isButton ? .other : .sessionControl
     }
 
     func select(_ method: TuneMethod) {
@@ -348,9 +352,6 @@ final class TunePage {
             Ui.show(playingRow, !screen.isTones)
             Ui.show(choiceBox, !screen.isTones)
             Ui.show(heardButton, screen.isTones)
-            if lastPhase != .running || lastMethod != selected {
-                gtk_widget_grab_focus(screen.isTones ? heardButton : switchButton)
-            }
         }
 
         let hasRows = finished && !screen.rows.isEmpty
@@ -394,7 +395,14 @@ final class TunePage {
         gtk_button_set_label(discardButton.typed(GtkButton.self), screen.discardLabel)
         Accessible.setLabel(discardButton, screen.discardLabel == "Close" ? "Close the result" : "Discard the result")
         Ui.show(actionsBox, !running)
-        lastPhase = screen.phase
-        lastMethod = selected
+        let mark = TunePresentation.roundMark(screen)
+        let target = TunePresentation.focusTarget(from: lastMark, to: mark, screen: screen, focus: keyFocus())
+        lastMark = mark
+        switch target {
+        case .sessionMain: gtk_widget_grab_focus(screen.isTones ? heardButton : switchButton)
+        case .keep: gtk_widget_grab_focus(keepButton)
+        case .discard: gtk_widget_grab_focus(discardButton)
+        case nil: break
+        }
     }
 }
