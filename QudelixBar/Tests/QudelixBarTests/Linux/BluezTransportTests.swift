@@ -718,6 +718,78 @@ final class BluezTransportTests: XCTestCase {
         XCTAssertEqual(bus.calls, [])
     }
 
+    func testAStopFollowedByAStartWhileTheConnectIsPendingIsHonoredAndTheNewLinkSurvives() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events,
+                             sockets: { $0 == 1 ? FakeFiveKSocket(.pending) : FakeFiveKSocket(.fiveK) })
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        transport.stop()
+        transport.start()
+        until("the first connect is closed") { events.socketList.first?.closes ?? 0 > 0 }
+        until("connected") { events.connectCount == 1 }
+        Thread.sleep(forTimeInterval: 0.4)
+        XCTAssertTrue(transport.isConnected)
+        XCTAssertEqual(events.disconnectCount, 0)
+    }
+
+    private let searchStartedLog = "BLE another program started searching for Bluetooth devices"
+    private let searchStoppedLog = "BLE another program stopped searching for Bluetooth devices"
+    private let audioUpLog = "BLE the 5K's audio link is up"
+    private let audioDownLog = "BLE the 5K's audio link is down"
+
+    private func audioLink(_ on: Bool, _ bus: FakeBus) {
+        bus.emit(DBusSignal(path: device, interface: "org.freedesktop.DBus.Properties",
+                            member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Device1"),
+                                        .dictionary([("Connected", .boolean(on))])]))
+    }
+
+    func testEverySearchChangeIsLoggedEvenWhenItIsTooShortToShowTheNotice() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) },
+                             searchDelay: 30)
+        let startedBefore = logCount(searchStartedLog)
+        let stoppedBefore = logCount(searchStoppedLog)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        discovering(true, bus)
+        discovering(false, bus)
+        discovering(true, bus)
+        until("three entries") {
+            self.logCount(self.searchStartedLog) - startedBefore == 2
+                && self.logCount(self.searchStoppedLog) - stoppedBefore == 1
+        }
+        XCTAssertEqual(transport.failureReason, BluezLinkFailure.waitingForLink)
+    }
+
+    func testTheFiveKsAudioLinkGoingUpAndDownIsLoggedAndOtherDevicesAreNot() {
+        let bus = FakeBus(objects: objects())
+        let events = Events()
+        let transport = make(bus: bus, events: events, sockets: { _ in FakeFiveKSocket(.pending) })
+        let upBefore = logCount(audioUpLog)
+        let downBefore = logCount(audioDownLog)
+        transport.start()
+        defer { transport.stop() }
+        until("armed") { events.socketList.count == 1 }
+        audioLink(true, bus)
+        audioLink(false, bus)
+        audioLink(true, bus)
+        bus.emit(DBusSignal(path: "/org/bluez/hci0/dev_11_22_33_44_55_66",
+                            interface: "org.freedesktop.DBus.Properties", member: "PropertiesChanged",
+                            arguments: [.string("org.bluez.Device1"),
+                                        .dictionary([("Connected", .boolean(true))])]))
+        until("the entries") {
+            self.logCount(self.audioUpLog) - upBefore == 2 && self.logCount(self.audioDownLog) - downBefore == 1
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(logCount(audioUpLog) - upBefore, 2)
+    }
+
     func testNoDeviceCallsAreEverMadeWhileWaiting() {
         let bus = FakeBus(objects: objects(connected: true))
         let events = Events()

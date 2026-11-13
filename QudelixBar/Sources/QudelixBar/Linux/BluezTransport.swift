@@ -105,6 +105,7 @@ final class BluezTransport: QxLink {
     private var searchingSince: TimeInterval = 0
     private var searchNoticeLogged = false
     private var rearmToken = 0
+    private var stopEpoch = 0
 
     private struct ArmTarget {
         let device: String
@@ -289,6 +290,7 @@ final class BluezTransport: QxLink {
     private func stop(completion: (() -> Void)?) {
         lock.lock()
         stopping = true
+        stopEpoch += 1
         running = false
         lastDrop = nil
         lock.unlock()
@@ -607,15 +609,28 @@ final class BluezTransport: QxLink {
         }
     }
 
+    private var currentStopEpoch: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopEpoch
+    }
+
+    private func halted(since epoch: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopping || stopEpoch != epoch
+    }
+
     private func armLE(_ target: ArmTarget) {
+        let epoch = currentStopEpoch
         armTarget = target
         setFailure(BluezLinkFailure.waitingForLink)
         log("BLE armed: waiting for the 5K to accept an LE control link at \(target.address)")
         var quickFailures = 0
-        while !isStopping {
+        while !halted(since: epoch) {
             let candidate = makeSocket()
             let began = Date()
-            switch attempt(candidate, target) {
+            switch attempt(candidate, target, epoch: epoch) {
             case .connected:
                 linkConnected(candidate)
                 return
@@ -636,7 +651,7 @@ final class BluezTransport: QxLink {
                 ? armedDelay
                 : min(backoffCeiling, backoffFloor * pow(2, Double(quickFailures - 1)))
             let resume = Date().addingTimeInterval(pause)
-            while !isStopping, Date() < resume {
+            while !halted(since: epoch), Date() < resume {
                 reviewSearchNotice()
                 if relistDue(), reviewTarget(target) == .replace {
                     scheduleRearm(after: 0)
@@ -678,7 +693,7 @@ final class BluezTransport: QxLink {
         return .keep
     }
 
-    private func attempt(_ candidate: LEAttSocket, _ target: ArmTarget) -> Attempt {
+    private func attempt(_ candidate: LEAttSocket, _ target: ArmTarget, epoch: Int) -> Attempt {
         var state: LEAttConnectState
         do {
             state = try candidate.beginConnect(address: target.address, addressType: target.addressType)
@@ -696,7 +711,7 @@ final class BluezTransport: QxLink {
             reportUnusable("Bluetooth LE control links are not available here (\(error)).")
             return .fatal
         }
-        while !isStopping {
+        while !halted(since: epoch) {
             switch state {
             case .connected:
                 return .connected
@@ -1016,6 +1031,9 @@ final class BluezTransport: QxLink {
                 requestBringUp()
                 return
             }
+            if let audioUp = changed["Connected"]?.boolValue {
+                log("BLE the 5K's audio link is " + (audioUp ? "up" : "down"))
+            }
             let identity: Set<String> = ["Address", "AddressType", "Paired"]
             lock.lock()
             let viaBlueZ = mode == .bluez
@@ -1063,7 +1081,11 @@ final class BluezTransport: QxLink {
     }
 
     private func handleAdapterChange(_ changed: [String: DBusValue]) {
-        if let searching = changed["Discovering"]?.boolValue { recordSearching(searching) }
+        if let searching = changed["Discovering"]?.boolValue {
+            recordSearching(searching)
+            log("BLE another program " + (searching ? "started" : "stopped")
+                + " searching for Bluetooth devices")
+        }
         guard let powered = changed["Powered"]?.boolValue else { return }
         lock.lock()
         relistRequested = true
