@@ -16,6 +16,8 @@ final class EqTestDevice {
     var dropsSaves = false
     var dropsNames = false
     var silentNames = false
+    var silentStatus = false
+    var onSave: (() -> Void)?
     var lateNames: [Int: String] = [:]
 
     init(group: QxEqGroup = .user, bands: [QxEqBandValue]? = nil, preGain: Double = -3,
@@ -37,6 +39,7 @@ final class EqTestDevice {
         case .reqInitData:
             link.deliver(.rspInitData, QxFixtures.initData)
         case .reqDevStatus:
+            guard !silentStatus else { break }
             var frame = QxFixtures.devStatus(volumeDb: -12)
             if activeCall { frame[1] |= 0x04 }
             link.deliver(.rspDevStatus, frame)
@@ -86,6 +89,7 @@ final class EqTestDevice {
                 bands = slot.bands
             }
         case .saveEqPreset:
+            onSave?()
             guard !dropsSaves else { break }
             slots[Int(data[0])] = (preGain, bands)
         case .setEqPresetName:

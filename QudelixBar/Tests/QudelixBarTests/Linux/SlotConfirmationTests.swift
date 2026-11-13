@@ -77,39 +77,62 @@ final class SlotConfirmationTests: XCTestCase {
         notices.filter { $0.kind == kind }.map(\.message)
     }
 
+    private func assertNoLoadOrBandWrites(_ device: EqTestDevice, file: StaticString = #filePath,
+                                           line: UInt = #line) {
+        let forbidden: Set<QxCmd> = [.loadEqPreset, .setEqBandParam, .setEqPreGain]
+        XCTAssertTrue(device.link.sentCommands.allSatisfy { !forbidden.contains($0) },
+                      "sent \(device.link.sentCommands)", file: file, line: line)
+    }
+
     @MainActor
-    func testASaveThatTheDeviceKeptIsConfirmedAfterTheReadBack() async {
+    func testASaveIsConfirmedByARoundTripAfterTheSaveFrameWithoutLoadingAnything() async {
         let device = device()
         let model = await open(device)
         model.eq.setBand(1, EqBand(filter: .peak, freq: 44, gain: 6, q: 1))
         await model.eq.waitForIdle()
+        device.link.clearSends()
         model.presets.save(slot: 7)
         await model.presets.waitForIdle()
         XCTAssertEqual(messages(.success), ["Saved to slot 8."])
         XCTAssertTrue(messages(.failure).isEmpty)
+        let sent = device.link.sentCommands
+        let saved = sent.firstIndex(of: .saveEqPreset)
+        XCTAssertNotNil(saved)
+        XCTAssertTrue(sent[(saved ?? 0)...].contains(.reqDevStatus))
+        assertNoLoadOrBandWrites(device)
+        XCTAssertEqual(model.presets.state.activeIndex, 2)
+        XCTAssertEqual(device.slotIndex, 2)
         XCTAssertEqual(device.slots[7]?.bands[1].gain ?? 0, 6, accuracy: 0.001)
-        XCTAssertTrue(device.link.sentCommands.contains(.loadEqPreset))
-        XCTAssertEqual(model.eq.state.bands[1].gain, 6, accuracy: 0.001)
-        XCTAssertEqual(device.bands[1].gain, 6, accuracy: 0.001)
         await model.shutdown()
     }
 
     @MainActor
-    func testASaveTheDeviceDroppedIsReportedAndTheLiveCurveIsPutBack() async {
+    func testASaveFrameThatGetsNoReplyGivesTheErrorWithinTheWindow() async {
         let device = device()
         let model = await open(device)
-        model.eq.setBand(1, EqBand(filter: .peak, freq: 44, gain: 6, q: 1))
-        await model.eq.waitForIdle()
-        device.dropsSaves = true
+        device.silentStatus = true
+        device.link.clearSends()
         let began = Date()
-        model.presets.save(slot: 5)
-        await model.presets.waitForIdle()
+        model.presets.save(slot: 7)
+        await until("the error") { !self.messages(.failure).isEmpty }
         XCTAssertLessThan(Date().timeIntervalSince(began), PresetSlotsModel.confirmTimeout + 2)
         XCTAssertEqual(messages(.failure), [PresetSlotsModel.saveUnconfirmed])
         XCTAssertTrue(messages(.success).isEmpty)
-        XCTAssertEqual(device.slots[5]?.bands[1].gain ?? 0, 2, accuracy: 0.001)
-        XCTAssertEqual(device.bands[1].gain, 6, accuracy: 0.001)
-        XCTAssertEqual(model.eq.state.bands[1].gain, 6, accuracy: 0.001)
+        assertNoLoadOrBandWrites(device)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testASaveTheLinkRejectsGivesTheError() async {
+        let device = device()
+        let model = await open(device)
+        device.onSave = { [link = device.link] in link.declareUnusable("Bluetooth writes keep failing") }
+        device.link.clearSends()
+        model.presets.save(slot: 7)
+        await until("the error") { !self.messages(.failure).isEmpty }
+        XCTAssertTrue(messages(.failure).contains(PresetSlotsModel.saveUnconfirmed))
+        XCTAssertTrue(messages(.success).isEmpty)
+        assertNoLoadOrBandWrites(device)
         await model.shutdown()
     }
 

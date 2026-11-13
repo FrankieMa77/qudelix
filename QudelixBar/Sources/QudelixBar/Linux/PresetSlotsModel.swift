@@ -162,7 +162,6 @@ package final class PresetSlotsModel {
             var confirmed = false
             let committed = await self.host.eq.committingToFlash(session) {
                 let held = await self.host.eq.writeRealShapes(session)
-                let expected = self.expectedShapes(held: held)
                 do {
                     try await session.savePreset(index: index)
                     saved = true
@@ -180,8 +179,7 @@ package final class PresetSlotsModel {
                             wantedName = .some(stored.isEmpty ? nil : stored)
                         }
                     }
-                    confirmed = await self.confirmSlot(session, index: index, expected: expected,
-                                                       name: wantedName)
+                    confirmed = await self.confirmSave(session, name: wantedName, index: index)
                 }
                 await self.host.eq.writeMutedShapes(held, session)
             }
@@ -190,7 +188,6 @@ package final class PresetSlotsModel {
                 return self.fail(failure)
             }
             guard saved else { return self.fail(failure) }
-            try? await session.refreshStatus()
             if confirmed {
                 self.host.notify(.success, "Saved to slot \(index + 1).")
             } else {
@@ -228,13 +225,7 @@ package final class PresetSlotsModel {
         }
     }
 
-    private struct ExpectedShapes {
-        var bands: [QxEqBandValue]
-        var preGain: Double
-    }
-
     private final class ReadBack {
-        var preset: QxUserEqPreset?
         var name: String??
     }
 
@@ -245,29 +236,6 @@ package final class PresetSlotsModel {
             continuation?.resume(returning: value)
             continuation = nil
         }
-    }
-
-    private func expectedShapes(held: [Int: QxFilter]) -> ExpectedShapes {
-        var bands = host.eq.liveBands
-        for (index, filter) in held where bands.indices.contains(index) && bands[index].filter == .bypass {
-            bands[index].filter = filter
-        }
-        return ExpectedShapes(bands: bands.map(QxSession.clamped), preGain: host.eq.livePreGain)
-    }
-
-    private static func matches(_ read: QxUserEqPreset, _ expected: ExpectedShapes) -> Bool {
-        guard read.bands.count == expected.bands.count,
-              abs(read.preGain - EQHeadroom.clamp(expected.preGain)) < 0.15 else { return false }
-        for (have, want) in zip(read.bands, expected.bands) where !matches(have, want) { return false }
-        return true
-    }
-
-    private static func matches(_ have: QxEqBandValue, _ want: QxEqBandValue) -> Bool {
-        guard have.filter == want.filter else { return false }
-        guard want.filter != .bypass else { return true }
-        return abs(have.freq - want.freq) <= 1
-            && abs(have.gain - want.gain) < 0.15
-            && abs(have.q - want.q) <= max(0.02, want.q * 0.01)
     }
 
     private func within<T>(_ seconds: TimeInterval, _ body: @escaping () async -> T?) async -> T? {
@@ -306,36 +274,21 @@ package final class PresetSlotsModel {
         return ok
     }
 
-    private func confirmSlot(_ session: QxSession, index: Int, expected: ExpectedShapes,
-                             name: String??) async -> Bool {
-        let seen = ReadBack()
-        let bandsOK = await within(Self.confirmTimeout) {
-            while !Task.isCancelled {
-                do {
-                    let read = try await session.loadPreset(index: index, recording: false)
-                    seen.preset = read
-                    if Self.matches(read, expected) { return true }
-                } catch {
-                    DebugLog.shared.log("slot read-back failed: \(QudelixCLI.describe(error))")
-                }
-                await self.pause()
+    private func confirmSave(_ session: QxSession, name: String??, index: Int) async -> Bool {
+        if let wanted = name {
+            let named = await confirmName(session, index: index, expected: wanted)
+            return named && session.isConnected
+        }
+        let answered = await within(Self.confirmTimeout) {
+            do {
+                try await session.refreshStatus()
+                return true
+            } catch {
+                DebugLog.shared.log("save round trip failed: \(QudelixCLI.describe(error))")
+                return nil
             }
-            return nil
         } ?? false
-        if !bandsOK, let read = seen.preset { await restore(session, from: read, to: expected) }
-        var nameOK = true
-        if let wanted = name { nameOK = await confirmName(session, index: index, expected: wanted) }
-        return bandsOK && nameOK
-    }
-
-    private func restore(_ session: QxSession, from read: QxUserEqPreset, to expected: ExpectedShapes) async {
-        for index in expected.bands.indices where read.bands.indices.contains(index)
-            && !Self.matches(read.bands[index], expected.bands[index]) {
-            try? await session.writeBand(index: index, expected.bands[index])
-        }
-        if abs(read.preGain - EQHeadroom.clamp(expected.preGain)) >= 0.15 {
-            try? await session.writePreGain(db: EQHeadroom.clamp(expected.preGain))
-        }
+        return answered && session.isConnected
     }
 
     private func refuse(_ failure: String) {

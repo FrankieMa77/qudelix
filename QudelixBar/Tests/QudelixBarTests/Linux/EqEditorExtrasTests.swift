@@ -340,15 +340,14 @@ final class EqEditorExtrasTests: XCTestCase {
         XCTAssertNil(model.presets.requestSave(slot: 7))
         await settle(model)
         XCTAssertNotNil(device.slots[7])
-        await settle(model)
 
         XCTAssertTrue(model.presets.canUpdateActive)
-        XCTAssertEqual(model.presets.updateHelp(), "Overwrite Preset 8 with the current EQ")
+        XCTAssertEqual(model.presets.updateHelp(), "Overwrite Warm with the current EQ")
         model.eq.setBand(1, EqBand(filter: .peak, freq: 63, gain: 7, q: 1))
         model.presets.updateActive()
         await settle(model)
-        XCTAssertEqual(device.slots[7]?.bands[1].gain ?? 0, 7, accuracy: 0.001)
-        XCTAssertEqual(device.link.payloads(for: .saveEqPreset).last, [7])
+        XCTAssertEqual(device.slots[2]?.bands[1].gain ?? 0, 7, accuracy: 0.001)
+        XCTAssertEqual(device.link.payloads(for: .saveEqPreset).last, [2])
 
         model.eq.setFollowing(true)
         XCTAssertFalse(model.presets.canUpdateActive)
