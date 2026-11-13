@@ -39,15 +39,15 @@ Fixes:
 - The 5K is recognized on a Bluetooth output by its own Bluetooth name, so it is found even when
   you renamed it in your Bluetooth settings.
 - The log now says when another program starts or stops searching for Bluetooth devices and
-  when the 5K's audio link goes up or down, which explains most missed control-link windows.
+  when the 5K's audio link goes up or down, which helps explain a missed control-link window.
 - Stopping while Qudelix waits for the 5K's control link now stops at once.
 - When PipeWire has no default output to restore, Stage says so and stops retrying instead of
   recreating its output every 30 seconds.
-- Tune tones start without a hiccup, and an empty audio buffer no longer causes trouble.
+- Starting a Tune tone no longer risks a short dropout in the sound.
 - On the Tune page Space presses the focused button, static text no longer takes keyboard
   focus, and the Reference menu and the method menu are readable in narrow windows.
-- The save dialog says "Applies to" for its output choice. Changing the headphone name clears
-  the AI draft.
+- The save dialog's output choice is labeled "Applies to" for screen readers and in its tooltip.
+  Changing the headphone name clears the AI draft.
 - `--verbose` mirrors only the command's own log. The background process writes the Bluetooth
   steps to the log file.
 - Opening the updated app or running a `qudelix` command restarts an older background process
@@ -56,10 +56,10 @@ Fixes:
 
 Known limits:
 
-- Bands read back from the 5K are limited to +/-12 dB and Q 10.
-- Qudelix arms the Bluetooth control link only while the 5K's audio link is down.
-- Only one paired Qudelix device is supported.
-- The Level monitor can keep the Bluetooth audio link busy while it measures.
+- With two Qudelix devices paired, Bluetooth control stays with the one Qudelix picked first. To
+  switch, delete `$XDG_CONFIG_HOME/qudelix/ble-device` (default `~/.config/qudelix/ble-device`).
+- While the Level page measures a Bluetooth output, that output stays active even in silence,
+  which costs some battery on the 5K.
 - Stage can click now and then when the clocks of its two paths drift apart.
 
 ## 0.7.1
