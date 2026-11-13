@@ -180,6 +180,22 @@ docker run --rm --init --cpus 2 \
         render eq-fit eq "$theme" 360x1500 --demo --automation-open
       done
     fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "l3" ]; then
+      for theme in light dark; do
+        for size in 900x640 360x640; do
+          render ai-draft library "$theme" "$size" --demo --section ai --ai-draft
+          render ai-slot-confirm library "$theme" "$size" --demo --section ai --ai-draft --ai-slot 2
+          render ai-slot-empty library "$theme" "$size" --demo --section ai --ai-draft --ai-slot 1
+          render ai-slot-menu library "$theme" "$size" --demo --section ai --ai-draft --ai-menu slot
+          render ai-unsaved library "$theme" "$size" --demo --section ai --ai-draft --custom-eq
+          render ai-unsaved-slot library "$theme" "$size" --demo --section ai --ai-draft --custom-eq --ai-slot 4
+        done
+        render ai-draft-tall library "$theme" 360x2000 --demo --section ai --ai-draft --ai-slot 2
+        render ai-unsaved-tall library "$theme" 360x2000 --demo --section ai --ai-draft --custom-eq
+        render ai-kind-menu library "$theme" 900x900 --demo --section ai --ai-menu kind
+        render ai-kind-menu library "$theme" 360x900 --demo --section ai --ai-menu kind
+      done
+    fi
     /build/debug/qudelix-app --version
     /build/debug/qudelix-app --help
     dump_tray() {

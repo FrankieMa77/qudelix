@@ -22,7 +22,9 @@ final class AiSection {
     private let bands: Widget
     private let generateButton: Widget
     private let researchButton: Widget
-    private let refreshSwitch: Widget
+    private let researchRow: Widget
+    private let researchLine: Widget
+    private let researchAgainButton: Widget
     private let spinner = Ui.spinner()
     private let phase: Widget
     private let cancelButton: Widget
@@ -37,13 +39,25 @@ final class AiSection {
     private let applyButton: Widget
     private let saveButton: Widget
     private let discardButton: Widget
+    private let slotButton: Widget
+    private let slotPopover: Widget
+    private let slotList: Widget
+    private let unsaved: Widget
+    private let overwriteBox: Widget
+    private let overwriteText: Widget
+    private let overwriteConfirm: Widget
+    private let overwriteCancel: Widget
+    private let kindButton: Widget
+    private let kindPopover: Widget
+    private let kindList: Widget
     private let reason: Widget
     private let summary: Widget
     private let dossierGroup: Widget
     private let dossier: Widget
     private let researchInfo: Widget
     private var shownProviders: [LibraryChoice] = []
-    private var shownKinds: [LibraryChoice] = []
+    private var shownKinds: [AiKindGroup] = []
+    private var shownSlots: [PresetSlot] = []
     private let designGroup: Widget
     private let providerGroup: Widget
     private var keyFirst = false
@@ -79,15 +93,26 @@ final class AiSection {
 
         headphoneRow = adw_entry_row_new()!
         adw_preferences_row_set_title(headphoneRow.typed(AdwPreferencesRow.self), "Headphones")
-        kindRow = adw_combo_row_new()!
-        adw_preferences_row_set_title(kindRow.typed(AdwPreferencesRow.self), "Preset kind")
-        adw_combo_row_set_use_subtitle(kindRow.typed(AdwComboRow.self), 1)
+        kindRow = Ui.actionRow(title: "Preset kind")
+        kindButton = gtk_menu_button_new()!
+        gtk_widget_set_valign(kindButton, GTK_ALIGN_CENTER)
+        gtk_widget_add_css_class(kindButton, "flat")
+        gtk_widget_set_tooltip_text(kindButton, "Kind of preset to design")
+        Accessible.setLabel(kindButton, "Kind of preset to design")
+        kindList = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 2)
+        kindPopover = Self.listPopover(kindList, height: 460)
+        gtk_menu_button_set_popover(kindButton.opaque, kindPopover)
+        Ui.suffix(kindRow, kindButton)
         noteRow = adw_entry_row_new()!
         adw_preferences_row_set_title(noteRow.typed(AdwPreferencesRow.self), "Anything specific? (optional)")
         bands = Ui.label("")
-        refreshSwitch = adw_switch_row_new()!
-        adw_preferences_row_set_title(refreshSwitch.typed(AdwPreferencesRow.self), "Research again")
-        adw_action_row_set_subtitle(refreshSwitch.typed(AdwActionRow.self), "Ask the provider again instead of using the saved research")
+        researchRow = Ui.box(GTK_ORIENTATION_HORIZONTAL, spacing: 8)
+        researchLine = Ui.label("")
+        researchAgainButton = Ui.button(AiStudioModel.researchAgainLabel, classes: ["flat"])
+        gtk_widget_set_valign(researchAgainButton, GTK_ALIGN_CENTER)
+        gtk_widget_set_tooltip_text(researchAgainButton, AiStudioModel.researchAgainHelp)
+        Ui.append(researchRow, researchLine)
+        Ui.append(researchRow, researchAgainButton)
         generateButton = Ui.button("Generate", classes: ["suggested-action"])
         researchButton = Ui.button("Research only")
         cancelButton = Ui.button("Cancel", classes: ["flat"])
@@ -105,8 +130,7 @@ final class AiSection {
         Ui.add(design, headphoneRow)
         Ui.add(design, kindRow)
         Ui.add(design, noteRow)
-        Ui.add(design, refreshSwitch)
-        Ui.add(design, Ui.extras([bands, actions, progress, hint, error]))
+        Ui.add(design, Ui.extras([researchRow, bands, actions, progress, hint, error]))
 
         draftGroup = Ui.group("Draft")
         draftTitle = Ui.label("", classes: ["heading"])
@@ -118,11 +142,26 @@ final class AiSection {
         gtk_widget_set_tooltip_text(saveButton, "Save to library")
         Accessible.setLabel(saveButton, "Save to library")
         discardButton = Ui.button("Discard", classes: ["flat"])
+        slotButton = gtk_menu_button_new()!
+        gtk_menu_button_set_label(slotButton.opaque, AiStudioModel.writeToSlotLabel)
+        gtk_widget_set_tooltip_text(slotButton, "Apply this draft and save it to a preset slot on the 5K")
+        slotList = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 2)
+        slotPopover = Self.listPopover(slotList)
+        gtk_menu_button_set_popover(slotButton.opaque, slotPopover)
+        unsaved = Ui.label(AiStudioModel.unsavedCurveWarning, classes: ["caption", "warning"])
+        overwriteText = Ui.label("", classes: ["caption", "warning"])
+        overwriteConfirm = Ui.button("Overwrite", classes: ["destructive-action"])
+        overwriteCancel = Ui.button("Cancel", classes: ["flat"])
+        overwriteBox = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 6)
+        Ui.append(overwriteBox, overwriteText)
+        Ui.append(overwriteBox, Ui.buttonRow([overwriteConfirm, overwriteCancel]))
+        Ui.show(overwriteBox, false)
         reason = Ui.label("", classes: ["caption", "warning"])
         summary = Ui.label("", classes: ["caption"])
         let draftButtons = Ui.buttonRow([applyButton, saveButton, discardButton])
+        let slotRow = Ui.buttonRow([slotButton])
         let card = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 8)
-        for child in [draftTitle, draftSubtitle, curve.area, rationale, notes, draftButtons, reason, summary] {
+        for child in [draftTitle, draftSubtitle, curve.area, rationale, notes, unsaved, draftButtons, slotRow, overwriteBox, reason, summary] {
             Ui.append(card, child)
         }
         Ui.add(draftGroup, Ui.extras([card]))
@@ -157,13 +196,6 @@ final class AiSection {
                 if self.state.providers.indices.contains(index) { model.setProvider(self.state.providers[index].id) }
             }
         }
-        Signals.onNotify(kindRow, property: "selected") { [weak self] _ in
-            onMain {
-                guard let self, !self.updating else { return }
-                let index = Int(adw_combo_row_get_selected(self.kindRow.typed(AdwComboRow.self)))
-                if self.state.kinds.indices.contains(index) { model.setKind(self.state.kinds[index].id) }
-            }
-        }
         for (row, apply) in [(modelRow, { (text: String) in model.setModel(text) }),
                              (headphoneRow, { (text: String) in model.setHeadphone(text) }),
                              (noteRow, { (text: String) in model.setNote(text) })] {
@@ -181,12 +213,9 @@ final class AiSection {
                 if model.saveKey(typed) { Ui.setText(ofEditable: self.keyRow, "") }
             }
         }
-        Signals.onNotify(refreshSwitch, property: "active") { [weak self] _ in
-            onMain {
-                guard let self, !self.updating else { return }
-                model.setRefreshResearch(adw_switch_row_get_active(self.refreshSwitch.opaque) != 0)
-            }
-        }
+        Signals.connect(researchAgainButton, signal: "clicked") { onMain { model.setRefreshResearch(true) } }
+        Signals.connect(overwriteConfirm, signal: "clicked") { onMain { model.writeToSlot() } }
+        Signals.connect(overwriteCancel, signal: "clicked") { onMain { model.cancelSlotChoice() } }
         Signals.connect(generateButton, signal: "clicked") { onMain { model.generate() } }
         Signals.connect(researchButton, signal: "clicked") { onMain { model.research() } }
         Signals.connect(cancelButton, signal: "clicked") { onMain { model.cancel() } }
@@ -208,25 +237,33 @@ final class AiSection {
             for choice in next.providers { gtk_string_list_append(names, choice.label) }
             adw_combo_row_set_model(providerRow.typed(AdwComboRow.self), names)
         }
-        if shownKinds != next.kinds {
-            shownKinds = next.kinds
-            let names = gtk_string_list_new(nil)!
-            for choice in next.kinds { gtk_string_list_append(names, choice.label) }
-            adw_combo_row_set_model(kindRow.typed(AdwComboRow.self), names)
+        if shownKinds != next.kindGroups {
+            shownKinds = next.kindGroups
+            rebuildKinds(next.kindGroups)
+        }
+        if shownSlots != next.slots {
+            shownSlots = next.slots
+            rebuildSlots(next.slots)
         }
         if let index = next.providers.firstIndex(where: { $0.id == next.provider }),
            Int(adw_combo_row_get_selected(providerRow.typed(AdwComboRow.self))) != index {
             adw_combo_row_set_selected(providerRow.typed(AdwComboRow.self), UInt32(index))
         }
-        if let index = next.kinds.firstIndex(where: { $0.id == next.kind }),
-           Int(adw_combo_row_get_selected(kindRow.typed(AdwComboRow.self))) != index {
-            adw_combo_row_set_selected(kindRow.typed(AdwComboRow.self), UInt32(index))
-        }
+        gtk_menu_button_set_label(kindButton.opaque, next.kindLabel)
         adw_preferences_row_set_title(modelRow.typed(AdwPreferencesRow.self), Ui.escaped("Model (default \(next.defaultModel))"))
         Ui.setText(ofEditable: modelRow, next.model)
         Ui.setText(ofEditable: headphoneRow, next.headphone)
         Ui.setText(ofEditable: noteRow, next.note)
-        adw_switch_row_set_active(refreshSwitch.opaque, next.refreshResearch ? 1 : 0)
+        let researchText: String
+        if next.researchFallback {
+            researchText = AiStudioModel.researchFallbackNote
+        } else if next.refreshResearch {
+            researchText = AiStudioModel.researchPending
+        } else {
+            researchText = next.researchInfo ?? AiStudioModel.researchFirst
+        }
+        Ui.setText(researchLine, researchText)
+        Ui.show(researchAgainButton, !next.researchFallback && !next.refreshResearch && next.researchInfo != nil)
 
         switch next.keyStatus {
         case .none: Ui.setText(keyStatus, "No key saved for this provider.")
@@ -272,10 +309,84 @@ final class AiSection {
         Ui.enable(applyButton, next.applyRefusal == nil)
         Ui.setText(reason, next.applyRefusal)
         Ui.setText(summary, next.summary)
+        Ui.show(unsaved, next.draft != nil && next.unsavedCurve)
+        Ui.enable(slotButton, next.canWriteSlot)
+        Ui.show(overwriteBox, next.slotChoice != nil)
+        if let choice = next.slotChoice {
+            Ui.setText(overwriteText, choice.message)
+            gtk_button_set_label(overwriteConfirm.typed(GtkButton.self), choice.confirmLabel)
+        }
 
         Ui.show(dossierGroup, !next.dossier.isEmpty)
         Ui.setText(researchInfo, next.researchInfo)
         Ui.setText(dossier, next.dossier.isEmpty ? nil : next.dossier.map { "\($0.label): \($0.text)" }.joined(separator: "\n"))
+    }
+
+    private static func listPopover(_ list: Widget, height: Int32 = 320) -> Widget {
+        let popover = gtk_popover_new()!
+        let scroller = gtk_scrolled_window_new()!
+        gtk_scrolled_window_set_policy(scroller.opaque, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+        gtk_scrolled_window_set_propagate_natural_height(scroller.opaque, 1)
+        gtk_scrolled_window_set_max_content_height(scroller.opaque, height)
+        gtk_scrolled_window_set_child(scroller.opaque, list)
+        gtk_popover_set_child(popover.typed(GtkPopover.self), scroller)
+        return popover
+    }
+
+    private func clear(_ list: Widget) {
+        while let child = gtk_widget_get_first_child(list) { gtk_box_remove(list.typed(GtkBox.self), child) }
+    }
+
+    private func rebuildKinds(_ groups: [AiKindGroup]) {
+        clear(kindList)
+        for group in groups {
+            let title = Ui.label(group.title, classes: ["heading", "dim-label"])
+            gtk_widget_set_margin_start(title, 12)
+            gtk_widget_set_margin_top(title, 6)
+            Accessible.setLabel(title, group.title)
+            Ui.append(kindList, title)
+            for choice in group.kinds {
+                let item = Ui.menuItem(choice.label)
+                Ui.append(kindList, item)
+                let id = choice.id
+                Signals.connect(item, signal: "clicked") { [weak self] in
+                    onMain {
+                        guard let self else { return }
+                        gtk_popover_popdown(self.kindPopover.typed(GtkPopover.self))
+                        self.model.setKind(id)
+                    }
+                }
+            }
+        }
+    }
+
+    private func rebuildSlots(_ slots: [PresetSlot]) {
+        clear(slotList)
+        for slot in slots {
+            let item = Ui.menuItem("\(slot.number) \u{00B7} \(slot.label)")
+            Accessible.setLabel(item, "Write to slot \(slot.number), \(slot.label)")
+            Ui.append(slotList, item)
+            let index = slot.index
+            Signals.connect(item, signal: "clicked") { [weak self] in
+                onMain {
+                    guard let self else { return }
+                    gtk_popover_popdown(self.slotPopover.typed(GtkPopover.self))
+                    self.model.chooseSlot(index)
+                }
+            }
+        }
+    }
+
+    func openMenu(_ name: String) {
+        let button = name == "kind" ? kindButton : slotButton
+        gtk_menu_button_popup(button.opaque)
+    }
+
+    var openPopover: UnsafeMutableRawPointer? {
+        for popover in [kindPopover, slotPopover] where gtk_widget_get_visible(popover) != 0 {
+            return UnsafeMutableRawPointer(popover)
+        }
+        return nil
     }
 
     @discardableResult

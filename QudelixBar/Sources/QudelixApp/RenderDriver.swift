@@ -10,10 +10,21 @@ final class LibraryRenderDriver {
     private var dialogRequested = false
     private var searched = false
     private var configured = false
+    private var menuOpened = false
 
     init(options: LaunchOptions, page: LibraryPage) {
         self.options = options
         self.page = page
+    }
+
+    private func aiMenuReady(_ menu: String) -> Bool {
+        if !menuOpened {
+            menuOpened = true
+            page.openAiMenu(menu)
+            return false
+        }
+        guard let popover = page.aiPopover else { return false }
+        return gtk_widget_get_width(popover.assumingMemoryBound(to: GtkWidget.self)) > 0
     }
 
     func ready() -> Bool {
@@ -64,6 +75,13 @@ final class LibraryRenderDriver {
                     return false
                 }
                 guard library.ai.state.draft != nil else { return false }
+                if let slot = options.aiSlot, library.ai.state.slotChoice == nil {
+                    library.ai.chooseSlot(slot)
+                    return false
+                }
+                if let menu = options.aiMenu { return aiMenuReady(menu) }
+            } else if let menu = options.aiMenu {
+                return aiMenuReady(menu)
             }
         }
         if let kind = options.dialog {

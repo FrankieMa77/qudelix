@@ -18,6 +18,8 @@ struct LaunchOptions {
     var query: String?
     var selectItem: Int?
     var aiDraft = false
+    var aiMenu: String?
+    var aiSlot: Int?
     var expandOthers = false
     var mode: String?
     var bass: Double?
@@ -137,6 +139,12 @@ struct LaunchOptions {
                 options.noAudio = true
             case "--ai-draft":
                 options.aiDraft = true
+            case "--ai-menu":
+                options.aiMenu = value
+                index += 1
+            case "--ai-slot":
+                options.aiSlot = value.flatMap { Int($0) }
+                index += 1
             case "--expand-others":
                 options.expandOthers = true
             case "--mode":

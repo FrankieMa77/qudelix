@@ -30,7 +30,7 @@ final class LibraryPage {
     var layouts: [SplitLayout] { [saved.layout, autoEq.layout, ai.layout] }
     private var switchers: [LibrarySectionName: Widget] = [:]
 
-    var dialog: UnsafeMutableRawPointer? { saved.dialog ?? autoEq.dialog ?? ai.dialog }
+    var dialog: UnsafeMutableRawPointer? { saved.dialog ?? autoEq.dialog ?? ai.dialog ?? ai.openPopover }
 
     init(model: AppModel) {
         library = model.library
@@ -74,6 +74,13 @@ final class LibraryPage {
     func expandOthers() { saved.expandOthers() }
 
     func showAutoEq() { show(.autoeq) }
+
+    func openAiMenu(_ name: String) {
+        show(.ai)
+        ai.openMenu(name)
+    }
+
+    var aiPopover: UnsafeMutableRawPointer? { ai.openPopover }
 
     func show(_ section: LibrarySectionName) {
         gtk_stack_set_visible_child_name(stack, section.rawValue)
