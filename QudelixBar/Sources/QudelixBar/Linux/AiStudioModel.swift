@@ -208,8 +208,14 @@ package final class AiStudioModel {
 
     package func setHeadphone(_ text: String) {
         guard text != headphone else { return }
+        let before = trimmedHeadphone
         headphone = String(text.prefix(AICommand.maxHeadphoneNameLength))
         cachedInfo = researchInfo()
+        if trimmedHeadphone != before {
+            refreshResearch = false
+            cancel()
+            discardDraft()
+        }
         publish()
     }
 

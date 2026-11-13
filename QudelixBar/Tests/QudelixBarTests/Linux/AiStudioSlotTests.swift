@@ -185,6 +185,22 @@ final class AiStudioSlotTests: XCTestCase {
     }
 
     @MainActor
+    func testChangingTheHeadphoneNameClearsTheDraftAndTheSlotChoice() async {
+        let model = await open(device())
+        await draft(model)
+        let ai = model.library.ai
+        ai.chooseSlot(1)
+        XCTAssertNotNil(ai.state.slotChoice)
+        ai.setHeadphone("Sennheiser HD 650 ")
+        XCTAssertNotNil(ai.state.draft)
+        ai.setHeadphone("Beyerdynamic DT 770")
+        XCTAssertNil(ai.state.draft)
+        XCTAssertNil(ai.state.slotChoice)
+        XCTAssertFalse(ai.state.canWriteSlot)
+        await model.shutdown()
+    }
+
+    @MainActor
     func testWritingWithoutAChosenSlotDoesNothing() async {
         let device = device()
         let model = await open(device)
