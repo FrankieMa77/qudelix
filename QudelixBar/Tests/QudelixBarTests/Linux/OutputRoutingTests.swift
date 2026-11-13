@@ -265,14 +265,39 @@ final class OutputRoutingTests: XCTestCase {
     }
 }
 
+final class ThreadLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [Bool] = []
+
+    var all: [Bool] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items
+    }
+
+    func record(_ onMain: Bool) {
+        lock.lock()
+        items.append(onMain)
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        items = []
+        lock.unlock()
+    }
+}
+
 @MainActor
 final class FiveKAddressLookupTests: XCTestCase {
     private var directory: URL!
     private var backend: FakeAudioBackend!
     private var hops: HopQueue!
     private var lookups = 0
-    private var found: Set<String> = []
-    private var lookupThreads: [Bool] = []
+    private var found: Set<String>? = []
+    private let threads = ThreadLog()
+
+    private var lookupThreads: [Bool] { threads.all }
 
     private static let renamed = AudioSink(id: 5, name: "bluez_output.AA_BB_CC_DD_EE_FF.1",
                                            description: "My Earbuds", deviceApi: "bluez5",
@@ -289,7 +314,7 @@ final class FiveKAddressLookupTests: XCTestCase {
         hops = HopQueue()
         lookups = 0
         found = ["AA:BB:CC:DD:EE:FF"]
-        lookupThreads = []
+        threads.clear()
     }
 
     override func tearDown() async throws {
@@ -301,7 +326,7 @@ final class FiveKAddressLookupTests: XCTestCase {
                       memoryURL: directory.appendingPathComponent("routing.json"),
                       fiveKLookup: { [unowned self] in
                           self.lookups += 1
-                          self.lookupThreads.append(Thread.isMainThread)
+                          self.threads.record(Thread.isMainThread)
                           return self.found
                       },
                       offload: offload)
@@ -348,6 +373,56 @@ final class FiveKAddressLookupTests: XCTestCase {
         routing.refresh()
         hops.drain()
         XCTAssertEqual(lookups, 2)
+    }
+
+    func testAFailedListingIsNotRememberedAsNoFiveKAndIsRetriedOncePerRefresh() {
+        found = nil
+        backend.sinks = [Self.renamed]
+        backend.defaultSinkName = Self.renamed.name
+        let routing = makeRouting()
+        routing.start()
+        hops.drain()
+        XCTAssertEqual(lookups, 1)
+        XCTAssertFalse(routing.outputIsQudelix)
+        hops.drain()
+        XCTAssertEqual(lookups, 1)
+        found = ["AA:BB:CC:DD:EE:FF"]
+        routing.refresh()
+        hops.drain()
+        XCTAssertEqual(lookups, 2)
+        XCTAssertTrue(routing.outputIsQudelix)
+        routing.refresh()
+        hops.drain()
+        XCTAssertEqual(lookups, 2)
+    }
+
+    func testAFailedListingKeepsWhatAnEarlierOneFound() {
+        backend.sinks = [Self.renamed]
+        backend.defaultSinkName = Self.renamed.name
+        let routing = makeRouting()
+        routing.start()
+        hops.drain()
+        XCTAssertTrue(routing.outputIsQudelix)
+        found = nil
+        backend.sinks = [Self.renamed, Self.other]
+        routing.refresh()
+        hops.drain()
+        XCTAssertEqual(lookups, 2)
+        XCTAssertTrue(routing.outputIsQudelix)
+    }
+
+    func testAFailedListingStillRetriesAfterEveryRefreshWithoutLooping() {
+        found = nil
+        backend.sinks = [Self.renamed]
+        backend.defaultSinkName = Self.renamed.name
+        let routing = makeRouting()
+        routing.start()
+        hops.drain()
+        for expected in 2...4 {
+            routing.refresh()
+            hops.drain()
+            XCTAssertEqual(lookups, expected)
+        }
     }
 
     func testNothingIsListedWithoutABluetoothOutput() {

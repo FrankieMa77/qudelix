@@ -82,7 +82,7 @@ package final class OutputRouting {
     private let clock: AppClock
     private let hop: Hop
     private let memoryURL: URL?
-    private let fiveKLookup: (() -> Set<String>)?
+    private let fiveKLookup: (() -> Set<String>?)?
     private let offload: Hop
     private var fiveKAddresses = Set<String>()
     private var lookedUp = Set<String>()
@@ -105,7 +105,7 @@ package final class OutputRouting {
                  clock: AppClock = SystemClock(),
                  hop: @escaping Hop = OutputRouting.mainHop,
                  memoryURL: URL? = OutputRouting.defaultMemoryURL(),
-                 fiveKLookup: (() -> Set<String>)? = nil,
+                 fiveKLookup: (() -> Set<String>?)? = nil,
                  offload: @escaping Hop = OutputRouting.backgroundHop) {
         self.backend = backend
         self.clock = clock
@@ -133,8 +133,12 @@ package final class OutputRouting {
         }
     }
 
-    private func finishFiveKLookup(_ found: Set<String>) {
+    private func finishFiveKLookup(_ found: Set<String>?) {
         lookupRunning = false
+        guard let found else {
+            lookedUp = []
+            return
+        }
         fiveKAddresses = found
         guard started else { return }
         refresh()

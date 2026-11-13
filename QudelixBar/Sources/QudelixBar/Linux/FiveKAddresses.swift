@@ -14,8 +14,8 @@ enum FiveKAddresses {
         return found
     }
 
-    static func system() -> Set<String> {
-        guard let objects = try? BluezPresence.system().managedObjects() else { return [] }
+    static func system() -> Set<String>? {
+        guard let objects = try? BluezPresence.system().managedObjects() else { return nil }
         return matching(objects)
     }
 }

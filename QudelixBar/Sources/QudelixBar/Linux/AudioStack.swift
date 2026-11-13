@@ -6,10 +6,10 @@ package struct AudioStackLocations {
     package var impulseDirectory: (() -> URL)?
     package var autofit: URL
     package var forceMarker: URL?
-    package var fiveKLookup: (() -> Set<String>)?
+    package var fiveKLookup: (() -> Set<String>?)?
 
     package init(stageSettings: URL, routingMemory: URL?, impulseDirectory: (() -> URL)?, autofit: URL,
-                 forceMarker: URL? = nil, fiveKLookup: (() -> Set<String>)? = nil) {
+                 forceMarker: URL? = nil, fiveKLookup: (() -> Set<String>?)? = nil) {
         self.stageSettings = stageSettings
         self.routingMemory = routingMemory
         self.impulseDirectory = impulseDirectory
@@ -18,7 +18,7 @@ package struct AudioStackLocations {
         self.fiveKLookup = fiveKLookup
     }
 
-    private static var systemFiveKLookup: (() -> Set<String>)? {
+    private static var systemFiveKLookup: (() -> Set<String>?)? {
         #if os(Linux)
         return { FiveKAddresses.system() }
         #else
