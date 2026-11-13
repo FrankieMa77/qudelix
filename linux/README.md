@@ -170,7 +170,7 @@ flags:
   --ble                     use the Bluetooth link
   --json                    print one JSON object instead of text
   --timeout <seconds>       how long to wait for the device (default 5, 40 for Bluetooth)
-  --verbose                 mirror the log (packets and Bluetooth steps) to stderr
+  --verbose                 mirror this command's own log to stderr
   --help                    print this text
   --version                 print the version
 
@@ -207,7 +207,7 @@ openrouter). Nothing is sent until you ask for it.
 
 | What | Where |
 | --- | --- |
-| Log (`--verbose` also mirrors it to stderr) | `$XDG_STATE_HOME/qudelix/qudelix.log`, default `~/.local/state/qudelix/qudelix.log` |
+| Log (`--verbose` mirrors the command's own log to stderr; the background process writes its Bluetooth steps only here) | `$XDG_STATE_HOME/qudelix/qudelix.log`, default `~/.local/state/qudelix/qudelix.log` |
 | Instance lock | `$XDG_STATE_HOME/qudelix/qudelix.lock` |
 | Preset library | `$XDG_DATA_HOME/QudelixBar/presets.json`, default `~/.local/share/QudelixBar/presets.json` |
 | AutoEq search results | `$XDG_DATA_HOME/QudelixBar/autoeq-search.json` |
@@ -250,8 +250,9 @@ Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and past
 a bug report; its Bluetooth section lists what this computer knows about the 5K without
 connecting to anything. `--timeout` changes how long a command waits for the link.
 
-With `--verbose`, the log also says why the link dropped when it is known (timeout, closed by
-the 5K, closed by this computer).
+The Bluetooth steps, and why the link dropped when it is known (timeout, closed by the 5K,
+closed by this computer), are written by the background process to the log file named in
+[Files and logs](#files-and-logs). `--verbose` mirrors only the command's own log to stderr.
 
 ## Uninstall
 

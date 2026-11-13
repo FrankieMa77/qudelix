@@ -721,7 +721,8 @@ than there.
   5K's control link but keep the call that opens it behind an experimental
   switch, so 1.6.2 retried it until it gave up. Qudelix now opens the link with
   a plain connect instead; the audio connection is still never touched.
-- Linux: `qudelix --verbose` also prints the Bluetooth steps while it waits.
+- Linux: `qudelix --verbose` mirrors the command's own log to stderr; the background
+  process writes the Bluetooth steps to the log file only.
 - Linux: `qudelix probe` says whether BlueZ is running, installed but not
   running, or not installed; it no longer reports an idle BlueZ as "on the
   system bus".

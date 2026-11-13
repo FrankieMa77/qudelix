@@ -47,9 +47,9 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(options.timeout, 5)
     }
 
-    func testTheHelpTextSaysVerboseMirrorsBluetoothSteps() {
+    func testTheHelpTextSaysVerboseMirrorsTheCommandsOwnLog() {
         XCTAssertTrue(CLI.usageText.contains(
-            "--verbose                 mirror the log (packets and Bluetooth steps) to stderr"))
+            "--verbose                 mirror this command's own log to stderr"))
     }
 
     func testGlobalFlagsAreAcceptedBeforeAndAfterTheCommand() throws {
