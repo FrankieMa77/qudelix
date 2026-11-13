@@ -51,6 +51,8 @@ printf 'installed %s\n' "$PREFIX/share/metainfo/$ID.metainfo.xml"
 printf 'installed %s\n' "$RULES_DIR/70-qudelix.rules"
 printf '\nReconnect the Qudelix 5K so the rule applies, then start Qudelix from the application menu.\n'
 printf 'The app needs GTK 4.14 or newer and libadwaita 1.5 or newer.\n'
+printf 'On Ubuntu 24.04 install libdbus-1-3 libcurl4t64 libgtk-4-1 libadwaita-1-0\n'
+printf 'libpipewire-0.3-0t64 and libvulkan1 first.\n'
 printf 'The top-bar icon needs a StatusNotifier host (see README.md).\n'
 printf 'Stage, Level and the Tune tones need PipeWire (see README.md).\n'
 if getent group plugdev >/dev/null 2>&1; then

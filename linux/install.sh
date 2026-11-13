@@ -18,6 +18,7 @@ fi
 printf 'installed %s\n' "$PREFIX/bin/qudelix"
 printf 'installed %s\n' "$RULES_DIR/70-qudelix.rules"
 printf '\nReconnect the Qudelix 5K so the rule applies.\n'
+printf 'qudelix needs libdbus-1-3 and libcurl4t64 on Ubuntu 24.04 (libdbus-1-3 and libcurl4 on 22.04).\n'
 printf 'If qudelix still reports the device as present but not readable, the session\n'
 printf 'did not grant access through logind or elogind (uaccess).\n'
 if getent group plugdev >/dev/null 2>&1; then

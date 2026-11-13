@@ -82,6 +82,15 @@ sudo ./install.sh
 
 After either install, unplug and replug the Qudelix 5K so the new rule applies.
 
+The `.deb` packages pull in what they need. A tarball install does not, so on Ubuntu 24.04 install
+these first. The command line needs `libdbus-1-3` and `libcurl4t64`. The app needs those and
+`libgtk-4-1`, `libadwaita-1-0`, `libpipewire-0.3-0t64` and `libvulkan1`:
+
+```
+sudo apt install libdbus-1-3 libcurl4t64
+sudo apt install libgtk-4-1 libadwaita-1-0 libpipewire-0.3-0t64 libvulkan1
+```
+
 A tarball install puts `qudelix` in `/usr/local/bin`, which comes before `/usr/bin` in `PATH`,
 so it shadows a copy installed from the `.deb`. Remove one of them to avoid running the wrong
 version.
