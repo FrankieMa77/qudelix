@@ -446,8 +446,8 @@ package enum TuneKeyAction: Equatable {
 extension TunePresentation {
     package static let spaceKey: UInt32 = 0x20
 
-    package static func keyAction(keyval: UInt32, modified: Bool, state: TuneState) -> TuneKeyAction? {
-        guard keyval == spaceKey, !modified, let method = state.active else { return nil }
+    package static func keyAction(keyval: UInt32, modified: Bool, buttonFocused: Bool = false, state: TuneState) -> TuneKeyAction? {
+        guard keyval == spaceKey, !modified, !buttonFocused, let method = state.active else { return nil }
         switch method {
         case .compare: return state.compare.phase == .running ? .toggleSide : nil
         case .shape: return state.shape.phase == .running ? .toggleSide : nil

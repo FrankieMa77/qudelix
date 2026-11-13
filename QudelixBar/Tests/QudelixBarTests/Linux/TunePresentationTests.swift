@@ -196,6 +196,16 @@ final class TunePresentationTests: XCTestCase {
         XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, state: TuneState()))
     }
 
+    func testSpaceIsLeftToAFocusedButtonInEveryRunningSession() {
+        let space = TunePresentation.spaceKey
+        let running: [DemoTuneScenario] = [.compareRunning, .shapeRunning, .blindRunning, .trimRunning, .tonesRunning]
+        for scenario in running {
+            let state = DemoTuneData.state(scenario)
+            XCTAssertNotNil(TunePresentation.keyAction(keyval: space, modified: false, buttonFocused: false, state: state))
+            XCTAssertNil(TunePresentation.keyAction(keyval: space, modified: false, buttonFocused: true, state: state))
+        }
+    }
+
     func testAccessibleRowNamesIncludeTheValue() {
         let row = TuneRow(title: "Bass", detail: "31\u{2013}250 Hz", value: "+3.0", fraction: 0.5, muted: false, hasBar: true)
         XCTAssertEqual(TunePresentation.accessibleRow(row), "Bass, 31\u{2013}250 Hz, +3.0")

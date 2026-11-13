@@ -52,6 +52,8 @@ final class AutomationPanel {
         let sources = gtk_string_list_new(nil)!
         for source in AutomationSource.allCases { gtk_string_list_append(sources, source.title) }
         adw_combo_row_set_model(sourceRow.typed(AdwComboRow.self), sources)
+        adw_combo_row_set_use_subtitle(sourceRow.typed(AdwComboRow.self), 1)
+        adw_action_row_set_subtitle_lines(sourceRow.typed(AdwActionRow.self), 0)
         gtk_widget_set_tooltip_text(sourceRow, AutomationState.referenceHelp)
 
         showRow = adw_switch_row_new()!

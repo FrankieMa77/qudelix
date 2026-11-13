@@ -41,6 +41,7 @@ package enum NameDialog {
             gtk_drop_down_set_selected(list.opaque, UInt32(max(0, min(selectedChoice, choices.count - 1))))
             gtk_widget_set_sensitive(list, choicesEnabled ? 1 : 0)
             Accessible.setLabel(list, choiceLabel)
+            if !choiceLabel.isEmpty { gtk_widget_set_tooltip_text(list, choiceLabel) }
             let column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8)!
             gtk_box_append(column.typed(GtkBox.self), entry)
             gtk_box_append(column.typed(GtkBox.self), list)

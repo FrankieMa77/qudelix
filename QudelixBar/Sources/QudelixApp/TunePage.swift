@@ -220,6 +220,9 @@ final class TunePage {
         gtk_widget_set_margin_bottom(actionsBox, 12)
         gtk_widget_set_margin_start(actionsBox, 12)
 
+        let staticRows = textSlots + footSlots + resultSlots.map(\.row) + [sessionRow, catchRow]
+        for row in staticRows { gtk_widget_set_focusable(row, 0) }
+
         let page = Ui.page([picker, notices.group, textGroup, sessionGroup, resultsGroup, footGroup])
         let actionsGroup = Ui.group(nil)
         Ui.add(actionsGroup, actionsBox)
@@ -261,7 +264,8 @@ final class TunePage {
         Signals.addKey(to: widget) { [weak self] keyval, modifiers in
             guard let self else { return false }
             let modified = modifiers & (GDK_CONTROL_MASK.rawValue | GDK_ALT_MASK.rawValue | GDK_SUPER_MASK.rawValue) != 0
-            guard let action = TunePresentation.keyAction(keyval: keyval, modified: modified, state: self.state) else {
+            guard let action = TunePresentation.keyAction(keyval: keyval, modified: modified,
+                                                              buttonFocused: Self.buttonHasFocus(self.widget), state: self.state) else {
                 return false
             }
             switch action {
@@ -270,6 +274,13 @@ final class TunePage {
             }
             return true
         }
+    }
+
+    private static func buttonHasFocus(_ page: Widget) -> Bool {
+        guard let root = gtk_widget_get_root(page),
+              let focus = gtk_root_get_focus(root) else { return false }
+        return g_type_check_instance_is_a(UnsafeMutableRawPointer(focus).assumingMemoryBound(to: GTypeInstance.self),
+                                          gtk_button_get_type()) != 0
     }
 
     func select(_ method: TuneMethod) {
@@ -312,6 +323,7 @@ final class TunePage {
         let idle = screen.phase == .idle
 
         adw_action_row_set_subtitle(methodRow.typed(AdwActionRow.self), Ui.escaped(TunePresentation.summary(selected)))
+        Ui.keepWholeLabels(in: methodRow)
         Ui.enable(methodRow, state.active == nil,
                   reason: state.active == nil ? nil : "A session is running. Stop it to change the method.")
 

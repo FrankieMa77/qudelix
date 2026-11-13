@@ -196,6 +196,19 @@ docker run --rm --init --cpus 2 \
         render ai-kind-menu library "$theme" 360x900 --demo --section ai --ai-menu kind
       done
     fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "n1" ]; then
+      for theme in light dark; do
+        render eq-automation eq "$theme" 900x1100 --demo --automation-open
+        render eq-automation eq "$theme" 360x1500 --demo --automation-open
+        render tune-session tune "$theme" 900x900 --demo --tune-demo compare-running
+        render tune-session tune "$theme" 360x1300 --demo --tune-demo compare-running
+        render tune-idle tune "$theme" 360x900 --demo --tune-demo compare-idle
+        render tune-idle-shape tune "$theme" 360x900 --demo --tune-demo shape-idle
+        render tune-session-tones tune "$theme" 360x1300 --demo --tune-demo tones-running
+        render library-save library "$theme" 900x640 --demo --section saved --dialog name
+        render library-save library "$theme" 360x640 --demo --section saved --dialog name
+      done
+    fi
     /build/debug/qudelix-app --version
     /build/debug/qudelix-app --help
     dump_tray() {
