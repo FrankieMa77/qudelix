@@ -25,6 +25,17 @@ package struct AiDraftView: Equatable {
     package var preview: CurvePreview
 }
 
+package struct AiKindGroup: Equatable {
+    package var title: String
+    package var kinds: [LibraryChoice]
+}
+
+package struct AiSlotChoice: Equatable {
+    package var slot: Int
+    package var message: String
+    package var confirmLabel: String
+}
+
 package struct AiState: Equatable {
     package var providers: [LibraryChoice] = []
     package var provider = ""
@@ -33,7 +44,9 @@ package struct AiState: Equatable {
     package var defaultModel = ""
     package var keyStatus = AiKeyStatus.none
     package var kinds: [LibraryChoice] = []
+    package var kindGroups: [AiKindGroup] = []
     package var kind = ""
+    package var kindLabel = ""
     package var headphone = ""
     package var note = ""
     package var bandCount = 10
@@ -43,6 +56,11 @@ package struct AiState: Equatable {
     package var dossier: [AiFact] = []
     package var researchInfo: String?
     package var refreshResearch = false
+    package var researchFallback = false
+    package var slots: [PresetSlot] = []
+    package var canWriteSlot = false
+    package var unsavedCurve = false
+    package var slotChoice: AiSlotChoice?
     package var generateHint: String?
     package var canGenerate = false
     package var applyRefusal: String?
@@ -64,6 +82,30 @@ package final class AiStudioModel {
         + "raw.githubusercontent.com. Never your EQ curve, your presets or your device. "
         + "The key stays in a private file on this computer and is only ever sent to that "
         + "provider."
+    package static let unsavedCurveWarning =
+        "Your current EQ is a custom setting that isn\u{2019}t saved to a "
+        + "slot \u{2014} applying this will replace it."
+    package static let writeToSlotLabel = "Write to slot\u{2026}"
+    package static let researchAgainLabel = "Research again"
+    package static let researchAgainHelp = "Research this headphone again on the next generate"
+    package static let researchPending = "Will research this model again on the next generate."
+    package static let researchFirst = "Will research this model on first generate."
+    package static let researchFallbackNote = "Research didn\u{2019}t come back \u{2014} designed "
+        + "from general knowledge instead."
+    package static let characterTitle = "Character"
+    package static let targetsTitle = "Targets"
+
+    package static func overwriteCopy(slot: Int, name: String?) -> String {
+        guard let name else {
+            return "Slot \(slot + 1) is empty. Writing puts this preset there."
+        }
+        return PresetSlotsModel.overwriteMessage(slot: slot, name: name)
+    }
+
+    package static func overwriteLabel(slot: Int) -> String {
+        "Overwrite slot \(slot + 1)"
+    }
+
     package static let correctionNote = "Correction needs no key: it is taken from the "
         + "published measurement when this model has one."
     package static let keyRowTitle = "API key"
@@ -90,6 +132,8 @@ package final class AiStudioModel {
     private var headphone = ""
     private var note = ""
     private var refreshResearch = false
+    private var researchFallback = false
+    private var slotChoice: Int?
     private var phase = AiPhase.idle
     private var error: String?
     private var draft: AiDraftView?
@@ -111,6 +155,7 @@ package final class AiStudioModel {
         self.cachedKey = keyStatus()
         host.addObserver { [weak self] _ in self?.publish() }
         host.eq.addObserver { [weak self] _ in self?.publish() }
+        host.presets.addObserver { [weak self] _ in self?.publish() }
     }
 
     @discardableResult
@@ -229,6 +274,8 @@ package final class AiStudioModel {
         draft = nil
         draftBands = []
         summary = nil
+        slotChoice = nil
+        researchFallback = false
         publish()
     }
 
@@ -285,6 +332,8 @@ package final class AiStudioModel {
         error = nil
         summary = nil
         draft = nil
+        slotChoice = nil
+        researchFallback = false
         generation += 1
         let token = generation
         phase = .researching
@@ -325,10 +374,7 @@ package final class AiStudioModel {
         var notes = [outcome.grounded
             ? "Grounded in a published measurement of this model."
             : "No measurement found for this model \u{2014} designed from general knowledge."]
-        if outcome.researchFallback {
-            notes.append("Research didn\u{2019}t come back \u{2014} designed from general "
-                + "knowledge.")
-        }
+        researchFallback = outcome.researchFallback
         if let quantisation = outcome.draft.quantisationNote { notes.append(quantisation) }
         draftGroup = group
         draftBands = outcome.draft.bands
@@ -368,6 +414,35 @@ package final class AiStudioModel {
         summary = result.summary
         publish()
         return result.accepted
+    }
+
+    package var canWriteSlot: Bool {
+        draft != nil && applyRefusal(attempted: false) == nil && host.presets.canWrite
+            && !host.presets.state.busy
+    }
+
+    package func chooseSlot(_ index: Int) {
+        guard canWriteSlot, (0..<PresetSlotsModel.slotCount).contains(index) else { return }
+        slotChoice = index
+        publish()
+    }
+
+    package func cancelSlotChoice() {
+        guard slotChoice != nil else { return }
+        slotChoice = nil
+        publish()
+    }
+
+    @discardableResult
+    package func writeToSlot() -> Bool {
+        guard let index = slotChoice else { return false }
+        slotChoice = nil
+        guard canWriteSlot, apply() else {
+            publish()
+            return false
+        }
+        host.presets.save(slot: index)
+        return true
     }
 
     @discardableResult
@@ -437,6 +512,13 @@ package final class AiStudioModel {
         return formatter
     }()
 
+    private static let shortStamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "M/d/yy"
+        return formatter
+    }()
+
     static func facts(_ dossier: HeadphoneDossier, cached: Bool) -> [AiFact] {
         var rows = [AiFact(label: "Researched",
                            text: stamp.string(from: dossier.researchedAt)
@@ -463,8 +545,12 @@ package final class AiStudioModel {
     private func researchInfo() -> String? {
         let key = AIResearchStore.key(for: trimmedHeadphone)
         guard let cached = runtime.research.dossier(for: key) else { return nil }
-        return "Researched " + Self.stamp.string(from: cached.researchedAt) + " \u{00B7} "
+        return "Researched " + Self.shortStamp.string(from: cached.researchedAt) + " \u{00B7} "
             + cached.confidence + " confidence"
+    }
+
+    private static func choice(_ kind: AIPresetKind) -> LibraryChoice {
+        LibraryChoice(id: kind.rawValue, label: kind.label)
     }
 
     private func publish() {
@@ -476,7 +562,11 @@ package final class AiStudioModel {
         next.defaultModel = provider.defaultModel
         next.keyStatus = cachedKey
         next.kinds = AIPresetKind.allCases.map { LibraryChoice(id: $0.rawValue, label: $0.label) }
+        next.kindGroups = [
+            AiKindGroup(title: Self.characterTitle, kinds: AIPresetKind.character.map(Self.choice)),
+            AiKindGroup(title: Self.targetsTitle, kinds: AIPresetKind.targets.map(Self.choice))]
         next.kind = kind.rawValue
+        next.kindLabel = kind.label
         next.headphone = headphone
         next.note = note
         next.bandCount = host.eq.bandCapacity
@@ -486,6 +576,16 @@ package final class AiStudioModel {
         next.dossier = dossier
         next.researchInfo = cachedInfo
         next.refreshResearch = refreshResearch
+        next.researchFallback = researchFallback
+        next.slots = host.presets.state.slots
+        next.unsavedCurve = host.presets.activeSlotIndex == nil
+        next.canWriteSlot = canWriteSlot
+        if !next.canWriteSlot { slotChoice = nil }
+        next.slotChoice = slotChoice.map { index in
+            let name = next.slots.first { $0.index == index }?.name
+            return AiSlotChoice(slot: index, message: Self.overwriteCopy(slot: index, name: name),
+                                confirmLabel: Self.overwriteLabel(slot: index))
+        }
         next.summary = summary
         next.applyRefusal = applyRefusal(attempted: false)
         if phase != .idle {
