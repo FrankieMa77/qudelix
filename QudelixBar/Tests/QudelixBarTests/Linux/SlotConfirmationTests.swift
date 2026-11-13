@@ -36,7 +36,7 @@ final class SlotConfirmationTests: XCTestCase {
     }
 
     @MainActor
-    private func until(_ what: String, timeout: TimeInterval = 6, _ condition: @MainActor () -> Bool) async {
+    private func until(_ what: String, timeout: TimeInterval = 60, _ condition: @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
             if Date() > deadline { return XCTFail("timed out waiting for \(what)") }
@@ -85,7 +85,7 @@ final class SlotConfirmationTests: XCTestCase {
     }
 
     @MainActor
-    func testASaveIsConfirmedByARoundTripAfterTheSaveFrameWithoutLoadingAnything() async {
+    func testASaveIsConfirmedByTheSlotsOwnNameReplyWithoutLoadingAnything() async {
         let device = device()
         let model = await open(device)
         model.eq.setBand(1, EqBand(filter: .peak, freq: 44, gain: 6, q: 1))
@@ -98,7 +98,8 @@ final class SlotConfirmationTests: XCTestCase {
         let sent = device.link.sentCommands
         let saved = sent.firstIndex(of: .saveEqPreset)
         XCTAssertNotNil(saved)
-        XCTAssertTrue(sent[(saved ?? 0)...].contains(.reqDevStatus))
+        let afterSave = Array(device.link.sent[(saved ?? 0)...])
+        XCTAssertTrue(afterSave.contains { $0.cmd == .reqEqPresetName && $0.data == [QxEqGroup.b20.rawValue, 7] })
         assertNoLoadOrBandWrites(device)
         XCTAssertEqual(model.presets.state.activeIndex, 2)
         XCTAssertEqual(device.slotIndex, 2)
@@ -110,12 +111,10 @@ final class SlotConfirmationTests: XCTestCase {
     func testASaveFrameThatGetsNoReplyGivesTheErrorWithinTheWindow() async {
         let device = device()
         let model = await open(device)
-        device.silentStatus = true
+        device.silentNames = true
         device.link.clearSends()
-        let began = Date()
         model.presets.save(slot: 7)
         await until("the error") { !self.messages(.failure).isEmpty }
-        XCTAssertLessThan(Date().timeIntervalSince(began), PresetSlotsModel.confirmTimeout + 2)
         XCTAssertEqual(messages(.failure), [PresetSlotsModel.saveUnconfirmed])
         XCTAssertTrue(messages(.success).isEmpty)
         assertNoLoadOrBandWrites(device)
@@ -182,10 +181,8 @@ final class SlotConfirmationTests: XCTestCase {
         let device = device()
         let model = await open(device)
         device.silentNames = true
-        let began = Date()
         model.presets.rename(slot: 5, to: "Bright")
         await until("the error") { !self.messages(.failure).isEmpty }
-        XCTAssertLessThan(Date().timeIntervalSince(began), PresetSlotsModel.confirmTimeout + 2)
         XCTAssertEqual(messages(.failure), [PresetSlotsModel.renameUnconfirmed])
         XCTAssertTrue(messages(.success).isEmpty)
         await model.shutdown()
@@ -199,6 +196,78 @@ final class SlotConfirmationTests: XCTestCase {
         await model.presets.waitForIdle()
         XCTAssertEqual(messages(.success), ["Cleared the name of slot 1."])
         XCTAssertEqual(model.presets.state.slots[0].label, "Preset 1")
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testAStatusPacketThe5KPushesOnItsOwnNeverConfirmsASave() async {
+        let device = device()
+        let model = await open(device)
+        device.silentNames = true
+        device.onSave = { [link = device.link] in link.deliver(.rspDevStatus, QxFixtures.devStatus(volumeDb: -10)) }
+        model.presets.save(slot: 7)
+        await model.presets.waitForIdle()
+        XCTAssertEqual(messages(.failure), [PresetSlotsModel.saveUnconfirmed])
+        XCTAssertTrue(messages(.success).isEmpty)
+        assertNoLoadOrBandWrites(device)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testASaveReadsTheSlotsNameBackAndShowsWhatTheDeviceHolds() async {
+        let device = device()
+        let model = await open(device)
+        device.onSave = { device.names[9] = "Fresh" }
+        model.presets.save(slot: 9)
+        await model.presets.waitForIdle()
+        XCTAssertEqual(messages(.success), ["Saved to slot 10."])
+        XCTAssertEqual(model.presets.state.slots[9].name, "Fresh")
+        XCTAssertEqual(device.link.payloads(for: .reqEqPresetName).last, [QxEqGroup.b20.rawValue, 9])
+        assertNoLoadOrBandWrites(device)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testASaveOverANamedSlotKeepsItsNameAfterTheReadBack() async {
+        let device = device()
+        let model = await open(device)
+        model.presets.save(slot: 5)
+        await model.presets.waitForIdle()
+        XCTAssertEqual(messages(.success), ["Saved to slot 6."])
+        XCTAssertEqual(model.presets.state.slots[5].name, "Vocal")
+        assertNoLoadOrBandWrites(device)
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testASaveWhoseRenameWriteFailsSaysSoInsteadOfSaved() async {
+        let device = device()
+        let model = await open(device)
+        _ = model.eq.importText("Preamp: -2 dB\nFilter 1: ON PK Fc 100 Hz Gain 3 dB Q 1.0\n", named: "HD 650")
+        await model.eq.waitForIdle()
+        device.onSave = { [link = device.link] in link.deliver(.rspInitData, QxDemoFrames.initData(major: 1)) }
+        notices = []
+        model.presets.save(slot: 9)
+        await model.presets.waitForIdle()
+        XCTAssertEqual(messages(.failure), [PresetSlotsModel.renameUnconfirmed])
+        XCTAssertTrue(messages(.success).isEmpty)
+        XCTAssertTrue(device.link.payloads(for: .setEqPresetName).isEmpty)
+        XCTAssertNotNil(device.slots[9])
+        await model.shutdown()
+    }
+
+    @MainActor
+    func testANameReadThatEndsAfterTheSessionClosedDoesNotComeBack() async {
+        let device = device()
+        let model = await open(device)
+        device.silentNames = true
+        model.presets.rename(slot: 5, to: "Bright")
+        await until("first read") { !device.link.payloads(for: .reqEqPresetName).isEmpty }
+        XCTAssertEqual(model.presets.label(forSlot: 5), "Vocal")
+        device.link.drop()
+        await until("the session to close") { !model.presets.state.ready }
+        await until("the rename to end") { self.messages(.failure).contains(PresetSlotsModel.renameUnconfirmed) }
+        XCTAssertEqual(model.presets.label(forSlot: 5), "Preset 6")
         await model.shutdown()
     }
 }

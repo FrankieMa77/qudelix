@@ -160,6 +160,7 @@ package final class PresetSlotsModel {
             guard let self else { return }
             var saved = false
             var confirmed = false
+            var renameFailed = false
             let committed = await self.host.eq.committingToFlash(session) {
                 let held = await self.host.eq.writeRealShapes(session)
                 do {
@@ -177,6 +178,8 @@ package final class PresetSlotsModel {
                                                              to: QxPacket.maxPresetNameBytes)
                         if (try? await session.renamePreset(index: index, name: name)) != nil {
                             wantedName = .some(stored.isEmpty ? nil : stored)
+                        } else {
+                            renameFailed = true
                         }
                     }
                     confirmed = await self.confirmSave(session, name: wantedName, index: index)
@@ -188,7 +191,9 @@ package final class PresetSlotsModel {
                 return self.fail(failure)
             }
             guard saved else { return self.fail(failure) }
-            if confirmed {
+            if confirmed && renameFailed {
+                self.host.notify(.failure, Self.renameUnconfirmed)
+            } else if confirmed {
                 self.host.notify(.success, "Saved to slot \(index + 1).")
             } else {
                 self.host.notify(.failure, Self.saveUnconfirmed)
@@ -270,6 +275,7 @@ package final class PresetSlotsModel {
             }
             return nil
         } ?? false
+        guard ready, host.session === session else { return ok }
         if let read = seen.name { names[index] = read } else { names[index] = previous }
         return ok
     }
@@ -279,15 +285,17 @@ package final class PresetSlotsModel {
             let named = await confirmName(session, index: index, expected: wanted)
             return named && session.isConnected
         }
+        let seen = ReadBack()
         let answered = await within(Self.confirmTimeout) {
             do {
-                try await session.refreshStatus()
+                seen.name = .some(try await session.presetName(index: index))
                 return true
             } catch {
                 DebugLog.shared.log("save round trip failed: \(QudelixCLI.describe(error))")
                 return nil
             }
         } ?? false
+        if let read = seen.name, ready, host.session === session { names[index] = read }
         return answered && session.isConnected
     }
 
