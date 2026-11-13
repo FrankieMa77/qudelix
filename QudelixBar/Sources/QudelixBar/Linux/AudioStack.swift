@@ -6,14 +6,24 @@ package struct AudioStackLocations {
     package var impulseDirectory: (() -> URL)?
     package var autofit: URL
     package var forceMarker: URL?
+    package var fiveKLookup: (() -> Set<String>)?
 
     package init(stageSettings: URL, routingMemory: URL?, impulseDirectory: (() -> URL)?, autofit: URL,
-                 forceMarker: URL? = nil) {
+                 forceMarker: URL? = nil, fiveKLookup: (() -> Set<String>)? = nil) {
         self.stageSettings = stageSettings
         self.routingMemory = routingMemory
         self.impulseDirectory = impulseDirectory
         self.autofit = autofit
         self.forceMarker = forceMarker
+        self.fiveKLookup = fiveKLookup
+    }
+
+    private static var systemFiveKLookup: (() -> Set<String>)? {
+        #if os(Linux)
+        return { FiveKAddresses.system() }
+        #else
+        return nil
+        #endif
     }
 
     package static var system: AudioStackLocations {
@@ -21,7 +31,8 @@ package struct AudioStackLocations {
                             routingMemory: OutputRouting.defaultMemoryURL(),
                             impulseDirectory: nil,
                             autofit: AutofitFile.url,
-                            forceMarker: StageStateFile.directory.appendingPathComponent("force-rate.json"))
+                            forceMarker: StageStateFile.directory.appendingPathComponent("force-rate.json"),
+                            fiveKLookup: systemFiveKLookup)
     }
 
     package static func isolated(in directory: URL) -> AudioStackLocations {
@@ -122,7 +133,8 @@ package final class AudioStack {
         status = factory != nil ? .connecting : (backend != nil ? .ready : .unavailable)
         if let backend {
             let routing = OutputRouting(backend: backend, clock: clock, hop: hop,
-                                        memoryURL: locations.routingMemory)
+                                        memoryURL: locations.routingMemory,
+                                        fiveKLookup: locations.fiveKLookup)
             let stage = StageModel(backend: backend, routing: routing, clock: clock,
                                    settingsURL: locations.stageSettings,
                                    impulseDirectory: locations.impulseDirectory,

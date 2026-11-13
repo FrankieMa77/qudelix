@@ -264,3 +264,128 @@ final class OutputRoutingTests: XCTestCase {
         XCTAssertEqual(backend.setDefaultCalls.last, "qx_5k")
     }
 }
+
+@MainActor
+final class FiveKAddressLookupTests: XCTestCase {
+    private var directory: URL!
+    private var backend: FakeAudioBackend!
+    private var hops: HopQueue!
+    private var lookups = 0
+    private var found: Set<String> = []
+    private var lookupThreads: [Bool] = []
+
+    private static let renamed = AudioSink(id: 5, name: "bluez_output.AA_BB_CC_DD_EE_FF.1",
+                                           description: "My Earbuds", deviceApi: "bluez5",
+                                           bluezAddress: "AA:BB:CC:DD:EE:FF")
+    private static let other = AudioSink(id: 6, name: "bluez_output.11_22_33_44_55_66.1",
+                                         description: "Car Stereo", deviceApi: "bluez5",
+                                         bluezAddress: "11:22:33:44:55:66")
+
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fivek-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        backend = FakeAudioBackend()
+        hops = HopQueue()
+        lookups = 0
+        found = ["AA:BB:CC:DD:EE:FF"]
+        lookupThreads = []
+    }
+
+    override func tearDown() async throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    private func makeRouting(offload: @escaping OutputRouting.Hop = { $0() }) -> OutputRouting {
+        OutputRouting(backend: backend, clock: ManualClock(), hop: hops.hop,
+                      memoryURL: directory.appendingPathComponent("routing.json"),
+                      fiveKLookup: { [unowned self] in
+                          self.lookups += 1
+                          self.lookupThreads.append(Thread.isMainThread)
+                          return self.found
+                      },
+                      offload: offload)
+    }
+
+    func testARenamedFiveKIsRecognizedByItsAddress() {
+        backend.sinks = [Self.renamed, Self.other]
+        backend.defaultSinkName = Self.renamed.name
+        let routing = makeRouting()
+        routing.start()
+        XCTAssertFalse(routing.outputIsQudelix)
+        hops.drain()
+        XCTAssertTrue(routing.outputIsQudelix)
+        XCTAssertEqual(routing.qudelixSink?.name, Self.renamed.name)
+        XCTAssertFalse(routing.sinks.first { $0.name == Self.other.name }?.isQudelix5K ?? true)
+    }
+
+    func testTheDescriptionStaysAsTheFallbackWhenBlueZKnowsNothing() {
+        found = []
+        backend.sinks = [StageRig.headset, Self.other]
+        backend.defaultSinkName = StageRig.headset.name
+        let routing = makeRouting()
+        routing.start()
+        hops.drain()
+        XCTAssertTrue(routing.outputIsQudelix)
+        XCTAssertFalse(routing.sinks.first { $0.name == Self.other.name }?.isQudelix5K ?? true)
+    }
+
+    func testOneListingServesEveryRefreshUntilTheBluetoothOutputsChange() {
+        backend.sinks = [Self.renamed]
+        backend.defaultSinkName = Self.renamed.name
+        let routing = makeRouting()
+        routing.start()
+        hops.drain()
+        for _ in 0..<5 {
+            routing.refresh()
+            hops.drain()
+        }
+        XCTAssertEqual(lookups, 1)
+        backend.sinks = [Self.renamed, Self.other]
+        routing.refresh()
+        hops.drain()
+        XCTAssertEqual(lookups, 2)
+        routing.refresh()
+        hops.drain()
+        XCTAssertEqual(lookups, 2)
+    }
+
+    func testNothingIsListedWithoutABluetoothOutput() {
+        backend.sinks = [StageRig.fiveK, StageRig.speakers]
+        let routing = makeRouting()
+        routing.start()
+        hops.drain()
+        XCTAssertEqual(lookups, 0)
+    }
+
+    func testAChangeDuringALookupIsPickedUpAfterIt() {
+        backend.sinks = [Self.renamed]
+        backend.defaultSinkName = Self.renamed.name
+        var held: [() -> Void] = []
+        let routing = makeRouting(offload: { held.append($0) })
+        routing.start()
+        backend.sinks = [Self.renamed, Self.other]
+        routing.refresh()
+        XCTAssertEqual(held.count, 1)
+        held.removeFirst()()
+        hops.drain()
+        XCTAssertEqual(held.count, 1)
+        held.removeFirst()()
+        hops.drain()
+        XCTAssertEqual(lookups, 2)
+    }
+
+    func testTheListingNeverRunsOnTheMainThread() async {
+        backend.sinks = [Self.renamed]
+        backend.defaultSinkName = Self.renamed.name
+        let routing = makeRouting(offload: OutputRouting.backgroundHop)
+        routing.start()
+        let deadline = Date().addingTimeInterval(5)
+        while !routing.outputIsQudelix, Date() < deadline {
+            hops.drain()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(routing.outputIsQudelix)
+        XCTAssertEqual(lookupThreads, [false])
+    }
+}

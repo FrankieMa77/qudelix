@@ -82,6 +82,11 @@ package final class OutputRouting {
     private let clock: AppClock
     private let hop: Hop
     private let memoryURL: URL?
+    private let fiveKLookup: (() -> Set<String>)?
+    private let offload: Hop
+    private var fiveKAddresses = Set<String>()
+    private var lookedUp = Set<String>()
+    private var lookupRunning = false
     private var memory: RoutingMemory?
     private var insertHeld = false
     private var activationRequested = false
@@ -99,11 +104,40 @@ package final class OutputRouting {
     package init(backend: LinuxAudioBackend,
                  clock: AppClock = SystemClock(),
                  hop: @escaping Hop = OutputRouting.mainHop,
-                 memoryURL: URL? = OutputRouting.defaultMemoryURL()) {
+                 memoryURL: URL? = OutputRouting.defaultMemoryURL(),
+                 fiveKLookup: (() -> Set<String>)? = nil,
+                 offload: @escaping Hop = OutputRouting.backgroundHop) {
         self.backend = backend
         self.clock = clock
         self.hop = hop
         self.memoryURL = memoryURL
+        self.fiveKLookup = fiveKLookup
+        self.offload = offload
+    }
+
+    nonisolated package static let backgroundHop: Hop = { work in
+        DispatchQueue.global(qos: .utility).async(execute: work)
+    }
+
+    private func requestFiveKLookup(for addresses: Set<String>) {
+        guard let lookup = fiveKLookup, !addresses.isEmpty, addresses != lookedUp, !lookupRunning else { return }
+        lookupRunning = true
+        lookedUp = addresses
+        let hop = self.hop
+        weak var weakSelf = self
+        offload {
+            let found = lookup()
+            hop {
+                MainActor.assumeIsolated { weakSelf?.finishFiveKLookup(found) }
+            }
+        }
+    }
+
+    private func finishFiveKLookup(_ found: Set<String>) {
+        lookupRunning = false
+        fiveKAddresses = found
+        guard started else { return }
+        refresh()
     }
 
     nonisolated private static func changeHandler(target: OutputRouting?,
@@ -190,7 +224,15 @@ package final class OutputRouting {
         var next = RoutingSnapshot()
         next.connected = backend.connected
         let all = backend.sinks
-        next.sinks = all.filter { !$0.isStageSink }
+        requestFiveKLookup(for: Set(all.filter { $0.transport == .bluetooth && !$0.bluezAddress.isEmpty }
+            .map { AudioSink.normalizedAddress($0.bluezAddress) }))
+        let known = fiveKAddresses
+        next.sinks = all.filter { !$0.isStageSink }.map { sink in
+            var marked = sink
+            marked.bluezIsFiveK = !sink.bluezAddress.isEmpty
+                && known.contains(AudioSink.normalizedAddress(sink.bluezAddress))
+            return marked
+        }
         next.stageSinkPresent = all.contains { $0.isStageSink }
         next.defaultName = backend.defaultSinkName
         next.configuredName = backend.configuredDefaultSinkName

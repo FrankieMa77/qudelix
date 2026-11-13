@@ -16,6 +16,7 @@ package struct AudioSink: Equatable {
     package var productId: String
     package var bluezAddress: String
     package var profile: String
+    package var bluezIsFiveK: Bool
 
     package init(id: UInt32,
                  name: String,
@@ -25,7 +26,8 @@ package struct AudioSink: Equatable {
                  vendorId: String = "",
                  productId: String = "",
                  bluezAddress: String = "",
-                 profile: String = "") {
+                 profile: String = "",
+                 bluezIsFiveK: Bool = false) {
         self.id = id
         self.name = name
         self.description = description
@@ -35,6 +37,11 @@ package struct AudioSink: Equatable {
         self.productId = productId
         self.bluezAddress = bluezAddress
         self.profile = profile
+        self.bluezIsFiveK = bluezIsFiveK
+    }
+
+    package static func normalizedAddress(_ text: String) -> String {
+        text.uppercased().replacingOccurrences(of: "_", with: ":")
     }
 
     package var transport: AudioSinkTransport {
@@ -55,7 +62,7 @@ package struct AudioSink: Equatable {
         if transport == .usb {
             return Self.normalizedHex(vendorId) == "0a12" && Self.normalizedHex(productId) == "4007"
         }
-        return description.lowercased().contains("qudelix")
+        return bluezIsFiveK || description.lowercased().contains("qudelix")
     }
 
     private static func normalizedHex(_ text: String) -> String {
