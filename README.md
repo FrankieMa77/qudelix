@@ -7,7 +7,7 @@ On Linux there is a desktop app, `qudelix-app`, and a command-line version,
 `qudelix`, for Ubuntu, Debian and other distributions — see [Linux](#linux).
 
 [![Download macOS](https://img.shields.io/github/v/release/FrankieMa77/qudelix?filter=!linux-*&label=Download%20macOS&logo=apple&color=blue&style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/latest)
-[![Download Linux](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2FFrankieMa77%2Fqudelix%2Fmain%2Flinux%2FVERSION&query=%24&prefix=v&label=Download%20Linux&logo=linux&logoColor=white&color=blue&style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/tag/linux-v0.7.1)
+[![Download Linux](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2FFrankieMa77%2Fqudelix%2Fmain%2Flinux%2FVERSION&query=%24&prefix=v&label=Download%20Linux&logo=linux&logoColor=white&color=blue&style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/tag/linux-v0.8.0)
 [![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFrankieMa77%2Fqudelix%2Fbadges%2Fdownloads.json&style=flat-square&cacheSeconds=3600)](https://github.com/FrankieMa77/qudelix/releases)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?style=flat-square&logo=apple)](https://github.com/FrankieMa77/qudelix/releases/latest)
 [![Universal](https://img.shields.io/badge/binary-Apple%20Silicon%20%2B%20Intel-blue?style=flat-square)](https://github.com/FrankieMa77/qudelix/releases/latest)
@@ -181,13 +181,13 @@ listed in [linux/README.md](linux/README.md). Stage, Level and the Tune tones
 need PipeWire.
 
 - **Ubuntu 22.04 or later, Debian 12 or later (x86_64):** download
-  `qudelix_0.7.1_amd64.deb` from the [Linux 0.7.1 release](../../releases/tag/linux-v0.7.1)
-  and run `sudo apt install ./qudelix_0.7.1_amd64.deb`.
+  `qudelix_0.8.0_amd64.deb` from the [Linux 0.8.0 release](../../releases/tag/linux-v0.8.0)
+  and run `sudo apt install ./qudelix_0.8.0_amd64.deb`.
 - **Desktop app, Ubuntu 24.04 or later or any distribution with GTK 4.14 and
-  libadwaita 1.5:** also download `qudelix-app_0.7.1_amd64.deb` and install
-  both with `sudo apt install ./qudelix_0.7.1_amd64.deb ./qudelix-app_0.7.1_amd64.deb`.
-- **Other distributions:** download `qudelix-0.7.1-linux-x86_64.tar.gz`
-  (and `qudelix-app-0.7.1-linux-x86_64.tar.gz` for the app), unpack it and
+  libadwaita 1.5:** also download `qudelix-app_0.8.0_amd64.deb` and install
+  both with `sudo apt install ./qudelix_0.8.0_amd64.deb ./qudelix-app_0.8.0_amd64.deb`.
+- **Other distributions:** download `qudelix-0.8.0-linux-x86_64.tar.gz`
+  (and `qudelix-app-0.8.0-linux-x86_64.tar.gz` for the app), unpack it and
   run `sudo ./install.sh`.
 - **Arch Linux:** community packages on the AUR,
   [qudelix-cli-bin](https://aur.archlinux.org/packages/qudelix-cli-bin) and

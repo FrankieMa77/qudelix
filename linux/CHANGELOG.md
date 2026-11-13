@@ -9,6 +9,59 @@ an installed 1.6.x normally. AUR packagers need `epoch=1` in their PKGBUILDs.
 Linux releases are tagged `linux-v<version>` and titled "Qudelix for Linux". Mac releases keep
 the `v<version>` tags and the Mac changelog in the main README.
 
+## 0.8.0
+
+New in the app and the command line:
+
+- The Library page keeps presets per output. Each preset applies to one output or to every
+  output; presets saved for other outputs are listed under "Other outputs" and can be used with
+  the current one. Without PipeWire, every preset is listed and saved for all outputs.
+- Add an EQ file to the Library, paste EQ text from the clipboard, and export a preset as an
+  Equalizer APO text file. "Export current EQ" on the EQ page writes the curve you hear.
+  Adding or pasting never changes the 5K; Apply stays a separate step.
+- `qudelix library import <file> [--name <name>]` adds a file to the Library and
+  `qudelix library export <name> [<file>]` writes one out (to the terminal without a file).
+- The Library page has a headphone name field. Qudelix suggests a correction for the headphones
+  you named, in a banner at the top of the window with an Apply link, and the EQ page offers
+  Fit or Re-fit for them.
+- AutoEq has a "Published preset" mode next to "Fit to my device", Bass and Tilt sliders, a
+  Reset button for the personalization, a note about the band mode the fit was made for, and
+  an option to limit the correction to what the source reaches. The search and its results stay
+  while you switch pages.
+- The AI studio can write a draft straight to a slot of the 5K, asks before overwriting a filled
+  slot, warns when the curve you hear is not saved in a slot, and groups its preset kinds into
+  Character and Targets.
+
+Fixes:
+
+- "Saved to slot" and "Renamed" are shown only after the 5K has answered. When it does not, the
+  app says so and you can try again.
+- The 5K is recognized on a Bluetooth output by its own Bluetooth name, so it is found even when
+  you renamed it in your Bluetooth settings.
+- The log now says when another program starts or stops searching for Bluetooth devices and
+  when the 5K's audio link goes up or down, which explains most missed control-link windows.
+- Stopping while Qudelix waits for the 5K's control link now stops at once.
+- When PipeWire has no default output to restore, Stage says so and stops retrying instead of
+  recreating its output every 30 seconds.
+- Tune tones start without a hiccup, and an empty audio buffer no longer causes trouble.
+- On the Tune page Space presses the focused button, static text no longer takes keyboard
+  focus, and the Reference menu and the method menu are readable in narrow windows.
+- The save dialog says "Applies to" for its output choice. Changing the headphone name clears
+  the AI draft.
+- `--verbose` mirrors only the command's own log. The background process writes the Bluetooth
+  steps to the log file.
+- Opening the updated app or running a `qudelix` command restarts an older background process
+  once, so the update takes effect without logging out. The control link reconnects within
+  seconds and audio is not affected. `qudelix probe` says when the running process is older.
+
+Known limits:
+
+- Bands read back from the 5K are limited to +/-12 dB and Q 10.
+- Qudelix arms the Bluetooth control link only while the 5K's audio link is down.
+- Only one paired Qudelix device is supported.
+- The Level monitor can keep the Bluetooth audio link busy while it measures.
+- Stage can click now and then when the clocks of its two paths drift apart.
+
 ## 0.7.1
 
 Bluetooth control works now. In 0.7.0 the 5K's control link never came up over Bluetooth.

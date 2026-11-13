@@ -34,6 +34,11 @@
     <category>Settings</category>
   </categories>
   <releases>
+    <release version="0.8.0" date="2026-11-13">
+      <description>
+        <p>The Library keeps presets per output and imports, pastes and exports EQ files. Headphone suggestions, AutoEq published presets with bass and tilt, and writing AI presets to a slot join the app. Saves are reported only once the 5K answers, and an update restarts the old background process.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-11-12">
       <description>
         <p>Bluetooth control works and no longer disturbs Bluetooth audio while it waits for the 5K. The sidebar opens pages on click, Stage is steadier on Bluetooth, the mouse wheel no longer changes sliders, and quitting no longer loses a pending save.</p>
