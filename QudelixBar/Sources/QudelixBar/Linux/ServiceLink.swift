@@ -19,6 +19,7 @@ final class ServiceLink: QxLink {
         let done = DispatchSemaphore(value: 0)
         var stopped = false
         var finished = false
+        var replacedOnce = false
 
         init?() {
             var ends: [Int32] = [0, 0]
@@ -96,7 +97,6 @@ final class ServiceLink: QxLink {
     private var announcedUnusable: String?
     private var announcedBusy: String?
     private var mismatches = 0
-    private var replacedOnce = false
 
     init(socketPath: @escaping () -> String? = { LinkServicePaths.socketPath() },
          spawner: @escaping () -> Bool,
@@ -134,7 +134,6 @@ final class ServiceLink: QxLink {
             return
         }
         run = fresh
-        replacedOnce = false
         lock.unlock()
         let thread = Thread { [weak self] in self?.loop(fresh) }
         thread.name = "qudelix.service-link"
@@ -252,11 +251,11 @@ final class ServiceLink: QxLink {
                 return .failed
             }
             if version == LinkServiceFrame.protocolVersion {
-                guard !replacedOnce,
+                guard !run.replacedOnce,
                       LinkServiceSpawner.isReplaced(peerExecutable: peerExecutable(connection)) else {
                     return .connected(connection)
                 }
-                replacedOnce = true
+                run.replacedOnce = true
                 Trace.log("service link: the background process runs a replaced build; restarting it")
                 LinkServiceSocket.write(connection, .shutdown)
                 drain(connection, run)
@@ -266,6 +265,7 @@ final class ServiceLink: QxLink {
             }
             Trace.log("service link: the service speaks protocol \(version); replacing it")
             LinkServiceSocket.write(connection, .shutdown)
+            drain(connection, run)
             close(connection)
             awaitGone(path, run)
             mismatches += 1

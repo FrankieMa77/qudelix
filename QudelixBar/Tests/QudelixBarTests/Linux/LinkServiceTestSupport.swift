@@ -158,6 +158,8 @@ final class RawServer {
     private let lock = NSLock()
     private(set) var received: [LinkServiceFrame] = []
     var welcomeVersion: UInt8 = 2
+    var holdOpen: TimeInterval = 0
+    private(set) var peerClosedWhileHeld = false
 
     init?(path: String) {
         self.path = path
@@ -186,7 +188,18 @@ final class RawServer {
                     LinkServiceSocket.write(connection, .welcome(version: welcomeVersion))
                 }
             }
+            if holdOpen > 0, case .closed = LinkServiceSocket.wait(connection, timeout: holdOpen) {
+                lock.lock()
+                peerClosedWhileHeld = true
+                lock.unlock()
+            }
         }.start()
+    }
+
+    var closedWhileHeld: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return peerClosedWhileHeld
     }
 
     var frames: [LinkServiceFrame] {

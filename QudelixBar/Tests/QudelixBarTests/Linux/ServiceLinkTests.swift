@@ -216,6 +216,46 @@ final class ServiceLinkTests: XCTestCase {
         XCTAssertEqual(spawns, 1)
     }
 
+    func testVersionMismatchWaitsForTheOldServiceToCloseBeforeClosingItself() throws {
+        let raw = try XCTUnwrap(RawServer(path: socketPath))
+        raw.welcomeVersion = 2
+        raw.holdOpen = 0.4
+        raw.serveOnce()
+        let service = makeHarness()
+        service.transport.bringUp()
+        let link = makeLink { service }
+        link.start()
+        XCTAssertTrue(awaitCondition(10) { link.isConnected })
+        XCTAssertEqual(raw.frames, [.hello(version: 1), .shutdown])
+        XCTAssertFalse(raw.closedWhileHeld)
+        XCTAssertEqual(spawns, 1)
+    }
+
+    func testTheReplacementAllowanceStartsOverWithEachStart() {
+        let old = makeHarness()
+        old.transport.bringUp()
+        old.start()
+        let successor = freshHarness()
+        let second = freshHarness()
+        let order = LockedBox<[ServiceHarness]>()
+        order.value = [successor, second]
+        let link = makeLink(spawning: {
+            let next = order.value?.first
+            order.value = Array((order.value ?? []).dropFirst())
+            return next
+        }, peerExecutable: { _ in "/usr/bin/qudelix (deleted)" })
+        link.start()
+        XCTAssertTrue(awaitCondition(10) { link.isConnected })
+        XCTAssertTrue(old.waitForExit())
+        link.stopAndWait(timeout: 3)
+        XCTAssertTrue(awaitCondition { !link.isConnected })
+        link.start()
+        XCTAssertTrue(awaitCondition(10) { link.isConnected })
+        XCTAssertTrue(successor.waitForExit())
+        XCTAssertEqual(spawns, 2)
+        XCTAssertTrue(second.logLines.contains { $0.hasPrefix("client attached") })
+    }
+
     private func freshHarness() -> ServiceHarness {
         let fake = FakeLink(kind: .bluetooth)
         fake.bringUp()
@@ -252,7 +292,6 @@ final class ServiceLinkTests: XCTestCase {
                             peerExecutable: { _ in "/usr/bin/qudelix (deleted)" })
         link.start()
         XCTAssertTrue(awaitCondition(6) { link.isConnected })
-        Thread.sleep(forTimeInterval: 0.5)
         XCTAssertTrue(link.isConnected)
         XCTAssertEqual(spawns, 1)
         XCTAssertNil(successor.status)
@@ -266,7 +305,6 @@ final class ServiceLinkTests: XCTestCase {
         let link = makeLink(spawning: { nil }, peerExecutable: { _ in nil })
         link.start()
         XCTAssertTrue(awaitCondition { link.isConnected })
-        Thread.sleep(forTimeInterval: 0.3)
         XCTAssertTrue(link.isConnected)
         XCTAssertNil(service.status)
         XCTAssertEqual(spawns, 0)
@@ -279,7 +317,6 @@ final class ServiceLinkTests: XCTestCase {
         let link = makeLink(spawning: { nil }, peerExecutable: { _ in "/usr/bin/qudelix" })
         link.start()
         XCTAssertTrue(awaitCondition { link.isConnected })
-        Thread.sleep(forTimeInterval: 0.3)
         XCTAssertTrue(link.isConnected)
         XCTAssertNil(service.status)
         XCTAssertEqual(spawns, 0)
