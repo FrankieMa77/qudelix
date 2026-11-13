@@ -41,7 +41,8 @@ final class ServiceLinkTests: XCTestCase {
         return harness
     }
 
-    private func makeLink(spawning next: @escaping () -> ServiceHarness?) -> ServiceLink {
+    private func makeLink(spawning next: @escaping () -> ServiceHarness?,
+                          peerExecutable: @escaping (Int32) -> String? = { _ in nil }) -> ServiceLink {
         let link = ServiceLink(socketPath: { self.socketPath },
                                spawner: {
                                    self.counter.lock()
@@ -50,7 +51,8 @@ final class ServiceLinkTests: XCTestCase {
                                    next()?.startInBackground()
                                    return true
                                },
-                               timing: timing)
+                               timing: timing,
+                               peerExecutable: peerExecutable)
         links.append(link)
         return link
     }
@@ -212,6 +214,89 @@ final class ServiceLinkTests: XCTestCase {
         XCTAssertTrue(awaitCondition(6) { link.isConnected })
         XCTAssertEqual(raw.frames, [.hello(version: 1), .shutdown])
         XCTAssertEqual(spawns, 1)
+    }
+
+    private func freshHarness() -> ServiceHarness {
+        let fake = FakeLink(kind: .bluetooth)
+        fake.bringUp()
+        return makeHarness(fake)
+    }
+
+    func testReplacedBinaryGetsShutdownAndTheLinkReconnectsToAFreshService() {
+        let old = makeHarness()
+        old.transport.bringUp()
+        old.start()
+        let successor = freshHarness()
+        let lookups = LockedBox<Int>()
+        let link = makeLink(spawning: { successor }, peerExecutable: { _ in
+            lookups.value = (lookups.value ?? 0) + 1
+            return "/usr/bin/qudelix (deleted)"
+        })
+        let events = ServiceLinkEvents()
+        link.onConnected = { _ in events.add("up") }
+        link.start()
+        XCTAssertTrue(awaitCondition(6) { link.isConnected })
+        XCTAssertTrue(old.waitForExit())
+        XCTAssertEqual(spawns, 1)
+        XCTAssertTrue(successor.logLines.contains { $0.hasPrefix("client attached") })
+        XCTAssertEqual(events.all, ["up"])
+        XCTAssertEqual(lookups.value, 1)
+    }
+
+    func testReplacedAgainAfterTheReplacementIsAcceptedWithoutASecondShutdown() {
+        let old = makeHarness()
+        old.transport.bringUp()
+        old.start()
+        let successor = freshHarness()
+        let link = makeLink(spawning: { successor },
+                            peerExecutable: { _ in "/usr/bin/qudelix (deleted)" })
+        link.start()
+        XCTAssertTrue(awaitCondition(6) { link.isConnected })
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertTrue(link.isConnected)
+        XCTAssertEqual(spawns, 1)
+        XCTAssertNil(successor.status)
+        XCTAssertEqual(successor.transport.stopCount, 0)
+    }
+
+    func testFailedLookupIsAcceptedWithoutShutdown() {
+        let service = makeHarness()
+        service.transport.bringUp()
+        service.start()
+        let link = makeLink(spawning: { nil }, peerExecutable: { _ in nil })
+        link.start()
+        XCTAssertTrue(awaitCondition { link.isConnected })
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(link.isConnected)
+        XCTAssertNil(service.status)
+        XCTAssertEqual(spawns, 0)
+    }
+
+    func testFreshBinaryIsAcceptedWithoutShutdown() {
+        let service = makeHarness()
+        service.transport.bringUp()
+        service.start()
+        let link = makeLink(spawning: { nil }, peerExecutable: { _ in "/usr/bin/qudelix" })
+        link.start()
+        XCTAssertTrue(awaitCondition { link.isConnected })
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(link.isConnected)
+        XCTAssertNil(service.status)
+        XCTAssertEqual(spawns, 0)
+    }
+
+    func testRealPeerLookupSeesThisProcessAsCurrent() {
+        let service = makeHarness()
+        service.transport.bringUp()
+        service.start()
+        let connection = LinkServiceSocket.connect(path: socketPath)
+        defer { close(connection) }
+        XCTAssertGreaterThanOrEqual(connection, 0)
+        let executable = LinkServiceSpawner.peerExecutable(connection)
+        XCTAssertNotNil(executable)
+        XCTAssertFalse(LinkServiceSpawner.isReplaced(peerExecutable: executable))
+        XCTAssertTrue(LinkServiceSpawner.isReplaced(peerExecutable: "/opt/qudelix (deleted)"))
+        XCTAssertFalse(LinkServiceSpawner.isReplaced(peerExecutable: nil))
     }
 
     func testQxSessionOverTheLinkCompletesItsHandshake() async throws {

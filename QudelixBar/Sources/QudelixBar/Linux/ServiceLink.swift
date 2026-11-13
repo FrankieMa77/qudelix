@@ -85,6 +85,7 @@ final class ServiceLink: QxLink {
     private let socketPath: () -> String?
     private let spawner: () -> Bool
     private let timing: Timing
+    private let peerExecutable: (Int32) -> String?
     private let lock = NSLock()
     private let descriptorLock = NSLock()
     private let writeQueue = DispatchQueue(label: "qudelix.service-link.write")
@@ -95,13 +96,16 @@ final class ServiceLink: QxLink {
     private var announcedUnusable: String?
     private var announcedBusy: String?
     private var mismatches = 0
+    private var replacedOnce = false
 
     init(socketPath: @escaping () -> String? = { LinkServicePaths.socketPath() },
          spawner: @escaping () -> Bool,
-         timing: Timing = Timing()) {
+         timing: Timing = Timing(),
+         peerExecutable: @escaping (Int32) -> String? = { LinkServiceSpawner.peerExecutable($0) }) {
         self.socketPath = socketPath
         self.spawner = spawner
         self.timing = timing
+        self.peerExecutable = peerExecutable
     }
 
     func recycle() {
@@ -130,6 +134,7 @@ final class ServiceLink: QxLink {
             return
         }
         run = fresh
+        replacedOnce = false
         lock.unlock()
         let thread = Thread { [weak self] in self?.loop(fresh) }
         thread.name = "qudelix.service-link"
@@ -246,7 +251,19 @@ final class ServiceLink: QxLink {
                 close(connection)
                 return .failed
             }
-            if version == LinkServiceFrame.protocolVersion { return .connected(connection) }
+            if version == LinkServiceFrame.protocolVersion {
+                guard !replacedOnce,
+                      LinkServiceSpawner.isReplaced(peerExecutable: peerExecutable(connection)) else {
+                    return .connected(connection)
+                }
+                replacedOnce = true
+                Trace.log("service link: the background process runs a replaced build; restarting it")
+                LinkServiceSocket.write(connection, .shutdown)
+                drain(connection, run)
+                close(connection)
+                awaitGone(path, run)
+                return .retryNow
+            }
             Trace.log("service link: the service speaks protocol \(version); replacing it")
             LinkServiceSocket.write(connection, .shutdown)
             close(connection)
@@ -256,6 +273,14 @@ final class ServiceLink: QxLink {
         case .closed, .timedOut, .woken:
             close(connection)
             return .failed
+        }
+    }
+
+    private func drain(_ connection: Int32, _ run: Run) {
+        let deadline = Date().addingTimeInterval(timing.shutdownWait)
+        while Date() < deadline, !isStopped(run) {
+            guard case .frame = LinkServiceSocket.wait(connection, wake: run.wakeRead,
+                                                       timeout: deadline.timeIntervalSinceNow) else { return }
         }
     }
 

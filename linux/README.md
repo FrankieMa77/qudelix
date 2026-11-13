@@ -244,7 +244,8 @@ Bluetooth when you want to leave the cable out.
   reconnect on its own.
 - A small background process, started by the app or by the `qudelix` command, holds the 5K's
   Bluetooth control link. Quitting, reopening or updating the app keeps the link, and
-  `qudelix --ble` works while the app is open. The process stops when you log out.
+  `qudelix --ble` works while the app is open. After an update, opening the app or running a
+  `qudelix` command restarts an older background process once. The process stops when you log out.
 
 Then run `qudelix --ble status`. If it fails, run `qudelix --ble probe` and paste its output in
 a bug report; its Bluetooth section lists what this computer knows about the 5K without

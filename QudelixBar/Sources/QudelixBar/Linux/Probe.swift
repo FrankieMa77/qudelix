@@ -25,6 +25,7 @@ struct HidrawNode: Equatable {
 enum LinkServiceProbe: Equatable {
     case notRunning
     case running(holdsLink: Bool)
+    case replaced(holdsLink: Bool)
 }
 
 struct ProbeReport: Equatable {
@@ -174,6 +175,7 @@ enum Probe {
         case .running(let holdsLink):
             return holdsLink ? "running, holds the 5K's Bluetooth control link"
                 : "running, waiting for the 5K's Bluetooth control link"
+        case .replaced: return "running a replaced build; quit and reopen the app to restart it"
         }
     }
 
@@ -205,6 +207,8 @@ enum Probe {
                 object["link_service"] = ["running": false, "holds_link": false]
             case .running(let holdsLink):
                 object["link_service"] = ["running": true, "holds_link": holdsLink]
+            case .replaced(let holdsLink):
+                object["link_service"] = ["running": true, "holds_link": holdsLink, "replaced_build": true]
             }
         }
         return object

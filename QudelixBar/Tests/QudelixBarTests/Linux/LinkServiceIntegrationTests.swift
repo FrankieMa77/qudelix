@@ -118,6 +118,21 @@ final class LinkServiceIntegrationTests: XCTestCase {
         XCTAssertEqual(harness.transport.stopCount, 0)
     }
 
+    func testProbeReportsAReplacedBuildAndReplacesNothing() {
+        harness.start()
+        harness.transport.bringUp()
+        XCTAssertTrue(awaitCondition {
+            LinkServiceQuery.query(socketPath: harness.socketPath,
+                                   peerExecutable: { _ in "/usr/bin/qudelix (deleted)" })
+                == .replaced(holdsLink: true)
+        })
+        XCTAssertEqual(LinkServiceQuery.query(socketPath: harness.socketPath,
+                                              peerExecutable: { _ in nil }),
+                       .running(holdsLink: true))
+        XCTAssertNil(harness.status)
+        XCTAssertEqual(harness.transport.stopCount, 0)
+    }
+
     func testProbeLinesAndJsonCarryTheLinkServiceState() {
         func report(_ state: LinkServiceProbe?) -> ProbeReport {
             var report = ProbeReport(kernelRelease: "6.8", hidrawClassExists: true, nodes: [],
@@ -132,6 +147,10 @@ final class LinkServiceIntegrationTests: XCTestCase {
             .contains("link service  running, holds the 5K's Bluetooth control link"))
         XCTAssertTrue(Probe.lines(report(.running(holdsLink: false)))
             .contains("link service  running, waiting for the 5K's Bluetooth control link"))
+        XCTAssertTrue(Probe.lines(report(.replaced(holdsLink: true)))
+            .contains("link service  running a replaced build; quit and reopen the app to restart it"))
+        let replaced = Probe.object(report(.replaced(holdsLink: true)))["link_service"] as? [String: Bool]
+        XCTAssertEqual(replaced, ["running": true, "holds_link": true, "replaced_build": true])
         let object = Probe.object(report(.running(holdsLink: true)))["link_service"] as? [String: Bool]
         XCTAssertEqual(object, ["running": true, "holds_link": true])
         XCTAssertNil(Probe.object(report(nil))["link_service"])

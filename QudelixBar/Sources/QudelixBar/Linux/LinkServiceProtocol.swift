@@ -213,6 +213,14 @@ enum LinkServiceSocket {
         return credentials.uid
     }
 
+    static func peerProcessID(_ descriptor: Int32) -> Int32? {
+        var credentials = PeerCredentials()
+        var length = socklen_t(MemoryLayout<PeerCredentials>.size)
+        guard getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0,
+              credentials.pid > 0 else { return nil }
+        return credentials.pid
+    }
+
     @discardableResult
     static func write(_ descriptor: Int32, _ frame: LinkServiceFrame, dontWait: Bool = false) -> Bool {
         let bytes = frame.encoded()

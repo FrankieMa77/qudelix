@@ -13,6 +13,21 @@ enum LinkServiceSpawner {
         return String(cString: buffer)
     }
 
+    static let deletedSuffix = " (deleted)"
+
+    static func peerExecutable(_ descriptor: Int32) -> String? {
+        guard let pid = LinkServiceSocket.peerProcessID(descriptor) else { return nil }
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let count = readlink("/proc/\(pid)/exe", &buffer, buffer.count - 1)
+        guard count > 0 else { return nil }
+        buffer[count] = 0
+        return String(cString: buffer)
+    }
+
+    static func isReplaced(peerExecutable executable: String?) -> Bool {
+        executable?.hasSuffix(deletedSuffix) ?? false
+    }
+
     static func locateBinary(
         executable: String? = runningExecutable(),
         searchPath: String? = ProcessInfo.processInfo.environment["PATH"],
