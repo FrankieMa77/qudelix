@@ -209,6 +209,20 @@ docker run --rm --init --cpus 2 \
         render library-save library "$theme" 360x640 --demo --section saved --dialog name
       done
     fi
+    if [ "$RENDER_SET" = "all" ] || [ "$RENDER_SET" = "q3" ]; then
+      for theme in light dark; do
+        for size in 900x900 360x1300; do
+          render q3-tune-running tune "$theme" "$size" --demo --tune-demo compare-running
+          render q3-tune-finished tune "$theme" "$size" --demo --tune-demo compare-finished
+          render q3-tune-tones tune "$theme" "$size" --demo --tune-demo tones-running
+          render q3-library-others library "$theme" "$size" --demo --section saved --expand-others
+          render q3-library-suggestion library "$theme" "$size" --demo --section saved --suggest "Sennheiser HD 650" --dismiss-suggestion
+          render q3-autoeq library "$theme" "$size" --demo --section autoeq --query "HD 6" --select 0 --bass 2.5 --tilt -0.3 --cutoff 15.5
+          render q3-ai-draft library "$theme" "$size" --demo --section ai --ai-draft --custom-eq
+          render q3-ai-slot-confirm library "$theme" "$size" --demo --section ai --ai-draft --ai-slot 2
+        done
+      done
+    fi
     /build/debug/qudelix-app --version
     /build/debug/qudelix-app --help
     dump_tray() {

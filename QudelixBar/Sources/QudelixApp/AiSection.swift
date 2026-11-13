@@ -98,7 +98,7 @@ final class AiSection {
         gtk_widget_set_valign(kindButton, GTK_ALIGN_CENTER)
         gtk_widget_add_css_class(kindButton, "flat")
         gtk_widget_set_tooltip_text(kindButton, "Kind of preset to design")
-        Accessible.setLabel(kindButton, "Kind of preset to design")
+        Accessible.setLabel(kindButton, "Preset kind")
         kindList = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 2)
         kindPopover = Self.listPopover(kindList, height: 460)
         gtk_menu_button_set_popover(kindButton.opaque, kindPopover)
@@ -136,7 +136,7 @@ final class AiSection {
         draftTitle = Ui.label("", classes: ["heading"])
         draftSubtitle = Ui.label("")
         rationale = Ui.label("", classes: [])
-        notes = Ui.label("")
+        notes = Ui.label("", classes: [])
         applyButton = Ui.button("Apply", classes: ["suggested-action"])
         saveButton = Ui.button("Save")
         gtk_widget_set_tooltip_text(saveButton, "Save to library")
@@ -148,7 +148,12 @@ final class AiSection {
         slotList = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 2)
         slotPopover = Self.listPopover(slotList)
         gtk_menu_button_set_popover(slotButton.opaque, slotPopover)
-        unsaved = Ui.label(AiStudioModel.unsavedCurveWarning, classes: ["caption", "warning"])
+        let unsavedIcon = gtk_image_new_from_icon_name("dialog-warning-symbolic")!
+        gtk_widget_set_valign(unsavedIcon, GTK_ALIGN_START)
+        gtk_widget_add_css_class(unsavedIcon, "warning")
+        unsaved = Ui.box(GTK_ORIENTATION_HORIZONTAL, spacing: 8)
+        Ui.append(unsaved, unsavedIcon)
+        Ui.append(unsaved, Ui.label(AiStudioModel.unsavedCurveWarning, classes: []))
         overwriteText = Ui.label("", classes: ["caption", "warning"])
         overwriteConfirm = Ui.button("Overwrite", classes: ["destructive-action"])
         overwriteCancel = Ui.button("Cancel", classes: ["flat"])
@@ -250,6 +255,7 @@ final class AiSection {
             adw_combo_row_set_selected(providerRow.typed(AdwComboRow.self), UInt32(index))
         }
         gtk_menu_button_set_label(kindButton.opaque, next.kindLabel)
+        Accessible.setLabel(kindButton, AiStudioModel.kindAccessibleLabel(next.kindLabel))
         adw_preferences_row_set_title(modelRow.typed(AdwPreferencesRow.self), Ui.escaped("Model (default \(next.defaultModel))"))
         Ui.setText(ofEditable: modelRow, next.model)
         Ui.setText(ofEditable: headphoneRow, next.headphone)
@@ -312,6 +318,7 @@ final class AiSection {
         Ui.show(unsaved, next.draft != nil && next.unsavedCurve)
         Ui.enable(slotButton, next.canWriteSlot)
         Ui.show(overwriteBox, next.slotChoice != nil)
+        if previous.slotChoice == nil, next.slotChoice != nil { Ui.focusSoon(overwriteCancel) }
         if let choice = next.slotChoice {
             Ui.setText(overwriteText, choice.message)
             gtk_button_set_label(overwriteConfirm.typed(GtkButton.self), choice.confirmLabel)

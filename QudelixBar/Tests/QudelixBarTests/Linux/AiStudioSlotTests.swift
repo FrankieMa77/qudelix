@@ -242,4 +242,10 @@ final class AiStudioSlotTests: XCTestCase {
         let pattern = "^Researched \\d{1,2}/\\d{1,2}/\\d{2} \u{00B7} high confidence$"
         XCTAssertNotNil(info.range(of: pattern, options: .regularExpression), info)
     }
+
+    @MainActor
+    func testKindAccessibleLabelCarriesTheSelectedKind() {
+        XCTAssertEqual(AiStudioModel.kindAccessibleLabel("Warmth"), "Preset kind, Warmth")
+        XCTAssertEqual(AiStudioModel.kindAccessibleLabel(""), "Preset kind")
+    }
 }

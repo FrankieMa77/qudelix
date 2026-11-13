@@ -21,6 +21,16 @@ enum Ui {
         return label
     }
 
+    static func focusSoon(_ widget: Widget) {
+        _ = g_object_ref(widget)
+        g_timeout_add(80, { data in
+            let target = data!.assumingMemoryBound(to: GtkWidget.self)
+            gtk_widget_grab_focus(target)
+            g_object_unref(data)
+            return 0
+        }, UnsafeMutableRawPointer(widget))
+    }
+
     static func setText(_ label: Widget, _ text: String?) {
         gtk_label_set_text(label.opaque, text ?? "")
         gtk_widget_set_visible(label, (text ?? "").isEmpty ? 0 : 1)

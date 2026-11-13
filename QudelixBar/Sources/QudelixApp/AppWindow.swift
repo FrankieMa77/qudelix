@@ -136,7 +136,7 @@ enum AppWindow {
         adw_header_bar_set_title_widget(contentHeader.opaque, titleWidget.widget)
         let contentToolbar = adw_toolbar_view_new()!
         adw_toolbar_view_add_top_bar(contentToolbar.opaque, contentHeader.widget)
-        let suggestionBanner = SuggestionBanner(model: model.library.suggestions)
+        let suggestionBanner = SuggestionBanner(model: model.library.suggestions, focusAfterApply: stack.widget)
         self.suggestionBanner = suggestionBanner
         let contentColumn = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 0)
         gtk_widget_set_vexpand(stack.widget, 1)

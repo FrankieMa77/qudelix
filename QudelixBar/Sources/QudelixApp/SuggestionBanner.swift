@@ -17,11 +17,13 @@ final class SuggestionBanner {
     private let alternativesPopover: Widget
     private let alternativesBox: Widget
     private let dismiss: Widget
+    private let focusAfterApply: Widget
     private var offerID = ""
     private var shownChoices: [SuggestionChoice] = []
 
-    init(model: SuggestionsModel) {
+    init(model: SuggestionsModel, focusAfterApply: Widget) {
         self.model = model
+        self.focusAfterApply = focusAfterApply
         widget = Ui.box(GTK_ORIENTATION_VERTICAL, spacing: 0)
         banner = adw_banner_new("")!
         adw_banner_set_use_markup(banner.opaque, 1)
@@ -66,6 +68,7 @@ final class SuggestionBanner {
         Signals.connect(banner, signal: "button-clicked") { [weak self] in
             onMain {
                 guard let self, !self.offerID.isEmpty else { return }
+                gtk_widget_grab_focus(self.focusAfterApply)
                 self.model.accept(self.offerID)
             }
         }

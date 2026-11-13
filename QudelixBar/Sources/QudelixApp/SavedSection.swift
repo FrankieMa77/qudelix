@@ -78,8 +78,10 @@ final class SavedSection {
         let suggestionIcon = gtk_image_new_from_icon_name("starred-symbolic")!
         gtk_widget_add_css_class(suggestionIcon, "accent")
         suggestionText = Ui.label("", classes: ["caption", "dim-label"])
-        gtk_widget_set_hexpand(suggestionText, 0)
-        suggestionApply = Ui.button(SuggestionsModel.applyLinkLabel, classes: ["flat"])
+        gtk_widget_set_hexpand(suggestionText, 1)
+        suggestionApply = Ui.button(SuggestionsModel.applyLinkLabel, classes: ["suggested-action"])
+        gtk_widget_set_hexpand(suggestionApply, 0)
+        gtk_widget_set_halign(suggestionApply, GTK_ALIGN_END)
         gtk_widget_set_valign(suggestionApply, GTK_ALIGN_CENTER)
         gtk_widget_set_tooltip_text(suggestionRow, SuggestionsModel.rowHelp)
         Ui.append(suggestionRow, suggestionIcon)
@@ -142,6 +144,7 @@ final class SavedSection {
         Signals.connect(suggestionApply, signal: "clicked") { [weak self] in
             onMain {
                 guard let self, !self.suggestionID.isEmpty else { return }
+                gtk_widget_grab_focus(self.search)
                 self.suggestions.accept(self.suggestionID)
             }
         }
@@ -232,7 +235,6 @@ final class SavedSection {
     private func add(_ preset: SavedPreset, dimmed: Bool) {
         let row = Ui.actionRow(title: preset.name, subtitle: preset.detail)
         gtk_list_box_row_set_activatable(row.typed(GtkListBoxRow.self), 1)
-        if dimmed { gtk_widget_set_opacity(row, 0.55) }
         let marker = Ui.marker()
         Ui.prefix(row, marker)
         let rename = Ui.menuItem("Rename\u{2026}")

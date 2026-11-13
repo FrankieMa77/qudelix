@@ -194,7 +194,13 @@ final class AutoEqSection {
                 self.model.setTilt(value)
             }
         }
-        Signals.connect(resetButton, signal: "clicked") { [weak self] in onMain { self?.model.resetPersonalization() } }
+        Signals.connect(resetButton, signal: "clicked") { [weak self] in
+            onMain {
+                guard let self else { return }
+                gtk_widget_grab_focus(self.bassScale)
+                self.model.resetPersonalization()
+            }
+        }
         Signals.connect(cutoffCheck, signal: "toggled") { [weak self] in
             onMain {
                 guard let self, !self.updating else { return }

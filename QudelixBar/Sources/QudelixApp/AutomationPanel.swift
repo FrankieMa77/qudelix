@@ -171,7 +171,13 @@ final class AutomationPanel {
                 automation.setAutoTrim(strength: (value * 100).rounded() / 100)
             }
         }
-        Signals.connect(fitButton, signal: "clicked") { [weak self] in onMain { self?.suggestions?.requestFit() } }
+        Signals.connect(fitButton, signal: "clicked") { [weak self] in
+            onMain {
+                guard let self else { return }
+                gtk_widget_grab_focus(self.sourceRow)
+                self.suggestions?.requestFit()
+            }
+        }
         suggestions?.addObserver { [weak self] next in onLive { self?.suggestionsChanged(next) } }
         Signals.connect(keepButton, signal: "clicked") { onMain { automation.keep() } }
         Signals.connect(resumeButton, signal: "clicked") { onMain { automation.resume() } }

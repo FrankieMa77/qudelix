@@ -85,6 +85,9 @@ package final class AiStudioModel {
     package static let unsavedCurveWarning =
         "Your current EQ is a custom setting that isn\u{2019}t saved to a "
         + "slot \u{2014} applying this will replace it."
+    package static func kindAccessibleLabel(_ kind: String) -> String {
+        kind.isEmpty ? "Preset kind" : "Preset kind, \(kind)"
+    }
     package static let writeToSlotLabel = "Write to slot\u{2026}"
     package static let researchAgainLabel = "Research again"
     package static let researchAgainHelp = "Research this headphone again on the next generate"
