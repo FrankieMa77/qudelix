@@ -190,11 +190,7 @@ final class PresetSlotsModelTests: XCTestCase {
         XCTAssertEqual(Array(payload.prefix(3)), [QxEqGroup.b20.rawValue, 9, UInt8(3 + "Night listening".utf8.count)])
         XCTAssertEqual(String(bytes: payload.dropFirst(3), encoding: .utf8), "Night listening")
         XCTAssertEqual(model.presets.state.slots[9].name, "Night listening")
-        XCTAssertTrue(device.link.payloads(for: .reqEqPresetName).isEmpty)
-        clock.advance(0.5)
-        await until("readback") { !device.link.payloads(for: .reqEqPresetName).isEmpty }
         XCTAssertEqual(device.link.payloads(for: .reqEqPresetName), [[QxEqGroup.b20.rawValue, 9]])
-        await model.presets.waitForIdle()
         XCTAssertEqual(model.presets.state.slots[9].label, "Night listening")
         XCTAssertFalse(model.hasPendingSave)
         await model.shutdown()
@@ -209,9 +205,7 @@ final class PresetSlotsModelTests: XCTestCase {
         await model.presets.waitForIdle()
         XCTAssertEqual(model.presets.state.slots[0].label, "Preset 1")
         XCTAssertNil(device.names[0])
-        clock.advance(0.5)
-        await until("readback") { !device.link.payloads(for: .reqEqPresetName).isEmpty }
-        await model.presets.waitForIdle()
+        XCTAssertFalse(device.link.payloads(for: .reqEqPresetName).isEmpty)
         XCTAssertEqual(model.presets.state.slots[0].label, "Preset 1")
         await model.shutdown()
     }

@@ -13,6 +13,10 @@ final class EqTestDevice {
     var acceptsModeSwitch = true
     var names: [Int: String]
     var slots: [Int: (preGain: Double, bands: [QxEqBandValue])] = [:]
+    var dropsSaves = false
+    var dropsNames = false
+    var silentNames = false
+    var lateNames: [Int: String] = [:]
 
     init(group: QxEqGroup = .user, bands: [QxEqBandValue]? = nil, preGain: Double = -3,
          slot: Int = 2, names: [Int: String] = [:], graphic: Bool = false) {
@@ -53,6 +57,7 @@ final class EqTestDevice {
             if graphic { segments[0][6] &= ~UInt8(1) }
             for segment in segments { link.deliver(.rspEqPreset, segment) }
         case .reqEqPresetName:
+            guard !silentNames else { break }
             let index = Int(data.count > 1 ? data[1] : 0)
             link.deliver(.rspEqPresetName,
                          QxDemoFrames.presetName(index: index, name: names[index] ?? "",
@@ -81,15 +86,25 @@ final class EqTestDevice {
                 bands = slot.bands
             }
         case .saveEqPreset:
+            guard !dropsSaves else { break }
             slots[Int(data[0])] = (preGain, bands)
         case .setEqPresetName:
             let index = Int(data[1])
             let end = min(Int(data[2]), data.count)
             let text = String(bytes: end > 3 ? Array(data[3..<end]) : [], encoding: .utf8) ?? ""
-            names[index] = text.isEmpty ? nil : text
+            if dropsNames {
+                lateNames[index] = text
+            } else {
+                names[index] = text.isEmpty ? nil : text
+            }
         default:
             break
         }
+    }
+
+    func commitLateNames() {
+        for (index, text) in lateNames { names[index] = text.isEmpty ? nil : text }
+        lateNames = [:]
     }
 
     func notifyPreset(slot: Int) {

@@ -27,7 +27,10 @@ package struct SlotOverwritePrompt: Equatable {
 
 @MainActor
 package final class PresetSlotsModel {
-    package static let renameReadbackDelay: TimeInterval = 0.4
+    nonisolated(unsafe) package static var confirmTimeout: TimeInterval = 3
+    nonisolated(unsafe) package static var confirmRetryPause: TimeInterval = 0.3
+    package static let saveUnconfirmed = "The 5K didn't confirm the save. Try again."
+    package static let renameUnconfirmed = "The 5K didn't confirm the new name. Try again."
     package static let slotCount = QudelixController.presetCount
 
     private unowned let host: AppModel
@@ -41,7 +44,6 @@ package final class PresetSlotsModel {
     private var ready = false
     private var busyCount = 0
     private var generation = 0
-    private var readbackTimers: [Int: AppTimer] = [:]
 
     init(host: AppModel) {
         self.host = host
@@ -157,13 +159,29 @@ package final class PresetSlotsModel {
         run(failure) { [weak self] session in
             guard let self else { return }
             var saved = false
+            var confirmed = false
             let committed = await self.host.eq.committingToFlash(session) {
                 let held = await self.host.eq.writeRealShapes(session)
+                let expected = self.expectedShapes(held: held)
                 do {
                     try await session.savePreset(index: index)
                     saved = true
                 } catch {
                     DebugLog.shared.log("preset save failed: \(QudelixCLI.describe(error))")
+                }
+                if saved {
+                    var wantedName: String??
+                    if let name = QudelixController.nameOnSave(source: self.host.eq.currentSourceName,
+                                                               existing: self.names[index],
+                                                               unchangedSinceSource: self.host.eq.curveMatchesSource) {
+                        let stored = QxPacket.truncatingUTF8(QudelixController.displayName(name),
+                                                             to: QxPacket.maxPresetNameBytes)
+                        if (try? await session.renamePreset(index: index, name: name)) != nil {
+                            wantedName = .some(stored.isEmpty ? nil : stored)
+                        }
+                    }
+                    confirmed = await self.confirmSlot(session, index: index, expected: expected,
+                                                       name: wantedName)
                 }
                 await self.host.eq.writeMutedShapes(held, session)
             }
@@ -172,18 +190,13 @@ package final class PresetSlotsModel {
                 return self.fail(failure)
             }
             guard saved else { return self.fail(failure) }
-            if let name = QudelixController.nameOnSave(source: self.host.eq.currentSourceName,
-                                                       existing: self.names[index],
-                                                       unchangedSinceSource: self.host.eq.curveMatchesSource) {
-                let stored = QxPacket.truncatingUTF8(QudelixController.displayName(name),
-                                                     to: QxPacket.maxPresetNameBytes)
-                if (try? await session.renamePreset(index: index, name: name)) != nil {
-                    self.names[index] = stored.isEmpty ? nil : stored
-                    self.scheduleReadback(index)
-                }
-            }
             try? await session.refreshStatus()
-            self.host.notify(.success, "Saved to slot \(index + 1).")
+            if confirmed {
+                self.host.notify(.success, "Saved to slot \(index + 1).")
+            } else {
+                self.host.notify(.failure, Self.saveUnconfirmed)
+            }
+            self.publish()
             await self.host.refreshStatus()
         }
     }
@@ -198,15 +211,130 @@ package final class PresetSlotsModel {
             guard let self else { return }
             do {
                 try await session.renamePreset(index: index, name: name)
-                self.names[index] = stored.isEmpty ? nil : stored
-                self.publish()
-                self.host.notify(.success, stored.isEmpty ? "Cleared the name of slot \(index + 1)."
-                                 : "Renamed slot \(index + 1).")
-                self.scheduleReadback(index)
             } catch {
                 DebugLog.shared.log("preset rename failed: \(QudelixCLI.describe(error))")
-                self.fail(failure)
+                return self.fail(failure)
             }
+            let confirmed = await self.confirmName(session, index: index,
+                                                   expected: stored.isEmpty ? nil : stored)
+            self.publish()
+            if confirmed {
+                self.host.notify(.success, stored.isEmpty ? "Cleared the name of slot \(index + 1)."
+                                 : "Renamed slot \(index + 1).")
+            } else {
+                self.host.notify(.failure, Self.renameUnconfirmed)
+            }
+            await self.host.refreshStatus()
+        }
+    }
+
+    private struct ExpectedShapes {
+        var bands: [QxEqBandValue]
+        var preGain: Double
+    }
+
+    private final class ReadBack {
+        var preset: QxUserEqPreset?
+        var name: String??
+    }
+
+    private final class Gate<T> {
+        private var continuation: CheckedContinuation<T?, Never>?
+        init(_ continuation: CheckedContinuation<T?, Never>) { self.continuation = continuation }
+        func finish(_ value: T?) {
+            continuation?.resume(returning: value)
+            continuation = nil
+        }
+    }
+
+    private func expectedShapes(held: [Int: QxFilter]) -> ExpectedShapes {
+        var bands = host.eq.liveBands
+        for (index, filter) in held where bands.indices.contains(index) && bands[index].filter == .bypass {
+            bands[index].filter = filter
+        }
+        return ExpectedShapes(bands: bands.map(QxSession.clamped), preGain: host.eq.livePreGain)
+    }
+
+    private static func matches(_ read: QxUserEqPreset, _ expected: ExpectedShapes) -> Bool {
+        guard read.bands.count == expected.bands.count,
+              abs(read.preGain - EQHeadroom.clamp(expected.preGain)) < 0.15 else { return false }
+        for (have, want) in zip(read.bands, expected.bands) where !matches(have, want) { return false }
+        return true
+    }
+
+    private static func matches(_ have: QxEqBandValue, _ want: QxEqBandValue) -> Bool {
+        guard have.filter == want.filter else { return false }
+        guard want.filter != .bypass else { return true }
+        return abs(have.freq - want.freq) <= 1
+            && abs(have.gain - want.gain) < 0.15
+            && abs(have.q - want.q) <= max(0.02, want.q * 0.01)
+    }
+
+    private func within<T>(_ seconds: TimeInterval, _ body: @escaping () async -> T?) async -> T? {
+        await withCheckedContinuation { continuation in
+            let gate = Gate<T>(continuation)
+            let work = Task { gate.finish(await body()) }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                gate.finish(nil)
+                work.cancel()
+            }
+        }
+    }
+
+    private func pause() async {
+        try? await Task.sleep(nanoseconds: UInt64(max(0, Self.confirmRetryPause) * 1_000_000_000))
+    }
+
+    private func confirmName(_ session: QxSession, index: Int, expected: String?) async -> Bool {
+        let previous = names[index]
+        let seen = ReadBack()
+        let ok = await within(Self.confirmTimeout) {
+            while !Task.isCancelled {
+                do {
+                    let read = try await session.presetName(index: index)
+                    seen.name = .some(read)
+                    if read == expected { return true }
+                } catch {
+                    DebugLog.shared.log("preset name read-back failed: \(QudelixCLI.describe(error))")
+                }
+                await self.pause()
+            }
+            return nil
+        } ?? false
+        if let read = seen.name { names[index] = read } else { names[index] = previous }
+        return ok
+    }
+
+    private func confirmSlot(_ session: QxSession, index: Int, expected: ExpectedShapes,
+                             name: String??) async -> Bool {
+        let seen = ReadBack()
+        let bandsOK = await within(Self.confirmTimeout) {
+            while !Task.isCancelled {
+                do {
+                    let read = try await session.loadPreset(index: index, recording: false)
+                    seen.preset = read
+                    if Self.matches(read, expected) { return true }
+                } catch {
+                    DebugLog.shared.log("slot read-back failed: \(QudelixCLI.describe(error))")
+                }
+                await self.pause()
+            }
+            return nil
+        } ?? false
+        if !bandsOK, let read = seen.preset { await restore(session, from: read, to: expected) }
+        var nameOK = true
+        if let wanted = name { nameOK = await confirmName(session, index: index, expected: wanted) }
+        return bandsOK && nameOK
+    }
+
+    private func restore(_ session: QxSession, from read: QxUserEqPreset, to expected: ExpectedShapes) async {
+        for index in expected.bands.indices where read.bands.indices.contains(index)
+            && !Self.matches(read.bands[index], expected.bands[index]) {
+            try? await session.writeBand(index: index, expected.bands[index])
+        }
+        if abs(read.preGain - EQHeadroom.clamp(expected.preGain)) >= 0.15 {
+            try? await session.writePreGain(db: EQHeadroom.clamp(expected.preGain))
         }
     }
 
@@ -216,24 +344,6 @@ package final class PresetSlotsModel {
 
     private func fail(_ failure: String) {
         host.notify(.failure, failure + AppModel.retryAdvice)
-    }
-
-    private func scheduleReadback(_ index: Int) {
-        readbackTimers[index]?.cancel()
-        readbackTimers[index] = host.clock.schedule(after: Self.renameReadbackDelay) { [weak self] in
-            guard let self else { return }
-            self.readbackTimers[index] = nil
-            self.run { [weak self] session in
-                guard let self else { return }
-                if let read = try? await session.presetName(index: index) {
-                    self.names[index] = read
-                } else {
-                    self.names[index] = nil
-                }
-                self.publish()
-                await self.host.refreshStatus()
-            }
-        }
     }
 
     func run(_ failure: String? = nil, _ body: @escaping (QxSession) async -> Void) {
@@ -273,8 +383,6 @@ package final class PresetSlotsModel {
     }
 
     func sessionClosed() {
-        for timer in readbackTimers.values { timer.cancel() }
-        readbackTimers = [:]
         ready = false
         names = [:]
         activeIndex = nil
@@ -287,7 +395,7 @@ package final class PresetSlotsModel {
         guard ready, let snapshot else { return }
         activeIndex = snapshot.activePresetIndex
         if let index = snapshot.activePresetIndex, let name = snapshot.activePresetName,
-           names[index] != name, readbackTimers[index] == nil {
+           names[index] != name {
             names[index] = name
         }
         publish()
