@@ -231,6 +231,10 @@ package final class StageModel {
     private var pendingReconcile = false
     private var retryNotBefore: Date?
     package static let retryBackoff: TimeInterval = 30
+    package static let noRetryBackoff: TimeInterval = 100 * 365 * 24 * 3600
+    package static let defaultUnchangedMessage =
+        "Couldn\u{2019}t make Qudelix Stage the default output, so Stage stays off. "
+        + "Turn Stage off and on again to retry."
     private var callReleasedByHand = false
     private var correlationSmoothed: Double?
     private var lastOutputKey: String?
@@ -716,7 +720,8 @@ package final class StageModel {
                 if routing.activateStage() {
                     phase = .routing(deadline: now.addingTimeInterval(Self.phaseDeadline))
                 } else {
-                    failEngine("Couldn't make Qudelix Stage the default output.", summary: "default output unchanged")
+                    failEngine(Self.defaultUnchangedMessage, summary: "default output unchanged",
+                               backoff: Self.noRetryBackoff)
                     return
                 }
             } else if now > deadline {

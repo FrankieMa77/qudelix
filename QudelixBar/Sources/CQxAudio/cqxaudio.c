@@ -935,6 +935,11 @@ static void playback_process(void *data)
     uint32_t channels = atomic_load_explicit(&stream->channels[1], memory_order_relaxed);
     uint32_t rate = atomic_load_explicit(&stream->rate[1], memory_order_relaxed);
     if (d->data == NULL || channels == 0) {
+        if (d->chunk != NULL) {
+            d->chunk->offset = 0;
+            d->chunk->stride = 0;
+            d->chunk->size = 0;
+        }
         pw_stream_queue_buffer(leg->stream, buffer);
         return;
     }

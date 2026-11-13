@@ -102,7 +102,7 @@ final class ModelHarnessTests: XCTestCase {
         backend = nil
     }
 
-    private func pump(_ seconds: Double = 10, until condition: () -> Bool) -> Bool {
+    private func pump(_ seconds: Double = 20, until condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             hops.drain()

@@ -19,27 +19,32 @@ final class ToneSource: @unchecked Sendable {
     static let capacity = 800_000
 
     private let lock = RTLock()
-    private let buffer: UnsafeMutablePointer<Float>
+    private var buffer: UnsafeMutablePointer<Float>?
     private var count = 0
     private var cursor = 0
 
-    init() {
-        buffer = UnsafeMutablePointer<Float>.allocate(capacity: Self.capacity)
-        buffer.initialize(repeating: 0, count: Self.capacity)
-    }
+    init() {}
 
     deinit {
-        buffer.deallocate()
+        buffer?.deallocate()
         lock.destroy()
     }
 
     func load(_ samples: [Float]) {
         let used = min(samples.count, Self.capacity)
+        var prepared: UnsafeMutablePointer<Float>?
+        if used > 0 {
+            let fresh = UnsafeMutablePointer<Float>.allocate(capacity: used)
+            samples.withUnsafeBufferPointer { fresh.initialize(from: $0.baseAddress!, count: used) }
+            prepared = fresh
+        }
         lock.lock()
-        for index in 0..<used { buffer[index] = samples[index] }
+        let old = buffer
+        buffer = prepared
         count = used
         cursor = 0
         lock.unlock()
+        old?.deallocate()
     }
 
     func clear() {
@@ -56,7 +61,7 @@ final class ToneSource: @unchecked Sendable {
         let limit = count
         for frame in 0..<frames {
             var value: Float = 0
-            if position < limit {
+            if position < limit, let buffer {
                 value = buffer[position]
                 position += 1
             }

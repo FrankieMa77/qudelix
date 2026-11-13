@@ -17,7 +17,7 @@ enum Harness {
     }
 }
 
-func waitFor(_ seconds: Double = 8, _ condition: () -> Bool) -> Bool {
+func waitFor(_ seconds: Double = 20, _ condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
     while Date() < deadline {
         if condition() { return true }

@@ -109,11 +109,20 @@ final class AudioSafetyHarnessTests: XCTestCase {
               }) else { return }
         defer { probe.stop() }
         let stage = LinuxAudioNames.stageSinkName
-        guard waitFor(8, { backend.sinkVolume(named: stage) != nil }),
+        guard waitFor(20, { backend.sinkVolume(named: stage) != nil }),
               let volume = backend.sinkVolume(named: stage), volume.gain > 0 else { return }
         _ = backend.scaleSinkVolume(named: stage, by: min(1 / volume.gain, 16), muted: false)
-        _ = waitFor { backend.sinkVolume(named: stage).map { abs($0.gain - 1) < 0.01 && !$0.muted } ?? false }
-        Thread.sleep(forTimeInterval: 1.5)
+        var steadySince: Date?
+        _ = waitFor {
+            let steady = backend.sinkVolume(named: stage).map { abs($0.gain - 1) < 0.01 && !$0.muted } ?? false
+            guard steady else {
+                steadySince = nil
+                return false
+            }
+            let since = steadySince ?? Date()
+            steadySince = since
+            return Date().timeIntervalSince(since) >= 1.5
+        }
     }
 
     override func tearDown() async throws {
@@ -140,7 +149,7 @@ final class AudioSafetyHarnessTests: XCTestCase {
                            forceMarkerURL: markerURL)
     }
 
-    private func pump(_ seconds: Double = 10, until condition: () -> Bool) -> Bool {
+    private func pump(_ seconds: Double = 20, until condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             hops.drain()

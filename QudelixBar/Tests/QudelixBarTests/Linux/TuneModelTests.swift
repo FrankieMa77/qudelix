@@ -511,4 +511,67 @@ final class TuneModelTests: XCTestCase {
         buffer.withUnsafeMutableBufferPointer { source.render($0.baseAddress!, frames: 2, channels: 2) }
         XCTAssertEqual(Array(buffer[0..<4]), [0, 0, 0, 0])
     }
+
+    func testReloadingASourceSwapsTheWholeBufferAndNeverKeepsAStaleTail() {
+        let source = ToneSource()
+        source.load([1, 2, 3, 4, 5, 6])
+        var buffer = [Float](repeating: 9, count: 2)
+        buffer.withUnsafeMutableBufferPointer { source.render($0.baseAddress!, frames: 2, channels: 1) }
+        XCTAssertEqual(buffer, [1, 2])
+        source.load([7, 8])
+        var out = [Float](repeating: 9, count: 6)
+        out.withUnsafeMutableBufferPointer { source.render($0.baseAddress!, frames: 6, channels: 1) }
+        XCTAssertEqual(out, [7, 8, 0, 0, 0, 0])
+        source.load([])
+        out.withUnsafeMutableBufferPointer { source.render($0.baseAddress!, frames: 6, channels: 1) }
+        XCTAssertEqual(out, [Float](repeating: 0, count: 6))
+    }
+
+    func testASourceLongerThanTheCapacityIsTruncated() {
+        let source = ToneSource()
+        source.load([Float](repeating: 0.5, count: ToneSource.capacity + 10))
+        var out = [Float](repeating: 0, count: ToneSource.capacity + 20)
+        out.withUnsafeMutableBufferPointer { source.render($0.baseAddress!, frames: ToneSource.capacity + 20, channels: 1) }
+        XCTAssertEqual(out[ToneSource.capacity - 1], 0.5)
+        XCTAssertEqual(out[ToneSource.capacity], 0)
+    }
+
+    func testReloadsWhileTheRenderThreadRunsNeverTearAndNeverStallIt() {
+        let source = ToneSource()
+        let chunk = ToneSource.capacity
+        let finished = DispatchSemaphore(value: 0)
+        let longest = LockedValue(0.0)
+        let torn = LockedValue(false)
+        let stop = LockedValue(false)
+        DispatchQueue.global().async {
+            var out = [Float](repeating: 0, count: 256)
+            while !stop.value {
+                let began = DispatchTime.now().uptimeNanoseconds
+                out.withUnsafeMutableBufferPointer { source.render($0.baseAddress!, frames: 256, channels: 1) }
+                let took = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e9
+                if took > longest.value { longest.value = took }
+                if Set(out).subtracting([0]).count > 1 { torn.value = true }
+            }
+            finished.signal()
+        }
+        for round in 0..<40 {
+            source.load([Float](repeating: Float(round % 2 + 1), count: chunk))
+        }
+        stop.value = true
+        finished.wait()
+        XCTAssertFalse(torn.value)
+        XCTAssertLessThan(longest.value, 0.25)
+    }
+}
+
+private final class LockedValue<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+
+    init(_ value: T) { stored = value }
+
+    var value: T {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
 }

@@ -250,6 +250,24 @@ final class AudioSafetyTests: XCTestCase {
         XCTAssertEqual(rig.backend.configuredDefaultSinkName, "qx_5k")
     }
 
+    func testAServerThatCannotChangeTheDefaultStopsTheRetryLoopWithANotice() throws {
+        let rig = try makeRig()
+        rig.backend.acceptDefaultChange = false
+        rig.enableStage()
+        XCTAssertEqual(rig.backend.inserts.count, 1)
+        XCTAssertEqual(rig.model.state.failure?.message, StageModel.defaultUnchangedMessage)
+        XCTAssertEqual(rig.model.state.status, StageModel.defaultUnchangedMessage)
+        rig.tick(Int(StageModel.retryBackoff) * 6)
+        XCTAssertEqual(rig.backend.inserts.count, 1)
+        XCTAssertEqual(rig.model.state.failure?.message, StageModel.defaultUnchangedMessage)
+        rig.backend.acceptDefaultChange = true
+        rig.model.setEnabled(false, editedFor: rig.key)
+        rig.settle()
+        rig.enableStage()
+        XCTAssertEqual(rig.backend.inserts.count, 2)
+        XCTAssertTrue(rig.model.state.running)
+    }
+
     func testARestoreThatTheServerRefusesIsReported() throws {
         let rig = try makeRig()
         rig.enableStage()
