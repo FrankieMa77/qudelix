@@ -45,7 +45,7 @@ package enum TunePresentation {
     package static let startLabel = "Start"
     package static let heardLabel = "I hear it"
     package static let heardHelp = "Press the moment you hear anything, however faint. Silence is normal."
-    package static let switchHelp = "Switch as often as you like, then choose. Space switches, Enter confirms the focused button, and Space presses Stop when Stop has focus."
+    package static let switchHelp = "Switch as often as you like, then choose. Space switches; Enter presses the focused button."
     package static let toneSessionHelp = "Press Space or the button the moment you hear anything, however faint. Silence is normal."
     package static let sessionBadge = "Session running"
     package static let restoreText = "Your EQ was put back the way it was before the session."
